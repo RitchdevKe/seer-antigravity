@@ -1,0 +1,64 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Generated data dumps and temporary local files
+.env
+.env.*
+!.env.example
+data/
+.lovable
+bun.lock
+*.py
+*.txt
+prm_uploaded_matches*.json
+slip_*.json
+*.sql.bak
+
+# Large archives and server dumps (exceed GitHub 100MB limit)
+*.tar
+*.tar.gz
+*.zip
+*.map
+
+# Database backups, scratch directories, and import dumps
+supabase_backup/
+db_export/
+matches_import/
+scratch/
+scratch_aws/
+
+# Stray root temporary files and screenshots
+/=
+/console.log*
+/*.png
+/*.html
+!index.html
+
+# AWS scratch scripts
+check_rds.ts
+provision.ts
+provision_rds.ts
+fix_sg.ts
+

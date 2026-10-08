@@ -1,0 +1,12 @@
+- [x] Create `src/utils/optimizedweights.ts`
+  - [x] Implement `getMarketFavorite(match)` to determine 1 or 2 based on lowest odds.
+  - [x] Implement `getBaseWeight(match, phaStatsMap)` using the defined scale (10 to 35 points based on Market Favorite's PHA percentage).
+  - [x] Implement `getOptimizedScore(match, category, phaStatsMap)` to combine base weights with category weights.
+  - [x] Export a constant configuration object `OPTIMIZED_CATEGORY_WEIGHTS` to store the settings for each category (Best Bet, Top 10, BOTB, etc.).
+- [x] Update `src/components/SeerAnalysis.tsx`
+  - [x] Add an "Optimized Weights" button next to "Stats" in the tab navigation.
+  - [x] When active, render a sub-navigation of categories (Best Bet, Top 12, BOTB, etc.).
+  - [ ] When a category is clicked, display a UI listing the active optimized weight settings for that category (base points logic + category-specific rules).
+- [x] Verify functionality
+  - [x] Check if the UI renders correctly.
+  - [x] Ensure base calculation functions correctly map to the new rules.

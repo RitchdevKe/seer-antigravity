@@ -1,0 +1,1 @@
+ALTER TABLE IF EXISTS seer_locked_slips ADD COLUMN IF NOT EXISTS type TEXT;

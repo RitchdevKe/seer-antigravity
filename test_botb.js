@@ -1,0 +1,1 @@
+import { CODE_DEFAULT_CATEGORY_SETTINGS } from './src/utils/optimizedweights.ts'; console.log('botb_best rules length:', CODE_DEFAULT_CATEGORY_SETTINGS.botb_best.rules.length, 'intervals length:', CODE_DEFAULT_CATEGORY_SETTINGS.botb_best.baseWeightIntervals.length);

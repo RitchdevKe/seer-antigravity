@@ -1,0 +1,207 @@
+{
+  "ga": "1.9:2.4",
+  "gs": "0.7:1.3",
+  "id": "07_Vestur_vs_AB_2026_06_21 17:00",
+  "le": "2:2",
+  "mo": "3.35,3.35,2.1",
+  "l10": "B2:0",
+  "tsa": 0.368,
+  "tsb": 0.542,
+  "date": "2026-06-21 17:00",
+  "group": 3,
+  "teams": "07 Vestur vs AB",
+  "_moFav": "2",
+  "gaAway": 2.4,
+  "gaHome": 1.9,
+  "gsAway": 1.3,
+  "gsHome": 0.7,
+  "paaWin": 0,
+  "rating": "4/10",
+  "result": "2:0",
+  "paaDraw": 50,
+  "pred1x2": "2",
+  "_moUpset": "1",
+  "paaUpset": 50,
+  "patterns": [
+    "P3"
+  ],
+  "priority": "",
+  "_stableId": "07_Vestur_vs_AB_2026_06_21 17:00",
+  "hedgeNote": "Hedge P3",
+  "maxPoints": 40,
+  "algoReport": {
+    "reason": "PHA Supremacy (>60%) | High Odds Volatility (>2.0) | Tight Spread (Not Clean) | PHA+Sub Synergy | Points Ignored (High Algo Conf) | Contra-Market Hedge | Conflict Resolution (<2.50) | Low Conf Baseline Exclusion | Contra-Market Hedge | Pat:G3ff49 | [ESAGS,EWHGS,SHGA]",
+    "category": "Standard",
+    "confidence": 21,
+    "prediction": "12",
+    "qualityAudit": {
+      "score": 0,
+      "reason": "PHA Divergence Risk (Fav Mismatch) | Conflict Resolution: Discard (<2.50) | Low Points (Volatile)",
+      "phaLean": "Clean",
+      "isQualified": false,
+      "recommendedType": "Avoid"
+    },
+    "activeFilters": [],
+    "probabilities": {
+      "1": 0.47240618101545256,
+      "2": 0.30518763796909487,
+      "X": 0.22240618101545256
+    },
+    "primaryPrediction": "1"
+  },
+  "seerScores": {
+    "1": 73.73068432671081,
+    "2": 141.03863134657837,
+    "X": 10.230684326710819
+  },
+  "patternCode": "P3",
+  "pointsRange": "40-50",
+  "totalPoints": {
+    "away": 40,
+    "draw": 22,
+    "home": 33,
+    "breakdown": {
+      "ptsGA": {
+        "away": 0,
+        "draw": 0,
+        "home": 12
+      },
+      "ptsGS": {
+        "away": 20,
+        "draw": 0,
+        "home": 0
+      },
+      "ptsLE": {
+        "away": 0,
+        "draw": 10,
+        "home": 0,
+        "wasDrawn": true
+      },
+      "ptsMO": {
+        "away": 11,
+        "draw": 4,
+        "home": 5
+      },
+      "ptsTS": {
+        "away": 5,
+        "draw": 5,
+        "home": 5
+      },
+      "pts1x2": {
+        "away": 4,
+        "draw": 3,
+        "home": 3
+      },
+      "ptsL10": {
+        "away": 0,
+        "draw": 0,
+        "home": 8
+      },
+      "bonuses": {
+        "away": 0,
+        "home": 0
+      },
+      "tsIndicators": "Equal TS",
+      "upsetPotential": null
+    }
+  },
+  "moPrediction": "2",
+  "paaPrediction": "1X",
+  "rawPrediction": "1",
+  "seerPrediction": "12",
+  "_liveAlgoReport": {
+    "odds": "3.35,3.35,2.1",
+    "team": "07 Vestur vs AB",
+    "reason": "PHA Supremacy (>60%) | High Odds Volatility (>2.0) | Tight Spread (Not Clean) | PHA+Sub Synergy | Points Ignored (High Algo Conf) | Contra-Market Hedge | Conflict Resolution (<2.50) | Low Conf Baseline Exclusion | Contra-Market Hedge | Pat:G3ff49 | [ESAGS,EWHGS,SHGA]",
+    "category": "Standard",
+    "confidence": "21%",
+    "prediction": "12",
+    "isUnshakable": true,
+    "qualityAudit": {
+      "score": 0,
+      "reason": "PHA Divergence Risk (Fav Mismatch) | Conflict Resolution: Discard (<2.50) | Low Points (Volatile)",
+      "phaLean": "Clean",
+      "isQualified": false,
+      "recommendedType": "Avoid"
+    },
+    "activeFilters": [],
+    "probabilities": {
+      "1": 0.47240618101545256,
+      "2": 0.30518763796909487,
+      "X": 0.22240618101545256
+    },
+    "rawConfidence": 21,
+    "isTripleConsensus": true,
+    "primaryPrediction": "1"
+  },
+  "activeAiFilters": [],
+  "finalPrediction": "12",
+  "isPrecalculated": true,
+  "patternAnalysis": {
+    "subPattern": "G3ff49",
+    "activeFlags": [
+      "ESAGS",
+      "EWHGS",
+      "SHGA",
+      "WAGA"
+    ],
+    "mainPattern": "FF",
+    "appliedPattern": "FF",
+    "confidenceColor": "text-gray-400",
+    "confidenceStars": 3,
+    "formattedString": "G3ff49: EWHGS+ESAGS+SHGA+WAGA|No Balance (No Stats Equal)",
+    "primaryPrediction": "1",
+    "subPatternPrediction": "12",
+    "mainPatternDescription": "No Balance (No Stats Equal)"
+  },
+  "seerPercentages": {
+    "1": 33,
+    "2": 62,
+    "X": 5
+  },
+  "_cachedMatchStats": {
+    "o1": 3.35,
+    "o2": 2.1,
+    "oX": 3.35,
+    "moFav": "2",
+    "favOdds": 2.1,
+    "probFav": 30.518763796909486,
+    "algoPred": "12",
+    "isHedged": true,
+    "paaStats": {
+      "draw": 0,
+      "total": 0,
+      "favWin": 0,
+      "drawRate": 0,
+      "upsetWin": 0,
+      "upsetRate": 0,
+      "favWinRate": 0
+    },
+    "phaStats": {
+      "away": 0,
+      "draw": 0,
+      "home": 0,
+      "favSupport": 0,
+      "drawSupport": 0,
+      "underdogSupport": 0
+    },
+    "probDraw": 22.240618101545255,
+    "finalPred": "12",
+    "moUnderdog": "1",
+    "subPatPred": "12",
+    "phaDrawCount": 0,
+    "probUnderdog": 47.24061810154526,
+    "totalMatches": 0,
+    "underdogOdds": 3.35,
+    "phaFavSupport": 0,
+    "phaDrawSupport": 0,
+    "paaUpsetSupport": 0,
+    "phaFavWinSupport": 0,
+    "phaUnderdogCount": 0,
+    "phaUnderdogSupport": 0
+  },
+  "calculatedPrediction": "2",
+  "paaPrimaryPrediction": "X",
+  "probabilityConfidence": 21,
+  "seerPrimaryPrediction": "2"
+}

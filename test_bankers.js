@@ -1,0 +1,1 @@
+import { CODE_DEFAULT_CATEGORY_SETTINGS } from './src/utils/optimizedweights.ts'; console.log('bankers_dlive rules length:', CODE_DEFAULT_CATEGORY_SETTINGS.bankers_dlive.rules.length, 'intervals length:', CODE_DEFAULT_CATEGORY_SETTINGS.bankers_dlive.baseWeightIntervals.length);

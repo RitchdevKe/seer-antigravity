@@ -1,0 +1,8 @@
+{
+  "region": "us-east-1",
+  "userPoolId": "us-east-1_L3MWECq7b",
+  "appClientId": "1u0bkvmcptds47a7o6d3c1i4q2",
+  "rdsInstanceId": "seer-postgres-db-2",
+  "rdsUsername": "postgres",
+  "rdsPassword": "SeerAdmin2026!bp6luu"
+}

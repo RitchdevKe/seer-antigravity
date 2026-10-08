@@ -1,0 +1,1 @@
+import { replaceAllOptimizedCategorySettings, OPTIMIZED_CATEGORY_SETTINGS } from './src/utils/optimizedweights'; replaceAllOptimizedCategorySettings({ best_bet: { name: 'Best Bets', description: 'desc', baseWeightIntervals: [] } }); console.log(JSON.stringify(OPTIMIZED_CATEGORY_SETTINGS.best_bet.baseWeightIntervals, null, 2));

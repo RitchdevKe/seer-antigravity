@@ -1,0 +1,215 @@
+import { Match } from '../types';
+
+export interface PivotEngineInput {
+    matrixUnd: number;
+    matrixDraw: number;
+    rawFav: number;
+    rawDraw: number;
+    rawUnd: number;
+    paaPred: string;
+    algoPred: string;
+    seerPred: string;
+    paaPrim: string;
+    seerPrim: string;
+    algoPrim: string;
+    subPrim: string;
+    favDC: string;
+    upsetDC: string;
+    favWin: string;
+    undWin: string;
+    hybridFav: number;
+    hybridDraw: number;
+    hybridUnd: number;
+    algoMax: number;
+    paaMax: number;
+    maxDraw: number;
+    volScore?: number;
+}
+
+export interface PivotEngineResult {
+    prediction: string;
+    reasoning: string;
+    hitRate: number;
+    sourceName: string;
+    isTripleConsensus: boolean;
+    primaryPrediction: string;
+}
+
+export function runPivotEngine(match: Match, input: PivotEngineInput): PivotEngineResult {
+    const {
+        matrixUnd, matrixDraw, paaPred, algoPred, seerPred,
+        favDC, upsetDC, favWin, undWin,
+        hybridFav, hybridDraw, hybridUnd,
+        rawFav, rawDraw, rawUnd,
+        algoMax, paaMax, maxDraw,
+        paaPrim, seerPrim, algoPrim, subPrim
+    } = input;
+
+    let isTripleConsensus = false;
+    let pivotReasoning = '';
+    let pivotPrediction = '';
+    let pivotPrimary = '';
+    
+    // ---- VOLATILITY ENGINE INTEGRATION ----
+    // We compute the raw volatility score mathematically from the Match object.
+    let volScore = 0;
+    const isFavHome = favWin === '1';
+    const paaDrawPct = match.paaDraw || 0;
+    const paaUpsetPct = match.paaUpset || 0;
+
+    if (paaUpsetPct > paaDrawPct * 1.2) volScore += 2;
+    if (paaUpsetPct > 35) volScore += 1;
+    if (paaUpsetPct > 50) volScore += 2;
+
+    if (rawUnd > rawDraw) volScore += 1.5;
+    if (rawUnd > rawDraw + 5) volScore += 1.5;
+    if (rawUnd > 40) volScore += 1;
+
+    if (rawUnd > 30) volScore += 1;
+    if (rawUnd > 45) volScore += 2;
+
+    const homePts = match.totalPoints?.home || 0;
+    const awayPts = match.totalPoints?.away || 0;
+    const mUd = favWin === '1' ? '2' : '1';
+    const upsetHasMorePoints = (mUd === '1' && homePts > awayPts) || (mUd === '2' && awayPts > homePts);
+    if (upsetHasMorePoints) volScore += 2;
+
+    const league = (match.league || '').toLowerCase();
+    const isVolLeague = /cup|friendly|tanzania|kenya|uganda|rwanda|egypt|morocco|nigeria|ghana|south africa|zambia|senegal|tunisia|algeria/i.test(league);
+    if (isVolLeague) volScore += 1;
+
+    if (rawDraw > 35 || paaDrawPct > 40) volScore -= 2;
+    const u25Prob = (match.algoReport?.probabilities?.['U2.5'] || 0) * 100;
+    if (u25Prob >= 65) volScore -= 1.5;
+    
+    if (volScore < 0) volScore = 0;
+
+    // Triple consensus lock
+    if (paaPred === algoPred && algoPred === seerPred) {
+        if (matrixUnd < 35 && matrixDraw < 35) {
+            isTripleConsensus = true;
+            pivotPrediction = paaPred;
+            pivotPrimary = favWin;
+            pivotReasoning = `dY - 95% AI LOCK: Triple Consensus (PAA/Algo/Seer agree on ${paaPred}) with low volatility (Und: ${Math.round(matrixUnd)}%, Draw: ${Math.round(matrixDraw)}%).`;
+        }
+    }
+
+    let isVolatile = (matrixUnd >= 28 || matrixDraw >= 28) && (paaPred === favDC || paaPred === favWin);
+    
+    // SMART OVERRIDES: The Volatility Engine directly controls the Pivot Engine
+    if (isVolatile && volScore < 2.5) isVolatile = false;
+    if (!isVolatile && volScore >= 4.5) isVolatile = true;
+
+    if (isVolatile && !isTripleConsensus) {
+        if (matrixUnd >= 42) {
+            pivotPrediction = upsetDC;
+            pivotPrimary = undWin;
+            pivotReasoning = `dY - EXTREME VOLATILITY: Matrix Signal (${Math.round(matrixUnd)}%). Forcing Full Pivot to ${upsetDC} with primary ${undWin}.`;
+        } else if ((volScore >= 5.0 && matrixUnd >= 35) || matrixUnd >= 38) {
+            pivotPrediction = '12';
+            pivotPrimary = undWin;
+            pivotReasoning = `dY - HIGH VOLATILITY (VolScore ${volScore}): Matrix Signal (${Math.round(matrixUnd)}%). Executing Hybrid Pivot (Primary: ${undWin}, Hedge: 12).`;
+        } else if (matrixDraw >= 35) {
+            pivotPrediction = favDC;
+            pivotPrimary = favWin;
+            pivotReasoning = `dY - HIGH VOLATILITY: Matrix Draw (${Math.round(matrixDraw)}%). Executing Partial Pivot (Primary: ${favWin}, Hedge: ${favDC}).`;
+        } else if (matrixUnd >= 28 || volScore >= 4.0) {
+            pivotPrediction = '12';
+            pivotPrimary = favWin;
+            pivotReasoning = `dY - MODERATE VOLATILITY: Executing Partial Pivot (Primary: ${favWin}, Hedge: 12).`;
+        }
+    }
+
+    // --- ALGO(12) vs CONSENSUS(1X/X2) CONFLICT ---
+    const isAlgo12 = algoPred === '12';
+    const isConsensus1X = seerPred === paaPred && (seerPred === favDC || seerPred === upsetDC);
+
+    let pivotSourceName = 'Pivot Engine';
+
+    if (isAlgo12 && isConsensus1X) {
+        pivotSourceName = 'Smart Override Engine';
+        if (volScore >= 4.0 && matrixUnd >= 38) {
+            pivotPrediction = upsetDC;
+            pivotPrimary = undWin;
+            pivotReasoning = `dY - SMART OVERRIDE: Algo(12) vs Consensus(1X/X2) Conflict in EXTREME Risk Zone (VolScore: ${volScore}, MatUnd: ${Math.round(matrixUnd)}%). Full Pivot to ${upsetDC}.`;
+        } else if (matrixDraw >= 33) {
+            pivotPrediction = favDC;
+            pivotPrimary = favWin;
+            pivotReasoning = `dY - SMART OVERRIDE: Algo(12) vs Consensus(1X/X2) Conflict in HIGH Draw Risk Zone (MatDraw: ${Math.round(matrixDraw)}%). Trusting Consensus over Algo.`;
+        } else if (volScore >= 2.5 && matrixUnd >= 32) {
+            pivotPrediction = '12';
+            pivotPrimary = favWin;
+            pivotReasoning = `dY - SMART OVERRIDE: Algo(12) vs Consensus(1X/X2) Conflict in HIGH Risk Zone (VolScore: ${volScore}, MatUnd: ${Math.round(matrixUnd)}%). Partial Pivot hedging with 12.`;
+        } else {
+            pivotPrediction = favDC;
+            pivotPrimary = favWin;
+            pivotReasoning = `dY - SMART OVERRIDE: Algo(12) vs Consensus(1X/X2) Conflict in LOW Risk Zone (VolScore: ${volScore}, MatUnd: ${Math.round(matrixUnd)}%). Trusting the favorite, hedging to ${favDC}.`;
+        }
+    }
+
+    const favDraw = hybridFav + hybridDraw;
+    const favUnd = hybridFav + hybridUnd;
+    const undDraw = hybridUnd + hybridDraw;
+    let bestHitRate = Math.max(favDraw, favUnd, undDraw);
+    
+    let prediction = '';
+    let reasoning = '';
+    let hitRate = 0;
+    let sourceName = 'Tri-Core Hybrid';
+    let finalPrimary = '';
+
+    if (isTripleConsensus) {
+        prediction = pivotPrediction;
+        finalPrimary = pivotPrimary || favWin;
+        reasoning = pivotReasoning;
+        hitRate = 95;
+        sourceName = 'AI Consensus Lock';
+    } else if (pivotPrediction !== '') {
+        prediction = pivotPrediction;
+        finalPrimary = pivotPrimary || favWin;
+        reasoning = pivotReasoning;
+        hitRate = 85; 
+        sourceName = pivotSourceName;
+    } else {
+        hitRate = bestHitRate;
+        if (bestHitRate === favDraw) {
+            prediction = favDC;
+            finalPrimary = favWin;
+            reasoning = `Hybrid ML: Strong Favorite/Draw indicators. Algo Fav (${Math.round(rawFav)}%), Seer Draw (${Math.round(rawDraw)}%). Predicting ${favDC}.`;
+        } else if (bestHitRate === favUnd) {
+            prediction = '12';
+            finalPrimary = hybridFav > hybridUnd ? favWin : undWin;
+            reasoning = `Hybrid ML: High volatility between Favorite and Underdog. Matrix Und (${Math.round(matrixUnd)}%). Predicting 12.`;
+        } else {
+            prediction = upsetDC;
+            finalPrimary = hybridDraw > hybridUnd ? 'X' : undWin;
+            reasoning = `Hybrid ML: Significant Underdog/Draw threat. Matrix Und (${Math.round(matrixUnd)}%), Seer Draw (${Math.round(rawDraw)}%). Predicting ${upsetDC}.`;
+        }
+    }
+
+    // THEORY 4: Extreme Volatility
+    if (algoMax > 0 && paaMax > 0 && algoMax < 40 && paaMax < 40) {
+        prediction = '12';
+        finalPrimary = favWin;
+        reasoning = `dY - EXTREME CHAOS (Theory 4): Algo (${Math.round(algoMax)}%) and PAA (${Math.round(paaMax)}%) are extremely volatile (<40%). Market Favorite collapses. Hedging safely with 12.`;
+        hitRate = 85;
+        sourceName = 'Chaos Theory Engine';
+    } 
+    // THEORY 3: Agreement Mirage
+    else if (paaPrim === favWin && seerPrim === favWin && algoPrim === favWin && subPrim === favWin && maxDraw > 33) {
+        prediction = favDC;
+        finalPrimary = favWin;
+        reasoning = `dY - AGREEMENT MIRAGE (Theory 3): All models predict M.Fav, but Draw threat is high (${Math.round(maxDraw)}%). Underdog is heavily eliminated. Forcing safe hedge to ${favDC}.`;
+        hitRate = 85;
+        sourceName = 'Chaos Theory Engine';
+    }
+
+    return {
+        prediction,
+        reasoning,
+        hitRate,
+        sourceName,
+        isTripleConsensus,
+        primaryPrediction: finalPrimary
+    };
+}
