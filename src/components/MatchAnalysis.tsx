@@ -3355,10 +3355,10 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         ) : activeTab === 'analysis' && !searchQuery.trim() && matchTypeFilter !== 'pending' ? (
           <Analysis matches={savedProcessedHistory} /> 
         ) : viewMode === 'live' ? (
-           liveMatches.length === 0 && displayMatches.length === 0 ? (
+           (!isLoaded || (liveMatches.length === 0 && !isSupabaseSynced)) && displayMatches.length === 0 ? (
              <div className="flex flex-col items-center justify-center p-12 bg-white rounded-xl shadow-sm border border-slate-200 text-slate-500 my-6 animate-pulse">
                <RefreshCw className="w-8 h-8 text-primary animate-spin mb-3" />
-               <p className="font-bold text-slate-700 text-base">Loading Live Analysis...</p>
+               <p className="font-bold text-slate-700 text-base">Matches loading...</p>
                <p className="text-xs text-slate-400 mt-1">Retrieving latest daily and jackpot predictions</p>
              </div>
            ) : (

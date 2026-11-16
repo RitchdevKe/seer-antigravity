@@ -726,10 +726,10 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
         }
 
         // [PROTOCOL: FALSE FAVORITE DETECTION]
+        const parsedL10JK = parseL10(match.l10);
         if (category === 'Banker' && !isNaN(Math.min(o1, o2)) && Math.min(o1, o2) < 2.50) {
             // Team Points Per Game (Last 5) < 1.0 check
             // Using L10 as proxy. Format "H:A".
-            const parsedL10JK = parseL10(match.l10);
             if (parsedL10JK.isValid) {
                 const favPts = moFav === '1' ? parsedL10JK.homeWins : parsedL10JK.awayWins;
                 // Assuming L10 is sum of points in last 5 games. < 5 pts = < 1.0 ppg
@@ -2933,10 +2933,10 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
     }
 
     // [PROTOCOL: FALSE FAVORITE DETECTION]
+    const parsedBankerL10 = parseL10(match.l10);
     if (category === 'Banker' && !isNaN(Math.min(o1, o2)) && Math.min(o1, o2) < 2.50) {
         // Team Points Per Game (Last 5) < 1.0 check
         // Using L10 as proxy. Format "H:A".
-        const parsedBankerL10 = parseL10(match.l10);
         if (parsedBankerL10.isValid) {
             const favPts = moFav === '1' ? parsedBankerL10.homeWins : parsedBankerL10.awayWins;
             // Assuming L10 is sum of points in last 5 games. < 5 pts = < 1.0 ppg
