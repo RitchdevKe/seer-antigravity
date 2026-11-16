@@ -2672,6 +2672,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         }
       });
       if (restoredMap.size > 0) {
+        deepPointsCategoryRef.current = activeCategory;
+        deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
         setDeepPointsMap(restoredMap);
         setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
         setDeepStatus('converged');
@@ -2684,6 +2686,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     if (peakMem?.points && Object.keys(peakMem.points).length > 0) {
       const sanitizedPeak = sanitizeRulePolarity(peakMem.points, activeCategory, { preserveExact: true, day: targetDay });
       const restoredMap = new Map(Object.entries(sanitizedPeak));
+      deepPointsCategoryRef.current = activeCategory;
+      deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
       setDeepPointsMap(restoredMap);
       setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
       setDeepStatus('converged');

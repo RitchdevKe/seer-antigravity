@@ -2446,137 +2446,143 @@ async function startServer() {
   });
 
   // OPW P-Recom: Save Calibrated Rules directly to persistent JSON & RDS PostgreSQL
+  let opwSaveToCodeQueue: Promise<void> = Promise.resolve();
   app.post("/api/opw/save-to-code", async (req, res) => {
-    try {
-      const { day = 'saturday', days, categories = {}, customTriggers } = req.body;
-      if (!categories || typeof categories !== 'object') {
-        return res.status(400).json({ error: "Missing required field: categories object." });
-      }
-
-      const validDays = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
-      const targetDay = String(day || 'saturday').toLowerCase();
-      const targetDaysList: string[] = Array.isArray(days) && days.length > 0
-        ? Array.from(new Set(days.map((d: any) => String(d || '').toLowerCase()).filter((d: string) => validDays.has(d))))
-        : (validDays.has(targetDay) ? [targetDay] : ['saturday']);
-      if (validDays.has(targetDay) && !targetDaysList.includes(targetDay)) {
-        targetDaysList.unshift(targetDay);
-      }
-
-      // Normalize category aliases so saving top_12_value also replaces top_10_value, upsets replaces upset, etc.
-      const expandedCategories: Record<string, any> = {};
-      for (const [catId, catPayload] of Object.entries<any>(categories)) {
-        if (!catPayload || !Array.isArray(catPayload.rules)) continue;
-        expandedCategories[catId] = catPayload;
-        if (catId === 'top_12_value' || catId === 'top_10_value') {
-          expandedCategories['top_12_value'] = catPayload;
-          expandedCategories['top_10_value'] = catPayload;
-        } else if (catId === 'upsets' || catId === 'upset' || catId === 'underdog_upsets') {
-          expandedCategories['upsets'] = catPayload;
-          expandedCategories['upset'] = catPayload;
-          expandedCategories['underdog_upsets'] = catPayload;
-        } else if (catId === 'bankers_dlive' || catId === 'banker') {
-          expandedCategories['bankers_dlive'] = catPayload;
-          expandedCategories['banker'] = catPayload;
-        } else if (catId === 'value_bets' || catId === 'value_bet') {
-          expandedCategories['value_bets'] = catPayload;
-          expandedCategories['value_bet'] = catPayload;
-        }
-      }
-
-      console.log(`[OPW SAVE-TO-CODE] Saving ${Object.keys(expandedCategories).length} category keys across days [${targetDaysList.join(', ')}].`);
-
-      // 1. Load existing rules from disk AND RDS so other categories on the same day are never deleted
-      const dataDir = path.join(process.cwd(), "data");
-      if (!fsSync.existsSync(dataDir)) {
-        await fs.mkdir(dataDir, { recursive: true });
-      }
-      const rulesFilePath = path.join(dataDir, "opw_rules.json");
-      let allRulesData: { rules: Record<string, any> } = { rules: {} };
-      if (fsSync.existsSync(rulesFilePath)) {
-        try {
-          const raw = await fs.readFile(rulesFilePath, "utf-8");
-          allRulesData = JSON.parse(raw) || { rules: {} };
-          if (!allRulesData.rules) allRulesData.rules = {};
-        } catch (e) {}
-      }
-
+    const runSaveTask = async () => {
       try {
-        const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules WHERE day = ANY($1)", [targetDaysList]);
-        for (const row of dbRes.rows || []) {
-          const d = String(row.day || '').toLowerCase();
-          if (!d || !row.categories || typeof row.categories !== 'object') continue;
-          // Pre-populate allRulesData with existing DB categories for categories NOT being saved now.
-          // expandedCategories (the incoming save payload) always takes absolute precedence.
-          const existingDiskCats = allRulesData.rules[d]?.categories || {};
-          const mergedBase: Record<string, any> = {};
-          // Start with DB categories as base
-          for (const [k, v] of Object.entries(row.categories)) {
-            mergedBase[k] = v;
+        const { day = 'saturday', days, categories = {}, customTriggers } = req.body;
+        if (!categories || typeof categories !== 'object') {
+          return res.status(400).json({ error: "Missing required field: categories object." });
+        }
+
+        const validDays = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
+        const targetDay = String(day || 'saturday').toLowerCase();
+        const targetDaysList: string[] = Array.isArray(days) && days.length > 0
+          ? Array.from(new Set(days.map((d: any) => String(d || '').toLowerCase()).filter((d: string) => validDays.has(d))))
+          : (validDays.has(targetDay) ? [targetDay] : ['saturday']);
+        if (validDays.has(targetDay) && !targetDaysList.includes(targetDay)) {
+          targetDaysList.unshift(targetDay);
+        }
+
+        // Normalize category aliases so saving top_12_value also replaces top_10_value, upsets replaces upset, etc.
+        const expandedCategories: Record<string, any> = {};
+        for (const [catId, catPayload] of Object.entries<any>(categories)) {
+          if (!catPayload || !Array.isArray(catPayload.rules)) continue;
+          expandedCategories[catId] = catPayload;
+          if (catId === 'top_12_value' || catId === 'top_10_value') {
+            expandedCategories['top_12_value'] = catPayload;
+            expandedCategories['top_10_value'] = catPayload;
+          } else if (catId === 'upsets' || catId === 'upset' || catId === 'underdog_upsets') {
+            expandedCategories['upsets'] = catPayload;
+            expandedCategories['upset'] = catPayload;
+            expandedCategories['underdog_upsets'] = catPayload;
+          } else if (catId === 'bankers_dlive' || catId === 'banker') {
+            expandedCategories['bankers_dlive'] = catPayload;
+            expandedCategories['banker'] = catPayload;
+          } else if (catId === 'value_bets' || catId === 'value_bet') {
+            expandedCategories['value_bets'] = catPayload;
+            expandedCategories['value_bet'] = catPayload;
           }
-          // Overlay disk categories for any key not in DB
-          for (const [k, v] of Object.entries(existingDiskCats)) {
-            if (!mergedBase[k]) mergedBase[k] = v;
+        }
+
+        console.log(`[OPW SAVE-TO-CODE] Saving ${Object.keys(expandedCategories).length} category keys across days [${targetDaysList.join(', ')}].`);
+
+        // 1. Load existing rules from disk AND RDS so other categories on the same day are never deleted
+        const dataDir = path.join(process.cwd(), "data");
+        if (!fsSync.existsSync(dataDir)) {
+          await fs.mkdir(dataDir, { recursive: true });
+        }
+        const rulesFilePath = path.join(dataDir, "opw_rules.json");
+        let allRulesData: { rules: Record<string, any> } = { rules: {} };
+        if (fsSync.existsSync(rulesFilePath)) {
+          try {
+            const raw = await fs.readFile(rulesFilePath, "utf-8");
+            allRulesData = JSON.parse(raw) || { rules: {} };
+            if (!allRulesData.rules) allRulesData.rules = {};
+          } catch (e) {}
+        }
+
+        try {
+          const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules WHERE day = ANY($1)", [targetDaysList]);
+          for (const row of dbRes.rows || []) {
+            const d = String(row.day || '').toLowerCase();
+            if (!d || !row.categories || typeof row.categories !== 'object') continue;
+            // Pre-populate allRulesData with existing DB categories for categories NOT being saved now.
+            // expandedCategories (the incoming save payload) always takes absolute precedence.
+            const existingDiskCats = allRulesData.rules[d]?.categories || {};
+            const mergedBase: Record<string, any> = {};
+            // Start with DB categories as base
+            for (const [k, v] of Object.entries(row.categories)) {
+              mergedBase[k] = v;
+            }
+            // Overlay disk categories for any key not in DB
+            for (const [k, v] of Object.entries(existingDiskCats)) {
+              if (!mergedBase[k]) mergedBase[k] = v;
+            }
+            allRulesData.rules[d] = {
+              savedAt: allRulesData.rules[d]?.savedAt || new Date().toISOString(),
+              categories: mergedBase
+            };
           }
+        } catch (dbReadErr: any) {
+          console.warn("[OPW SAVE-TO-CODE] RDS pre-merge read notice:", dbReadErr.message);
+        }
+
+        const nowIso = new Date().toISOString();
+        for (const d of targetDaysList) {
+          const prevCategories = (allRulesData.rules[d] && typeof allRulesData.rules[d].categories === 'object')
+            ? allRulesData.rules[d].categories
+            : {};
+          // Merge category-level map while completely replacing the rules array inside each saved category
+          const nextCategories = {
+            ...prevCategories,
+            ...expandedCategories
+          };
           allRulesData.rules[d] = {
-            savedAt: allRulesData.rules[d]?.savedAt || new Date().toISOString(),
-            categories: mergedBase
+            savedAt: nowIso,
+            categories: nextCategories
           };
         }
-      } catch (dbReadErr: any) {
-        console.warn("[OPW SAVE-TO-CODE] RDS pre-merge read notice:", dbReadErr.message);
-      }
 
-      const nowIso = new Date().toISOString();
-      for (const d of targetDaysList) {
-        const prevCategories = (allRulesData.rules[d] && typeof allRulesData.rules[d].categories === 'object')
-          ? allRulesData.rules[d].categories
-          : {};
-        // Merge category-level map while completely replacing the rules array inside each saved category
-        const nextCategories = {
-          ...prevCategories,
-          ...expandedCategories
-        };
-        allRulesData.rules[d] = {
-          savedAt: nowIso,
-          categories: nextCategories
-        };
-      }
+        await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8");
+        console.log(`[OPW SAVE-TO-CODE] Persisted merged JSON rules to ${rulesFilePath} for [${targetDaysList.join(', ')}]`);
 
-      await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8");
-      console.log(`[OPW SAVE-TO-CODE] Persisted merged JSON rules to ${rulesFilePath} for [${targetDaysList.join(', ')}]`);
-
-      // 2. Persist to RDS PostgreSQL opw_calibrated_rules table so rules survive server restarts & deployments
-      for (const d of targetDaysList) {
-        try {
-          await pgPool.query(
-            `INSERT INTO opw_calibrated_rules (day, categories, saved_at)
-             VALUES ($1, $2::jsonb, $3)
-             ON CONFLICT (day) DO UPDATE
-             SET categories = EXCLUDED.categories,
-                 saved_at = EXCLUDED.saved_at`,
-            [d, JSON.stringify(allRulesData.rules[d].categories), nowIso]
-          );
-        } catch (dbWriteErr: any) {
-          console.warn(`[OPW SAVE-TO-CODE] RDS write notice for ${d}:`, dbWriteErr.message);
+        // 2. Persist to RDS PostgreSQL opw_calibrated_rules table so rules survive server restarts & deployments
+        for (const d of targetDaysList) {
+          try {
+            await pgPool.query(
+              `INSERT INTO opw_calibrated_rules (day, categories, saved_at)
+               VALUES ($1, $2::jsonb, $3)
+               ON CONFLICT (day) DO UPDATE
+               SET categories = EXCLUDED.categories,
+                   saved_at = EXCLUDED.saved_at`,
+              [d, JSON.stringify(allRulesData.rules[d].categories), nowIso]
+            );
+          } catch (dbWriteErr: any) {
+            console.warn(`[OPW SAVE-TO-CODE] RDS write notice for ${d}:`, dbWriteErr.message);
+          }
         }
-      }
 
-      if (Array.isArray(customTriggers) && customTriggers.length > 0) {
-        const triggersFilePath = path.join(dataDir, "approved_custom_triggers.json");
-        await fs.writeFile(triggersFilePath, JSON.stringify({ triggers: customTriggers }, null, 2), "utf-8");
-        console.log(`[OPW SAVE-TO-CODE] Also persisted ${customTriggers.length} approved custom triggers to ${triggersFilePath}`);
-      }
+        if (Array.isArray(customTriggers) && customTriggers.length > 0) {
+          const triggersFilePath = path.join(dataDir, "approved_custom_triggers.json");
+          await fs.writeFile(triggersFilePath, JSON.stringify({ triggers: customTriggers }, null, 2), "utf-8");
+          console.log(`[OPW SAVE-TO-CODE] Also persisted ${customTriggers.length} approved custom triggers to ${triggersFilePath}`);
+        }
 
-      return res.json({
-        success: true,
-        days: targetDaysList,
-        savedAt: nowIso,
-        message: `Calibrated rules permanently saved for ${targetDaysList.map(d => d.toUpperCase()).join(', ')}!`
-      });
-    } catch (err: any) {
-      console.error("[OPW SAVE-TO-CODE] Error saving calibrated rules:", err);
-      res.status(500).json({ error: `Failed to save calibrated rules to code: ${err.message}` });
-    }
+        return res.json({
+          success: true,
+          days: targetDaysList,
+          savedAt: nowIso,
+          message: `Calibrated rules permanently saved for ${targetDaysList.map(d => d.toUpperCase()).join(', ')}!`
+        });
+      } catch (err: any) {
+        console.error("[OPW SAVE-TO-CODE] Error saving calibrated rules:", err);
+        res.status(500).json({ error: `Failed to save calibrated rules to code: ${err.message}` });
+      }
+    };
+    const nextRun = opwSaveToCodeQueue.then(runSaveTask, runSaveTask);
+    opwSaveToCodeQueue = nextRun.then(() => undefined, () => undefined);
+    await nextRun;
   });
 
   // Vite middleware for development
