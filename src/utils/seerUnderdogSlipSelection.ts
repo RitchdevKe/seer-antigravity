@@ -4,7 +4,7 @@ import { getMatchEvaluatorTags, getMatchPriorityScore, getMatchStats } from './m
 import { Pick } from '../components/ai/GeminiCards';
 import { getSeerWeights } from '../services/storage';
 import { getMatchSupremeTier, calculateSupremeRules, getMatchSupremeTierUnderdog } from './seerSupremeTier';
-import { getOptimizedScore, applyHedgingProtocol } from './optimizedweights';
+import { getOptimizedScore, applyHedgingProtocol, getMatchDayOfWeek } from './optimizedweights';
 import { isBannedFromSeerSlips } from './leagueFilters';
 
 const getSeerScoreForPrediction = (m: Match, pred: string, weights: CategoryWeights, phaStatsMap: Record<string, any>, matchStars: Record<string, number>) => {
@@ -39,6 +39,7 @@ export const generateSeerUnderdogSlips = (
 
     const live: any = {
         best_bet: [],
+        top_12_value: [],
         top_10_value: [],
         high_confidence: [],
         botb_best: []
@@ -57,7 +58,7 @@ export const generateSeerUnderdogSlips = (
             mappedParent = 'banker';
         } else if (cat === 'upsets' || cat === 'value_bets') {
             mappedParent = 'upset';
-        } else if (cat === 'top_10_value') {
+        } else if (cat === 'top_12_value' || cat === 'top_10_value') {
             mappedParent = 'jackpot';
         }
 
@@ -260,7 +261,7 @@ export const generateSeerUnderdogSlips = (
         const weights = getWeights(cat);
         let seerPred = predictWithSeer(m, weights, phaStatsMap, matchStars, cat);
         let primaryPred = predictSeerDetailed(m, weights, phaStatsMap, matchStars, cat).primary;
-        let score = (cat === 'upsets' || cat === 'top_10_value') ? getOptimizedScore(m, cat, phaStatsMap) : getSeerScoreForPrediction(m, seerPred, weights, phaStatsMap, matchStars);
+        let score = (cat === 'upsets' || cat === 'top_12_value' || cat === 'top_10_value') ? getOptimizedScore(m, cat, phaStatsMap, getMatchDayOfWeek(m)) : getSeerScoreForPrediction(m, seerPred, weights, phaStatsMap, matchStars);
         let reason = `Seer (${score.toFixed(1)}): ${reasonDetails}`;
         const tags = matchTagsMap.get(m.id.toString()) || [];
 
@@ -385,9 +386,9 @@ export const generateSeerUnderdogSlips = (
           } },
         
         { id: 'bankers_dlive', tag: 'bankers_dlive', size: 10, hedgedSize: 0,
-          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.5 && o.favOdds <= 2.0; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds > 1.5 && o.favOdds <= 1.8; } },
         
-        { id: 'top_10_value', tag: 'top10', size: 12, hedgedSize: 12, 
+        { id: 'top_12_value', tag: 'top12', size: 12, hedgedSize: 12, 
           filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 2.0 && o.favOdds <= 2.49; } },
         
         { id: 'botb_best', tag: 'botb_best', size: 10, hedgedSize: 5,
@@ -403,10 +404,10 @@ export const generateSeerUnderdogSlips = (
           } },
 
         { id: 'bankers_jackpot', tag: 'bankers_jackpot', size: 5, hedgedSize: 0,
-          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.8 && o.favOdds <= 2.0; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds > 1.8 && o.favOdds <= 2.0; } },
         
         { id: 'value_bets', tag: 'value_bets', size: 5, hedgedSize: 5,
-          filter: (m: Match) => { const o = getOdds(m); return o.o1 >= 2.5 && o.o2 >= 2.5; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.o1 >= 2.5 && o.o2 >= 2.5 && o.o1 < 90 && o.o2 < 90; } },
         
         { id: 'value_picks', tag: 'value_picks', size: 5, hedgedSize: 0,
           filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 2.0 && o.favOdds <= 2.49; } },
@@ -419,7 +420,7 @@ export const generateSeerUnderdogSlips = (
     ];
 
     const processedCategories = isJackpot 
-        ? categories.filter(c => !['best_bet', 'top_10_value', 'botb_best', 'high_confidence'].includes(c.id))
+        ? categories.filter(c => !['best_bet', 'top_12_value', 'top_10_value', 'botb_best', 'high_confidence'].includes(c.id))
         : categories;
 
     processedCategories.forEach(catDef => {
@@ -442,7 +443,7 @@ export const generateSeerUnderdogSlips = (
                     isValid = hasPrimaryTag || upsetPct >= 25;
                 }
             } else if (!isValid && catDef.id === 'botb_best') {
-                 const fallbackTags = ['top10', 'top20', 'bankers_dlive', 'value_picks'];
+                 const fallbackTags = ['top12', 'top10', 'top20', 'bankers_dlive', 'value_picks'];
                  isValid = tags.some(t => fallbackTags.some(ft => t.startsWith(ft + ':')));
             }
             
@@ -454,11 +455,11 @@ export const generateSeerUnderdogSlips = (
             }
 
             return true;
-        }).filter(m => !isIntelligenceActive || catDef.filter(m));
+        }).filter(m => catDef.filter(m));
 
         // Sorting by score with primary tag boost
         qualifyingMatches.sort((a, b) => {
-            const isUpsetCategory = catDef.id === 'upsets' || catDef.id === 'top_10_value';
+            const isUpsetCategory = catDef.id === 'upsets' || catDef.id === 'top_12_value' || catDef.id === 'top_10_value';
             if (isUpsetCategory) {
                 let pointsSupportsUnderdogA = false;
                 if (a.totalPoints) {
@@ -488,8 +489,8 @@ export const generateSeerUnderdogSlips = (
             const seerPredA = predictWithSeer(a, weights, phaStatsMap, matchStars, catDef.id);
             const seerPredB = predictWithSeer(b, weights, phaStatsMap, matchStars, catDef.id);
             
-            let scoreA = (isUpsetCategory ? getOptimizedScore(a, catDef.id, phaStatsMap) : getSeerScoreForPrediction(a, seerPredA, weights, phaStatsMap, matchStars)) + getMatchPriorityScore(a, tagPrefix, matchStars);
-            let scoreB = (isUpsetCategory ? getOptimizedScore(b, catDef.id, phaStatsMap) : getSeerScoreForPrediction(b, seerPredB, weights, phaStatsMap, matchStars)) + getMatchPriorityScore(b, tagPrefix, matchStars);
+            let scoreA = (isUpsetCategory ? getOptimizedScore(a, catDef.id, phaStatsMap, getMatchDayOfWeek(a)) : getSeerScoreForPrediction(a, seerPredA, weights, phaStatsMap, matchStars)) + getMatchPriorityScore(a, tagPrefix, matchStars);
+            let scoreB = (isUpsetCategory ? getOptimizedScore(b, catDef.id, phaStatsMap, getMatchDayOfWeek(b)) : getSeerScoreForPrediction(b, seerPredB, weights, phaStatsMap, matchStars)) + getMatchPriorityScore(b, tagPrefix, matchStars);
             
             // Add global agreement boosts
             scoreA += getAgreementBoost(a, catDef.id);
@@ -644,6 +645,10 @@ export const generateSeerUnderdogSlips = (
             if (live[catDef.id] !== undefined) {
                 live[catDef.id] = selectedPicks;
                 live[`${catDef.id}_backups`] = backups;
+                if (catDef.id === 'top_12_value') {
+                    live['top_10_value'] = selectedPicks;
+                    live['top_10_value_backups'] = backups;
+                }
             } else {
                 spec[catDef.id] = selectedPicks;
                 spec[`${catDef.id}_backups`] = backups;

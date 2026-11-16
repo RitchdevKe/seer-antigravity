@@ -5,13 +5,27 @@ import { getStableMatchId } from './matchId';
 function parseFormToWins(formStr: string): string {
     if (!formStr || formStr === 'NA') return formStr;
     const str = formStr.trim();
+    // Already in LDW:WDL format
+    if (/^\d+;\d+;\d+\s*:\s*\d+;\d+;\d+$/.test(str)) return str;
+    // Legacy win counts
     if (/^\d+\s*:\s*\d+$/.test(str)) return str;
     
     const parts = str.split(':');
     if (parts.length === 2) {
-        const homeWins = (parts[0].match(/W/gi) || []).length;
-        const awayWins = (parts[1].match(/W/gi) || []).length;
-        return `${homeWins}:${awayWins}`;
+        // If raw form tokens (W, D, L) are present
+        const hWins = (parts[0].match(/W/gi) || []).length;
+        const hDraws = (parts[0].match(/D/gi) || []).length;
+        const hLosses = (parts[0].match(/L/gi) || []).length;
+
+        const aWins = (parts[1].match(/W/gi) || []).length;
+        const aDraws = (parts[1].match(/D/gi) || []).length;
+        const aLosses = (parts[1].match(/L/gi) || []).length;
+
+        if (hDraws > 0 || hLosses > 0 || aDraws > 0 || aLosses > 0) {
+            // New LDW:WDL format
+            return `${hLosses};${hDraws};${hWins}:${aWins};${aDraws};${aLosses}`;
+        }
+        return `${hWins}:${aWins}`;
     }
     return str;
 }

@@ -13,6 +13,10 @@ export default defineConfig(({ mode }) => {
           ignored: ['**/data/**', '**/scratch/**', '**/nerdy_cookies.json', '**/*.json', '**/.*/**', '**/node_modules/**'],
         }
       },
+      preview: {
+        port: 3000,
+        host: '0.0.0.0',
+      },
       plugins: [react(), tailwindcss()],
       resolve: {
         alias: {

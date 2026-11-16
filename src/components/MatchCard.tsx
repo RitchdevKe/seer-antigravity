@@ -1,13 +1,15 @@
 
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Calculator, Activity, Lightbulb, Target, CheckCircle, XCircle, Star, Cpu, ArrowRight, Eye, Database } from 'lucide-react';
+import { ChevronDown, ChevronUp, Calculator, Activity, Lightbulb, Target, CheckCircle, XCircle, Star, Cpu, ArrowRight, Eye, Database, Globe, Zap } from 'lucide-react';
 import { Match } from '../types';
-import { getActualResult, matchesPrediction, isClose, formatProbabilities, formatScore, calculatePAAPrediction, enforceAlgoPredictionRules, calculateTotalPoints } from '../utils/matchProcessing';
+import { getActualResult, matchesPrediction, isClose, formatProbabilities, formatScore, calculatePAAPrediction, enforceAlgoPredictionRules, calculateTotalPoints, sanitizeMatchOdds } from '../utils/matchProcessing';
 import { LEGACY_DESCRIPTIONS } from './Patterns';
 import { getMatchMaxStars } from '../utils/matchStars';
 import { predictWithSeer, predictSeerDetailed, DEFAULT_WEIGHTS, SeerDetailedResult } from '../utils/seerLogic';
 import { getMatchEvaluatorTags } from '../utils/matchEvaluator';
-import { getOptimizedScore, getOptimizedScoreDetailed, getMatchDayOfWeek } from '../utils/optimizedweights';
+import { getOptimizedScore, getOptimizedScoreDetailed, getMatchDayOfWeek, clearOptimizedScoreCache } from '../utils/optimizedweights';
+import { getMatchCountryAndLeague } from '../utils/opwCommon';
+import { L10Display } from '../utils/l10Utils';
 import MLDataModal from './MLDataModal';
 import OptimizedWeightsModal from './OptimizedWeightsModal';
 
@@ -34,24 +36,47 @@ interface MatchCardProps {
 const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpandedMatch, phaStats, phaStatsMap, onDelete, matchStars = {}, owCategory = 'top_12_value' }) => {
   const isPending = getActualResult(match.result) === 'pending';
   const actual = getActualResult(match.result);
+  const countryLeagueInfo = getMatchCountryAndLeague(match);
   const [isMLModalOpen, setIsMLModalOpen] = useState(false);
   const [isOWModalOpen, setIsOWModalOpen] = useState(false);
   const [activeOWCategory, setActiveOWCategory] = useState<string | null>(null);
-  const [, setWeightTrigger] = useState(0);
+  const [weightTrigger, setWeightTrigger] = useState(0);
 
   React.useEffect(() => {
-    const onWeightsUpdate = () => setWeightTrigger(v => v + 1);
+    const onWeightsUpdate = () => {
+      clearOptimizedScoreCache();
+      setWeightTrigger(v => v + 1);
+    };
     window.addEventListener('optimizedWeightsUpdated', onWeightsUpdate);
-    return () => window.removeEventListener('optimizedWeightsUpdated', onWeightsUpdate);
+    window.addEventListener('opw-weights-updated', onWeightsUpdate);
+    window.addEventListener('seerLockedSlipsUpdated', onWeightsUpdate);
+    return () => {
+      window.removeEventListener('optimizedWeightsUpdated', onWeightsUpdate);
+      window.removeEventListener('opw-weights-updated', onWeightsUpdate);
+      window.removeEventListener('seerLockedSlipsUpdated', onWeightsUpdate);
+    };
   }, []);
 
   // Display match ID
   const displayMatchId = match.id || '-';
 
-  // Dynamically compute/retrieve evaluator tags to guarantee they are displayed and up-to-date
-  const computedTags = match.evaluatorTags && match.evaluatorTags.length > 0
-    ? match.evaluatorTags
-    : getMatchEvaluatorTags(match, phaStatsMap || {}, match.isJackpot || false, true, matchStars);
+  // Dynamically compute and merge evaluator tags to guarantee all qualifying categories fire up and display
+  const computedTags = React.useMemo(() => {
+    const dynamicTags = getMatchEvaluatorTags(match, phaStatsMap || {}, match.isJackpot || false, true, matchStars);
+    if (!match.evaluatorTags || match.evaluatorTags.length === 0) {
+      return dynamicTags;
+    }
+    // dynamicTags are primary and up-to-date; merge only non-category persistent meta tags (BANNED, TAG, VOLATILE, PHA_TIE)
+    const combined = [...dynamicTags];
+    const categoryPrefixes = new Set(['best_bet', 'top12', 'top10', 'bankers_dlive', 'botb_best', 'top20', 'bankers_jackpot', 'value_bets', 'value_picks', 'banker_draws', 'upsets']);
+    for (const tag of match.evaluatorTags) {
+      const catPrefix = tag.split(':')[0];
+      if (!categoryPrefixes.has(catPrefix) && !combined.some(t => t.startsWith(`${catPrefix}:`))) {
+        combined.push(tag);
+      }
+    }
+    return combined;
+  }, [match, phaStatsMap, matchStars]);
 
   const isTop12Tag = computedTags && computedTags.some(tag => tag.startsWith('top12:') || tag.startsWith('top10:'));
   const isBestBetTag = computedTags && computedTags.some(tag => tag.startsWith('best_bet:'));
@@ -73,18 +98,19 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
   const categoryScores = React.useMemo(() => {
     if (!phaStatsMap || optCategories.length === 0) return {};
     const matchDay = getMatchDayOfWeek(match);
-    const result: Record<string, { totalScore: number; rulesCount: number }> = {};
+    const result: Record<string, { totalScore: number; rulesCount: number; rulesHit: { description: string; points: number }[] }> = {};
     for (const cat of optCategories) {
       const detailed = getOptimizedScoreDetailed(match, cat.id, phaStatsMap, matchDay);
       if (detailed) {
         result[cat.id] = {
           totalScore: detailed.totalScore,
-          rulesCount: detailed.rulesHit.length
+          rulesCount: detailed.rulesHit.length,
+          rulesHit: detailed.rulesHit
         };
       }
     }
     return result;
-  }, [match, optCategories, phaStatsMap]);
+  }, [match, optCategories, phaStatsMap, weightTrigger]);
 
   // Dynamic PAA Prediction Lookups and Fallback Calculations
   let paaPrim = match.paaPrimaryPrediction;
@@ -347,7 +373,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
         <div className="flex flex-col gap-1"> 
           
           {/* Header Row: Structured with 3 Sections */}
-          <div className="flex flex-wrap items-start justify-between gap-y-2 gap-x-1 mb-1">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-start justify-between gap-y-2 gap-x-1 mb-1">
              
              {/* 1. Left Side: Match Meta & Pattern */}
              <div className="flex flex-wrap items-center gap-1.5 leading-none pt-0.5">
@@ -359,7 +385,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                      <button 
                         onClick={(e) => {
                             e.stopPropagation();
-                            onDelete(Number(match.id));
+                            onDelete(match.id);
                         }}
                         className="text-gray-400 hover:text-red-500 transition-colors p-0.5"
                         title="Delete Match"
@@ -370,8 +396,8 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                  <span className="bg-primary text-primary-foreground px-1.5 py-0.5 rounded text-[10px] font-bold">G{match.group}</span>
                  <span className="bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-bold">{match.pointsRange || (Math.max(pts.home, pts.draw, pts.away) > 0 ? `${Math.round(Math.max(pts.home, pts.draw, pts.away))}` : '-')} pts</span>
                  <span className="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-bold border border-amber-200" title="Team Strength (Home:Away)">TS {match.tsa?.toFixed(2)}:{match.tsb?.toFixed(2)}</span>
-                 <div className="flex flex-col gap-0.5 items-center">
-                     <span className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold font-mono" title="Market Odds">MO {match.mo}</span>
+                 <div className="flex flex-wrap gap-1 items-center">
+                     <span className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold font-mono" title="Market Odds">MO {sanitizeMatchOdds(match.mo)}</span>
                      {optCategories.map(cat => {
                          const scoreData = categoryScores[cat.id];
                          if (!scoreData) return null;
@@ -379,7 +405,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                              <button 
                                  key={cat.id}
                                  onClick={(e) => { e.stopPropagation(); setActiveOWCategory(cat ? cat.id : owCategory); setIsOWModalOpen(true); }}
-                                 className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center justify-center gap-1 shadow-sm font-black whitespace-nowrap w-full cursor-pointer mt-0.5" 
+                                 className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center justify-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
                                  title={`${cat.label}: ${scoreData.rulesCount} rules applied. Click to view breakdown.`}
                              >
                                  <Star size={10} className="text-amber-500 fill-current flex-shrink-0" />
@@ -401,17 +427,21 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
              </div>
 
              {/* 2. Center: ML PRED block */}
-             <div className="flex items-start gap-2 flex-1 mx-2 min-w-[240px]">
+             <div className="flex items-start gap-2 w-full sm:flex-1 sm:mx-2 sm:min-w-[240px]">
                  {match.mlInfo?.mlApplied && (
                      <div className="flex flex-col bg-emerald-50 border border-emerald-200 rounded p-1.5 shadow-sm w-full">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                              <span className="font-bold text-emerald-700 text-[10px] bg-emerald-100 px-1 rounded">ML PRED</span>
                              <span className="font-bold text-emerald-900 text-xs">{mlPrim}</span>
                              {!isPending && (matchesPrediction(mlPrim, actual) ? <span className="text-[10px] ml-0.5">✅</span> : <span className="text-[10px] ml-0.5">❌</span>)}
                              <div className="w-px h-3 bg-emerald-300 mx-0.5"></div>
                              <span className="font-bold text-emerald-700 text-[10px]">FIN</span>
                              <span className="font-bold text-emerald-900 text-xs">{mlFinal}</span>
-                             <span className="text-[9px] font-bold text-emerald-600 bg-emerald-100 px-1 rounded ml-1">{match.mlInfo.mlConfidence}%</span>
+                             <span className={`text-[9px] font-bold px-1 rounded ml-1 ${
+                                  (match.mlInfo.mlConfidence || 0) >= 88 ? 'text-amber-800 bg-amber-100 border border-amber-300' :
+                                  (match.mlInfo.mlConfidence || 0) >= 80 ? 'text-emerald-700 bg-emerald-100' :
+                                  'text-blue-700 bg-blue-100'
+                              }`}>{match.mlInfo.mlConfidence}%</span>
                              {!isPending && (matchesPrediction(mlFinal, actual) ? <span className="text-[10px] ml-0.5">✅</span> : <span className="text-[10px] ml-0.5">❌</span>)}
                              <button 
                                  onClick={(e) => { e.stopPropagation(); setIsMLModalOpen(true); }}
@@ -420,13 +450,13 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                                  <Database size={10} /> ML Data
                              </button>
                         </div>
-                        <div className="flex items-center justify-between text-[9px] font-bold">
+                        <div className="flex items-center justify-between text-[9px] font-bold flex-wrap gap-1">
                              <div className="flex gap-2 text-emerald-800">
-                                 <span>M.Fav {match.mlInfo.mlPercentages?.fav ?? 0}%</span>
-                                 <span>Draw {match.mlInfo.mlPercentages?.draw ?? 0}%</span>
-                                 <span>Und {match.mlInfo.mlPercentages?.underdog ?? 0}%</span>
+                                 <span>M.Fav {match.mlInfo.mlPercentages?.fav ?? Math.round(match.paaWin || 45)}%</span>
+                                 <span>Draw {Math.max(12, (match.mlInfo.mlPercentages?.draw && match.mlInfo.mlPercentages.draw > 0) ? match.mlInfo.mlPercentages.draw : Math.round(match.paaDraw || 25))}%</span>
+                                 <span>Und {match.mlInfo.mlPercentages?.underdog ?? Math.round(match.paaUpset || 30)}%</span>
                              </div>
-                             <span className="text-emerald-600 italic border-l border-emerald-200 pl-2 ml-2 truncate" title={match.mlInfo.mlReasoning}>
+                             <span className="text-emerald-600 italic border-l border-emerald-200 pl-2 ml-2 truncate max-w-[200px]" title={match.mlInfo.mlReasoning}>
                                  {match.mlInfo.mlPredictionSource || 'Matrix'}
                              </span>
                         </div>
@@ -435,16 +465,16 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
              </div>
 
              {/* 3. Right Side: 1x2 + PHA */}
-             <div className="flex items-start gap-2 ml-auto">
-                  <div className="flex flex-col items-end gap-0.5">
+             <div className="flex items-center sm:items-start justify-between sm:justify-end gap-2 w-full sm:w-auto sm:ml-auto pt-1 sm:pt-0 border-t sm:border-t-0 border-gray-100">
+                  <div className="flex items-center sm:flex-col sm:items-end gap-1.5 sm:gap-0.5 flex-wrap">
                       <span className="bg-white border border-gray-300 text-gray-700 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm" title="Source 1X2">
                          1x2: {match.pred1x2 || '-'}
                       </span>
                       <span className="bg-amber-50 border border-amber-200 text-amber-800 px-1.5 py-0.5 rounded text-[9px] font-bold shadow-sm font-mono whitespace-nowrap" title="1X2 Rating">
                          R: {(match.rating && match.rating !== "Unknown" && match.rating !== "-") ? match.rating : '-'}
                       </span>
-                      <span className="bg-gray-50 border border-gray-200 text-gray-700 px-1.5 py-0.5 rounded text-[9px] font-bold shadow-sm font-mono whitespace-nowrap" title="Last 10 Matches (L10)">
-                         L10: {match.l10 || '-'}
+                      <span className="bg-gray-50 border border-gray-200 text-gray-700 px-1.5 py-0.5 rounded text-[9px] font-bold shadow-sm font-mono whitespace-nowrap inline-flex items-baseline" title="Last 10 Matches (LDW:WDL)">
+                         <L10Display l10={match.l10} showPrefix={true} />
                       </span>
                   </div>
                  {hasPHA && (
@@ -469,32 +499,42 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
              </div>
           </div>
             
-          {/* Teams Row */}
-          <div className="flex flex-wrap items-center gap-2 mb-1">
-            <h3 className="font-bold text-gray-900 text-sm md:text-base leading-tight">{match.teams}</h3>
-            <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isPending ? (hasAlgoReport ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-600') : finalCorrect ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-              {formatScore(match.result)}
-            </span>
+          {/* Teams Row & Country/League */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 mb-1">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <h3 className="font-bold text-gray-900 text-sm md:text-base leading-tight truncate">{match.teams}</h3>
+              <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${isPending ? (hasAlgoReport ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-600') : finalCorrect ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                {formatScore(match.result)}
+              </span>
+            </div>
+            {countryLeagueInfo.display && (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-100/95 border border-slate-200 text-[10px] sm:text-[11px] font-bold text-slate-800 shadow-2xs self-start sm:self-auto shrink-0 sm:ml-auto" title={countryLeagueInfo.display}>
+                <Globe size={11} className="text-indigo-600 shrink-0" />
+                <span className="truncate max-w-[260px] sm:max-w-none">{countryLeagueInfo.display}</span>
+              </div>
+            )}
           </div>
 
           {/* Stats Grid */}
-          <div className="mt-1 grid grid-cols-1 sm:grid-cols-[auto_auto_1fr] gap-1 text-xs bg-white bg-opacity-60 p-2 rounded border border-gray-200 shadow-sm items-center">
+          <div className="mt-1 flex flex-col sm:grid sm:grid-cols-[auto_auto_1fr] gap-2 sm:gap-1 text-xs bg-white bg-opacity-60 p-2 rounded border border-gray-200 shadow-sm sm:items-center">
               
-              {/* Col 1: Points */}
-              <div className="flex items-center gap-1.5 border-b sm:border-b-0 sm:border-r border-gray-300 pb-1 sm:pb-0 pr-2 h-full" title="Calculated Points (PTS)">
-                 <div className="flex flex-col items-center min-w-[20px]">
-                   <span className="font-bold text-gray-400 text-[8px] uppercase">Pts</span>
-                   <Calculator size={10} className="text-gray-400"/>
-                 </div>
-                 <div className="flex gap-1.5 font-mono font-bold text-xs">
-                   <span className="text-blue-700" title="Home Points">{pts.home.toFixed(1)}</span>
-                   <span className="text-yellow-600" title="Draw Points">{pts.draw.toFixed(1)}</span>
-                   <span className="text-red-600" title="Away Points">{pts.away.toFixed(1)}</span>
-                 </div>
-              </div>
+              {/* Top mini-strip on mobile for Points & GS/GA */}
+              <div className="grid grid-cols-2 sm:contents gap-2 items-center">
+                {/* Col 1: Points */}
+                <div className="flex items-center gap-1.5 border-r sm:border-r border-gray-200 sm:border-gray-300 pr-2 h-full" title="Calculated Points (PTS)">
+                   <div className="flex flex-col items-center min-w-[20px]">
+                     <span className="font-bold text-gray-400 text-[8px] uppercase">Pts</span>
+                     <Calculator size={10} className="text-gray-400"/>
+                   </div>
+                   <div className="flex gap-1.5 font-mono font-bold text-xs">
+                     <span className="text-blue-700" title="Home Points">{pts.home.toFixed(1)}</span>
+                     <span className="text-yellow-600" title="Draw Points">{pts.draw.toFixed(1)}</span>
+                     <span className="text-red-600" title="Away Points">{pts.away.toFixed(1)}</span>
+                   </div>
+                </div>
 
-              {/* Col 2: GS/GA Visualization */}
-              <div className="relative border-b sm:border-b-0 sm:border-r border-gray-300 pb-1 sm:pb-0 px-2 h-full min-w-[120px]">
+                {/* Col 2: GS/GA Visualization */}
+                <div className="relative sm:border-r border-gray-200 sm:border-gray-300 px-2 h-full min-w-[120px]">
                  {/* SVG Overlay */}
                  <svg className="absolute inset-0 w-full h-full pointer-events-none z-10" style={{ opacity: 0.6 }}>
                     <defs>
@@ -542,9 +582,10 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                     <div className="text-center font-bold text-red-700 bg-red-50/50 rounded py-0.5 border border-red-100/50">{match.gaAway?.toFixed(1)}</div>
                  </div>
               </div>
+              </div>
 
               {/* Col 3: Insights & SEER */}
-              <div className="flex items-center gap-2 w-full pl-1" title="Insights (Flags)">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full pt-1 sm:pt-0 border-t sm:border-t-0 border-gray-200" title="Insights (Flags)">
                   <div className="flex flex-row items-start gap-1.5 flex-1 min-w-0">
                     <div className="flex flex-col items-center justify-start pt-0.5 min-w-[20px]">
                         <span className="font-bold text-gray-400 text-[8px] uppercase">INS</span>
@@ -565,83 +606,88 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                     </div>
                   </div>
 
-                  {/* ALGO COMPONENT */}
-                  {algoReport && (
-                      <div className="flex flex-col items-end shrink-0 border-l border-slate-200 pl-3 pr-1" title={algoReport.reason}>
-                         <div className="flex items-center gap-1 mb-0.5">
-                             <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter pr-1">ALGO</span>
-                             <span className="text-[8px] font-bold text-slate-400 uppercase">Prim</span>
-                             <span className="px-1.5 py-0.5 rounded text-[10px] font-black shadow-inner min-w-[24px] text-center bg-slate-200 text-slate-700">
-                                 {algoPrimary}
-                             </span>
-                             {!isPending && (matchesPrediction(algoPrimary, actual) ? <span className="text-[10px] ml-0.5">✅</span> : <span className="text-[10px] ml-0.5">❌</span>)}
-                             <span className="text-[8px] font-bold text-slate-400 uppercase ml-0.5">Fin</span>
-                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-black shadow-inner min-w-[24px] text-center ${algoFinal === match.finalPrediction ? 'bg-teal-500 text-white' : 'bg-blue-500 text-white'}`}>
-                                 {algoFinal}
-                             </span>
-                             {!isPending && (matchesPrediction(algoFinal, actual) ? <span className="text-[10px] ml-0.5">✅</span> : <span className="text-[10px] ml-0.5">❌</span>)}
-                             <span className={`text-[10px] font-black px-1.5 py-0.5 rounded border ml-0.5 ${algoFinal === match.finalPrediction ? 'text-teal-700 bg-teal-50 border-teal-200' : 'text-blue-700 bg-blue-50 border-blue-200'}`}>
-                                 {algoReport.confidence}%
-                             </span>
-                         </div>
-                         <div className="flex gap-1.5 text-[8px] font-bold font-mono text-slate-500 bg-slate-50/50 px-1.5 py-0.5 rounded mt-0.5">
-                             <span>1:{formattedProbs['1']}%</span>
-                             <span>X:{formattedProbs['X']}%</span>
-                             <span>2:{formattedProbs['2']}%</span>
-                         </div>
-                      </div>
-                  )}
+                  {/* ALGO & SEER PREDICTIONS WRAPPER */}
+                  {(algoReport || phaStatsMap) && (
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:border-l border-slate-200 sm:pl-3 sm:pr-1 w-full sm:w-auto sm:shrink-0">
+                          {/* ALGO COMPONENT */}
+                          {algoReport && (
+                              <div className="flex items-center justify-between sm:justify-end sm:flex-col gap-1 bg-slate-100/70 sm:bg-transparent p-1.5 sm:p-0 rounded border sm:border-0 border-slate-200/80" title={algoReport.reason}>
+                                 <div className="flex items-center gap-1">
+                                     <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter pr-1">ALGO</span>
+                                     <span className="text-[8px] font-bold text-slate-400 uppercase">Prim</span>
+                                     <span className="px-1.5 py-0.5 rounded text-[10px] font-black shadow-inner min-w-[24px] text-center bg-slate-200 text-slate-700">
+                                         {algoPrimary}
+                                     </span>
+                                     {!isPending && (matchesPrediction(algoPrimary, actual) ? <span className="text-[10px] ml-0.5">✅</span> : <span className="text-[10px] ml-0.5">❌</span>)}
+                                     <span className="text-[8px] font-bold text-slate-400 uppercase ml-0.5">Fin</span>
+                                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-black shadow-inner min-w-[24px] text-center ${algoFinal === match.finalPrediction ? 'bg-teal-500 text-white' : 'bg-blue-500 text-white'}`}>
+                                         {algoFinal}
+                                     </span>
+                                     {!isPending && (matchesPrediction(algoFinal, actual) ? <span className="text-[10px] ml-0.5">✅</span> : <span className="text-[10px] ml-0.5">❌</span>)}
+                                     <span className={`text-[10px] font-black px-1.5 py-0.5 rounded border ml-0.5 ${algoFinal === match.finalPrediction ? 'text-teal-700 bg-teal-50 border-teal-200' : 'text-blue-700 bg-blue-50 border-blue-200'}`}>
+                                         {algoReport.confidence}%
+                                     </span>
+                                 </div>
+                                 <div className="flex gap-1.5 text-[8px] font-bold font-mono text-slate-500 bg-slate-50/50 px-1.5 py-0.5 rounded">
+                                     <span>1:{formattedProbs['1']}%</span>
+                                     <span>X:{formattedProbs['X']}%</span>
+                                     <span>2:{formattedProbs['2']}%</span>
+                                 </div>
+                              </div>
+                          )}
 
-                  {/* SEER PREDICTION COMPONENT */}
-                  {phaStatsMap && (
-                      <div className="flex items-center gap-3 border-l border-slate-200 pl-4 py-1 pr-2 shrink-0">
-                          <div className="h-px w-8 bg-slate-300"></div>
-                          <div className="flex flex-col items-end gap-1">
-                              <div className="flex items-center gap-2 px-3 py-1 bg-white rounded border border-slate-100 shadow-sm">
-                                  <span className="text-[10px] font-black uppercase tracking-tighter whitespace-nowrap text-teal-500">
-                                      SEER PREDICTS:
-                                  </span>
-                                  <div className="flex items-center gap-1.5">
-                                      <span className="text-[8px] font-bold text-slate-400 uppercase">Prim</span>
-                                      <span className="bg-emerald-600 text-white text-[11px] font-black px-2 py-0.5 rounded shadow-inner min-w-[28px] text-center">
-                                          {seerPrim}
-                                      </span>
-                                      <span className="text-[8px] font-bold text-slate-400 uppercase ml-0.5">Fin</span>
-                                      <div className="flex items-center gap-1">
-                                        <span className="text-white text-[11px] font-black px-2 py-0.5 rounded shadow-inner min-w-[28px] text-center bg-indigo-600">
-                                            {seerFinal}
-                                        </span>
-                                        <span className="text-[11px] font-black text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
-                                            {combinedPct}%
-                                        </span>
-                                      </div>
-                                      {!isPending && (
-                                          <div className="ml-1">
-                                              {matchesPrediction(seerFinal, actual) ? 
-                                                  <CheckCircle size={10} className="text-green-500"/> : 
-                                                  <XCircle size={10} className="text-red-400"/>
-                                              }
+                          {/* SEER PREDICTION COMPONENT */}
+                          {phaStatsMap && (
+                              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 sm:gap-3 bg-teal-50/60 sm:bg-transparent p-1.5 sm:p-0 rounded border sm:border-0 border-teal-200/60 sm:border-l sm:border-slate-200 sm:pl-3">
+                                  <div className="hidden sm:block h-px w-8 bg-slate-300"></div>
+                                  <div className="flex items-center justify-between sm:flex-col sm:items-end gap-1">
+                                      <div className="flex items-center gap-2 px-2.5 py-1 bg-white rounded border border-slate-100 shadow-xs">
+                                          <span className="text-[10px] font-black uppercase tracking-tighter whitespace-nowrap text-teal-600">
+                                              SEER PREDICTS:
+                                          </span>
+                                          <div className="flex items-center gap-1.5">
+                                              <span className="text-[8px] font-bold text-slate-400 uppercase">Prim</span>
+                                              <span className="bg-emerald-600 text-white text-[11px] font-black px-2 py-0.5 rounded shadow-inner min-w-[28px] text-center">
+                                                  {seerPrim}
+                                              </span>
+                                              <span className="text-[8px] font-bold text-slate-400 uppercase ml-0.5">Fin</span>
+                                              <div className="flex items-center gap-1">
+                                                <span className="text-white text-[11px] font-black px-2 py-0.5 rounded shadow-inner min-w-[28px] text-center bg-indigo-600">
+                                                    {seerFinal}
+                                                </span>
+                                                <span className="text-[11px] font-black text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                                                    {combinedPct}%
+                                                </span>
+                                              </div>
+                                              {!isPending && (
+                                                  <div className="ml-1">
+                                                      {matchesPrediction(seerFinal, actual) ? 
+                                                          <CheckCircle size={10} className="text-green-500"/> : 
+                                                          <XCircle size={10} className="text-red-400"/>
+                                                      }
+                                                  </div>
+                                              )}
                                           </div>
-                                      )}
+                                      </div>
+                                      {/* Individual Scores */}
+                                      <div className="flex gap-2 text-[9px] font-bold font-mono text-slate-500 bg-slate-50/50 px-2 rounded">
+                                         <span>SS 1:{Math.round(seerDetails?.percentages['1'] || 0)}%</span>
+                                         <span>X:{Math.round(seerDetails?.percentages['X'] || 0)}%</span>
+                                         <span>2:{Math.round(seerDetails?.percentages['2'] || 0)}%</span>
+                                      </div>
                                   </div>
                               </div>
-                              {/* Individual Scores */}
-                              <div className="flex gap-2 text-[9px] font-bold font-mono text-slate-500 bg-slate-50/50 px-2 rounded">
-                                 <span>SS 1:{Math.round(seerDetails?.percentages['1'] || 0)}%</span>
-                                 <span>X:{Math.round(seerDetails?.percentages['X'] || 0)}%</span>
-                                 <span>2:{Math.round(seerDetails?.percentages['2'] || 0)}%</span>
-                              </div>
-                          </div>
+                          )}
                       </div>
                   )}
               </div>
           </div>
 
           {/* FOOTER ROW */}
-          <div className="flex justify-between items-end mt-2">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-2 mt-2 pt-1 border-t border-gray-100">
                 
                 {/* LEFT: Predictions & Pattern String */}
-                <div className="flex flex-col gap-1.5 max-w-[80%]">
+                <div className="flex flex-col gap-1.5 w-full sm:max-w-[80%]">
                      <div className="flex items-center gap-2 flex-wrap">
                          {/* PAA Prediction Box */}
                          {paaFinal && paaPrim && (
@@ -740,12 +786,12 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                      )}
                 </div>
 
-                 <div className="flex items-end gap-3 translate-y-1">
+                 <div className="flex flex-wrap sm:flex-nowrap items-center sm:items-end gap-2 sm:gap-3 w-full sm:w-auto justify-between sm:justify-end">
                     {/* PAA Logic */}
                     {hasPHA && (
                         <div className="flex flex-col items-center">
                             <span className="bg-[#0071BC] text-white px-2 py-0.5 text-[9px] font-black leading-none uppercase select-none rounded-t-sm">PAA</span>
-                            <div className="bg-[#0071BC] text-white px-2 py-1 text-[10px] font-bold flex items-center gap-3 shadow-sm rounded-b-sm rounded-l-sm min-w-[200px]">
+                            <div className="bg-[#0071BC] text-white px-2 py-1 text-[10px] font-bold flex items-center gap-2 sm:gap-3 shadow-sm rounded-b-sm rounded-l-sm min-w-0 sm:min-w-[200px]">
                                 <span>S.Win: {(phaStats.paaTotal ?? phaStats.total) > 0 ? Math.round((phaStats.favWin / (phaStats.paaTotal ?? phaStats.total)) * 100) : 0}%</span>
                                 <span>Draw :{(phaStats.paaTotal ?? phaStats.total) > 0 ? Math.round((phaStats.draw / (phaStats.paaTotal ?? phaStats.total)) * 100) : 0}%</span>
                                 <span>Upset {(phaStats.paaTotal ?? phaStats.total) > 0 ? Math.round((phaStats.upsetWin / (phaStats.paaTotal ?? phaStats.total)) * 100) : 0}%</span>
@@ -753,31 +799,9 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                         </div>
                     )}
 
-                    {/* RIGHT: Max Pts and OW */}
+                    {/* RIGHT: Max Pts */}
                     <div className="flex items-center gap-2 text-[10px] text-gray-400 font-bold uppercase whitespace-nowrap pb-1">
-                         {optCategories.length > 0 ? (
-                             <div className="flex items-center gap-1 flex-wrap">
-                                 {optCategories.map(cat => (
-                                     <button 
-                                         key={cat.id}
-                                         onClick={(e) => { e.stopPropagation(); setActiveOWCategory(cat ? cat.id : owCategory); setIsOWModalOpen(true); }}
-                                         className="flex items-center gap-1 hover:bg-indigo-50 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
-                                         title={`View ${cat.label} Optimized Weight Breakdown`}
-                                     >
-                                         {cat.label} <span className="text-indigo-600 text-sm font-black">{categoryScores[cat.id]?.totalScore ?? '-'}</span>
-                                     </button>
-                                 ))}
-                             </div>
-                         ) : (
-                               <button 
-                                   onClick={(e) => { e.stopPropagation(); setActiveOWCategory(owCategory); setIsOWModalOpen(true); }}
-                                 className="flex items-center gap-1 hover:bg-indigo-50 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
-                                 title="View Optimized Weight Breakdown"
-                             >
-                                 OW <span className="text-indigo-600 text-sm font-black">-</span>
-                             </button>
-                         )}
-                         <div className="flex items-center gap-1 border-l pl-2">
+                         <div className="flex items-center gap-1">
                              MAX PTS <span className="text-gray-900 text-sm font-black">{(match.maxPoints && match.maxPoints > 0 ? match.maxPoints : Math.max(pts.home, pts.draw, pts.away))?.toFixed(1)}</span>
                              {expandedMatch === match.id ? <ChevronUp size={14} className="ml-1"/> : <ChevronDown size={14} className="ml-1"/>}
                          </div>
@@ -838,9 +862,9 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                     <span className="text-gray-400">Rating</span>
                     <span className="font-mono font-medium text-gray-700">{match.rating}</span>
                   </div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-baseline">
                     <span className="text-gray-400">L10</span>
-                    <span className="font-mono font-medium text-gray-700">{match.l10}</span>
+                    <L10Display l10={match.l10} />
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-400">LE</span>
@@ -848,7 +872,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-400">MO</span>
-                    <span className="font-mono font-medium text-gray-700">{match.mo}</span>
+                    <span className="font-mono font-medium text-gray-700">{sanitizeMatchOdds(match.mo)}</span>
                   </div>
                 </div>
               </div>
@@ -860,6 +884,43 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
                   </div>
               )}
             </div>
+
+            {/* Applied OPW Triggers (including League Triggers) */}
+            {(() => {
+                const activeScore = categoryScores[owCategory] || Object.values(categoryScores)[0];
+                if (!activeScore || !activeScore.rulesHit || activeScore.rulesHit.length === 0) return null;
+                return (
+                    <div className="col-span-1 md:col-span-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200 shadow-sm text-xs mt-1">
+                        <div className="flex items-center justify-between mb-1.5 border-b border-slate-200 pb-1">
+                            <span className="font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1">
+                                <Zap size={12} className="text-amber-500" /> Applied OPW Triggers ({activeScore.rulesHit.length})
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-500">
+                                Total OPW: <strong className={activeScore.totalScore >= 0 ? "text-emerald-700" : "text-rose-700"}>{activeScore.totalScore > 0 ? `+${activeScore.totalScore}` : activeScore.totalScore} pts</strong>
+                            </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                            {activeScore.rulesHit.map((r, i) => (
+                                <span
+                                    key={i}
+                                    className={`px-2 py-0.5 rounded text-[11px] font-semibold border flex items-center gap-1.5 ${
+                                        r.points > 0 
+                                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                                            : 'bg-rose-50 text-rose-800 border-rose-200'
+                                    }`}
+                                >
+                                    <span>{r.description}</span>
+                                    <span className={`font-mono font-bold text-[10px] px-1 rounded ${
+                                        r.points > 0 ? 'bg-emerald-200/60 text-emerald-900' : 'bg-rose-200/60 text-rose-900'
+                                    }`}>
+                                        {r.points > 0 ? `+${r.points}` : r.points}
+                                    </span>
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                );
+            })()}
 
           </div>
         </div>
@@ -881,6 +942,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
               match={match}
               phaStatsMap={phaStatsMap}
               categoryId={activeOWCategory || defaultOptScoreCategory || owCategory}
+              dayOverride={getMatchDayOfWeek(match)}
           />
       )}
 

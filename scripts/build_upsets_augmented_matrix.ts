@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { Match } from '../src/types';
 import { getMarketFavorite, getOptimizedBaseWeight, getOptimizedScoreDetailed } from '../src/utils/optimizedweights';
+import { parseL10 } from '../src/utils/l10Utils';
 
 const dumpPath = 'C:\\Users\\USER\\.gemini\\antigravity\\brain\\62622108-f8b0-4990-938d-f0d5003653f7\\scratch\\combined_upsets_matches.json';
 const outDir = 'C:\\Users\\USER\\.gemini\\antigravity\\brain\\62622108-f8b0-4990-938d-f0d5003653f7\\scratch';
@@ -278,12 +279,12 @@ matchEntries.forEach(entry => {
 
   const leData = parseLastEncounter(m.le, mFav, underdog);
 
-  const l10Parts = (m.l10 || '').split(/[:\- ]+/).map(s => parseFloat(s.trim()));
-  const l10Home = !isNaN(l10Parts[0]) ? l10Parts[0] : 0;
-  const l10Away = !isNaN(l10Parts[1]) ? l10Parts[1] : 0;
+  const parsedScriptL10 = parseL10(m.l10);
+  const l10Home = parsedScriptL10.homeWins;
+  const l10Away = parsedScriptL10.awayWins;
   const mFavL10 = mFav === '1' ? l10Home : l10Away;
   const underdogL10 = underdog === '1' ? l10Home : l10Away;
-  const hasValidL10 = !!(m.l10 && m.l10 !== 'NA' && m.l10 !== '-' && m.l10.includes(':') && !isNaN(l10Parts[0]) && !isNaN(l10Parts[1]));
+  const hasValidL10 = parsedScriptL10.isValid;
   const underdogHasHigherL10 = hasValidL10 && (underdogL10 > mFavL10);
 
   // Other OPW

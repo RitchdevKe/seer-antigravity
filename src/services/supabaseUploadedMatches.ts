@@ -11,8 +11,8 @@ import { safeSupabaseUpsert } from './supabaseHelper';
  * Uses rapid chunked bulk upsert (chunks of 250 matches) to easily handle thousands of records.
  */
 
-const UPLOADED_CACHE_KEY = 'seer_uploaded_matches_idb_cache_v2';
-const UPLOADED_CACHE_TIME_KEY = 'seer_uploaded_matches_idb_cache_time_v2';
+const UPLOADED_CACHE_KEY = 'seer_uploaded_matches_idb_cache_v5';
+const UPLOADED_CACHE_TIME_KEY = 'seer_uploaded_matches_idb_cache_time_v5';
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 let memoryUploadedMatches: Match[] | null = null;
 
@@ -30,11 +30,14 @@ export const saveUploadedMatchesToSupabase = async (matches: Match[]): Promise<b
 
     const CHUNK_SIZE = 100;
     
-    // De-duplicate matches by stable ID to avoid upsert primary key conflicts
+    // De-duplicate matches by stable ID to avoid upsert primary key conflicts, and strip any cached OPW scores
     const uniqueMatchesMap = new Map<string, Match>();
     matches.forEach(m => {
       if (m && m.id) {
-        uniqueMatchesMap.set(String(m.id), m);
+        const cleaned = { ...m };
+        delete cleaned.lockedOpwScores;
+        delete cleaned.lockedOpwScore;
+        uniqueMatchesMap.set(String(m.id), cleaned);
       }
     });
     const uniqueMatches = Array.from(uniqueMatchesMap.values());
@@ -171,10 +174,13 @@ export const loadUploadedMatchesFromSupabase = async (forceRefresh = false): Pro
     if (now - cachedTime < CACHE_EXPIRY_MS) {
       try {
         let idbData = await idbGet(UPLOADED_CACHE_KEY);
-        if (!idbData || !Array.isArray(idbData) || idbData.length === 0) {
-          idbData = await idbGet('prm_uploaded_matches');
-        }
         if (idbData && Array.isArray(idbData) && idbData.length > 0) {
+          idbData.forEach((m: any) => {
+            if (m && typeof m === 'object') {
+              delete m.lockedOpwScores;
+              delete m.lockedOpwScore;
+            }
+          });
           memoryUploadedMatches = idbData;
           return filterTombstoned(idbData);
         }
@@ -236,6 +242,10 @@ export const loadUploadedMatchesFromSupabase = async (forceRefresh = false): Pro
     if (matches.length > 0) {
       const dedupedMap = new Map<string, Match>();
       for (const m of matches) {
+        if (m && typeof m === 'object') {
+          delete m.lockedOpwScores;
+          delete m.lockedOpwScore;
+        }
         // Validate stats to filter out any corrupted "story" extracts
         const isValidStat = (val: string) => !val || val.length <= 15;
         if (!isValidStat(m.ga) || !isValidStat(m.gs) || !isValidStat(m.l10)) {

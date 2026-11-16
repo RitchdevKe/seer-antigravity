@@ -9,7 +9,8 @@ import {
     DAY_METADATA,
     getMatchDayOfWeek,
     getMarketFavorite,
-    extractMatchEvaluationStats
+    extractMatchEvaluationStats,
+    evaluateAllCatalogTriggers
 } from './opwCommon';
 
 export type { BaseWeightInterval, OptimizedCategorySettings, OptimizedScoreDetail, DayOfWeek, DayVolatilityTier, DayMetadata };
@@ -23,53 +24,44 @@ import { getThursdayCategorySettings, evaluateThursdayScoreDetailed } from '../o
 import { getFridayCategorySettings, evaluateFridayScoreDetailed } from '../opwfriday';
 import { getSaturdayCategorySettings, evaluateSaturdayScoreDetailed } from '../opwsaturday';
 import { getSundayCategorySettings, evaluateSundayScoreDetailed } from '../opwsunday';
-import { sanitizeRulePolarity, populateCategoryWithMasterRules, setDayRulesBorrowProvider, borrowTriggerPoints } from './opwCatalog';
-export { sanitizeRulePolarity, borrowTriggerPoints };
+import { sanitizeRulePolarity, populateCategoryWithMasterRules, normalizeOpwCategoryId } from './opwCatalog';
+export { sanitizeRulePolarity, normalizeOpwCategoryId };
 
-// Configure dynamic cross-day and cross-category borrowing provider
-setDayRulesBorrowProvider((desc: string, categoryId: string, currentDay?: string) => {
-    // Value Picks and Bankers Jackpot share Top 12's trigger points (user directive),
-    // so they always resolve their points from the Top 12 category.
-    const lookupCategoryId = (categoryId === 'value_picks' || categoryId === 'bankers_jackpot') ? 'top_12_value' : categoryId;
-    // 1. Borrow from other days for this category
-    const days: DayOfWeek[] = ['saturday', 'sunday', 'friday', 'thursday', 'wednesday', 'tuesday', 'monday'];
-    for (const d of days) {
-        if (d === currentDay) continue;
-        const cat = DAILY_OPTIMIZED_SETTINGS?.[d]?.[lookupCategoryId] || DAILY_DEFAULT_CATEGORY_SETTINGS?.[d]?.[lookupCategoryId];
-        if (cat?.rules) {
-            const found = cat.rules.find(r => r.description === desc && r.points !== 0);
-            if (found && found.points !== 0) return found.points;
-        }
-    }
-    // 2. Borrow from other categories for this day
-    const dayToUse = (currentDay as DayOfWeek) || 'sunday';
-    const isUpsets = categoryId === 'upsets' || categoryId === 'underdog_only';
-    const otherCats = isUpsets
-        ? ['upsets', 'underdog_upsets']
-        : ['top_12_value', 'best_bet', 'bankers_jackpot', 'value_picks', 'bankers_dlive', 'botb_best'];
-
-    for (const c of otherCats) {
-        if (c === categoryId) continue;
-        const cat = DAILY_OPTIMIZED_SETTINGS?.[dayToUse]?.[c] || DAILY_DEFAULT_CATEGORY_SETTINGS?.[dayToUse]?.[c];
-        if (cat?.rules) {
-            const found = cat.rules.find(r => r.description === desc && r.points !== 0);
-            if (found && found.points !== 0) return found.points;
-        }
-    }
-    return undefined;
-});
+let isDailySettingsInitialized = false;
 
 /**
- * All daily default settings indexed by day of week.
+ * All daily default settings indexed by day of week with memoization to prevent recursive re-computation.
  */
+const cachedDefaultSettings: Partial<Record<DayOfWeek, Record<string, OptimizedCategorySettings>>> = {};
 export const DAILY_DEFAULT_CATEGORY_SETTINGS: Record<DayOfWeek, Record<string, OptimizedCategorySettings>> = {
-    get monday() { return getMondayCategorySettings(); },
-    get tuesday() { return getTuesdayCategorySettings(); },
-    get wednesday() { return getWednesdayCategorySettings(); },
-    get thursday() { return getThursdayCategorySettings(); },
-    get friday() { return getFridayCategorySettings(); },
-    get saturday() { return getSaturdayCategorySettings(); },
-    get sunday() { return getSundayCategorySettings(); }
+    get monday() {
+        if (!cachedDefaultSettings.monday) cachedDefaultSettings.monday = getMondayCategorySettings();
+        return cachedDefaultSettings.monday;
+    },
+    get tuesday() {
+        if (!cachedDefaultSettings.tuesday) cachedDefaultSettings.tuesday = getTuesdayCategorySettings();
+        return cachedDefaultSettings.tuesday;
+    },
+    get wednesday() {
+        if (!cachedDefaultSettings.wednesday) cachedDefaultSettings.wednesday = getWednesdayCategorySettings();
+        return cachedDefaultSettings.wednesday;
+    },
+    get thursday() {
+        if (!cachedDefaultSettings.thursday) cachedDefaultSettings.thursday = getThursdayCategorySettings();
+        return cachedDefaultSettings.thursday;
+    },
+    get friday() {
+        if (!cachedDefaultSettings.friday) cachedDefaultSettings.friday = getFridayCategorySettings();
+        return cachedDefaultSettings.friday;
+    },
+    get saturday() {
+        if (!cachedDefaultSettings.saturday) cachedDefaultSettings.saturday = getSaturdayCategorySettings();
+        return cachedDefaultSettings.saturday;
+    },
+    get sunday() {
+        if (!cachedDefaultSettings.sunday) cachedDefaultSettings.sunday = getSundayCategorySettings();
+        return cachedDefaultSettings.sunday;
+    }
 } as any;
 
 /**
@@ -84,7 +76,79 @@ export let OPTIMIZED_CATEGORY_SETTINGS: Record<string, OptimizedCategorySettings
 export const CODE_DEFAULT_CATEGORY_SETTINGS: Readonly<Record<string, OptimizedCategorySettings>> = 
     DAILY_DEFAULT_CATEGORY_SETTINGS.saturday;
 
-const STORAGE_KEY = 'daily_optimized_weights_settings_v12';
+const STORAGE_KEY = 'daily_optimized_weights_settings_v27';
+const CALIBRATED_CATS_KEY = 'seer_calibrated_day_categories_v1';
+
+export const CALIBRATED_DAY_CATEGORIES = new Set<string>();
+
+export function markDayCategoryCalibrated(day: DayOfWeek, categoryId: string) {
+    const catKeys = (categoryId === 'top_12_value' || categoryId === 'top_10_value' || categoryId === 'top12' || categoryId === 'top10')
+        ? ['top_12_value', 'top_10_value', 'top12', 'top10']
+        : (categoryId === 'upsets' || categoryId === 'upset' || categoryId === 'underdog_upsets')
+        ? ['upsets', 'upset', 'underdog_upsets']
+        : (categoryId === 'bankers_dlive' || categoryId === 'banker')
+        ? ['bankers_dlive', 'banker']
+        : (categoryId === 'bankers_jackpot' || categoryId === 'bankers' || categoryId === 'jackpot')
+        ? ['bankers_jackpot', 'bankers', 'jackpot']
+        : [categoryId];
+    for (const k of catKeys) {
+        CALIBRATED_DAY_CATEGORIES.add(`${day}_${k}`);
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            window.localStorage.setItem(CALIBRATED_CATS_KEY, JSON.stringify(Array.from(CALIBRATED_DAY_CATEGORIES)));
+        } catch (_) {}
+    }
+}
+
+export function isDayCategoryCalibrated(day: DayOfWeek, categoryId: string): boolean {
+    return CALIBRATED_DAY_CATEGORIES.has(`${day}_${categoryId}`);
+}
+
+function hydrateParsedDailySettings(
+    base: Record<DayOfWeek, Record<string, OptimizedCategorySettings>>,
+    parsed: any
+) {
+    if (!parsed || typeof parsed !== 'object') return;
+    const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    for (const d of days) {
+        if (parsed[d] && typeof parsed[d] === 'object') {
+            for (const [catKey, catVal] of Object.entries<any>(parsed[d])) {
+                if (!catVal || typeof catVal !== 'object') continue;
+                const rawRules = Array.isArray(catVal.rules) ? catVal.rules : [];
+                const hydratedRules = rawRules
+                    .map((r: any, idx: number) => {
+                        if (Array.isArray(r) && typeof r[0] === 'string' && typeof r[1] === 'number') {
+                            return { id: `rule_${idx}`, description: r[0], points: r[1] };
+                        }
+                        if (r && typeof r.description === 'string' && typeof r.points === 'number') {
+                            return { id: r.id || `rule_${idx}`, description: r.description, points: r.points };
+                        }
+                        return null;
+                    })
+                    .filter(Boolean) as { id: string; description: string; points: number }[];
+                const existingTemplate = base[d]?.[catKey] || DAILY_DEFAULT_CATEGORY_SETTINGS[d]?.[catKey];
+                const mergedCat: OptimizedCategorySettings = {
+                    ...(existingTemplate || {}),
+                    ...catVal,
+                    rules: sanitizeRulePolarity(hydratedRules, catKey, { preserveExact: true, day: d })
+                };
+                const aliasKeys = (catKey === 'top_12_value' || catKey === 'top_10_value')
+                    ? ['top_12_value', 'top_10_value', 'top12', 'top10']
+                    : (catKey === 'upsets' || catKey === 'upset')
+                    ? ['upsets', 'upset']
+                    : (catKey === 'bankers_dlive' || catKey === 'banker')
+                    ? ['bankers_dlive', 'banker']
+                    : (catKey === 'bankers_jackpot' || catKey === 'bankers' || catKey === 'jackpot')
+                    ? ['bankers_jackpot', 'bankers', 'jackpot']
+                    : [catKey];
+                for (const ak of aliasKeys) {
+                    base[d][ak] = JSON.parse(JSON.stringify(mergedCat));
+                }
+            }
+        }
+    }
+}
 
 function loadPersistedDailySettings(): Record<DayOfWeek, Record<string, OptimizedCategorySettings>> {
     const base: Record<DayOfWeek, Record<string, OptimizedCategorySettings>> = {
@@ -99,6 +163,16 @@ function loadPersistedDailySettings(): Record<DayOfWeek, Record<string, Optimize
 
     if (typeof window !== 'undefined' && window.localStorage) {
         try {
+            const savedCalibrated = window.localStorage.getItem(CALIBRATED_CATS_KEY);
+            if (savedCalibrated) {
+                const arr = JSON.parse(savedCalibrated);
+                if (Array.isArray(arr)) {
+                    arr.forEach(item => { if (typeof item === 'string') CALIBRATED_DAY_CATEGORIES.add(item); });
+                }
+            }
+        } catch (_) {}
+
+        try {
             // Clean up obsolete legacy cache keys that contained uncalibrated or 0-point rule weights
             window.localStorage.removeItem('daily_optimized_weights_settings');
             window.localStorage.removeItem('daily_optimized_weights_settings_v2');
@@ -109,37 +183,40 @@ function loadPersistedDailySettings(): Record<DayOfWeek, Record<string, Optimize
             window.localStorage.removeItem('daily_optimized_weights_settings_v7');
             window.localStorage.removeItem('daily_optimized_weights_settings_v8');
             window.localStorage.removeItem('daily_optimized_weights_settings_v9');
-            // v10 held pre-alignment Value Picks / Bankers Jackpot points and +-35 caps
             window.localStorage.removeItem('daily_optimized_weights_settings_v10');
-            // v11 held pre-LE triggers cache
             window.localStorage.removeItem('daily_optimized_weights_settings_v11');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v12');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v13');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v14');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v15');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v16');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v17');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v18');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v19');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v20');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v21');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v22');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v23');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v24');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v25');
+            window.localStorage.removeItem('daily_optimized_weights_settings_v26');
 
             const saved = window.localStorage.getItem(STORAGE_KEY);
             if (saved) {
                 const parsed = JSON.parse(saved);
-                const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-                for (const d of days) {
-                    if (parsed[d] && typeof parsed[d] === 'object') {
-                        base[d] = { ...base[d], ...parsed[d] };
-                    }
-                }
+                hydrateParsedDailySettings(base, parsed);
             }
         } catch (e) {
             console.warn('[optimizedweights] Failed to hydrate settings from localStorage', e);
         }
     }
-    // Ensure all rules across all days strictly adhere to domain semantic polarity and have non-zero points
+    // Ensure all rules across all days strictly adhere to domain semantic polarity while preserving calibrated 0 points
     const allDays: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
     for (const d of allDays) {
         if (base[d]) {
             for (const catKey of Object.keys(base[d])) {
                 if (base[d][catKey]?.rules) {
-                    base[d][catKey].rules = sanitizeRulePolarity(base[d][catKey].rules, catKey);
-                    base[d][catKey].rules.forEach(r => {
-                        if (r.points === 0) {
-                            r.points = borrowTriggerPoints(r.description, catKey, d);
-                        }
-                    });
+                    base[d][catKey].rules = sanitizeRulePolarity(base[d][catKey].rules, catKey, { preserveExact: true, day: d });
                 }
             }
         }
@@ -184,7 +261,7 @@ function getDailySettingsMeta(): Partial<Record<DayOfWeek, number>> {
     }
 }
 
-function setDailySettingsMeta(days: DayOfWeek[], ts: number) {
+export function setDailySettingsMeta(days: DayOfWeek[], ts: number) {
     if (typeof window === 'undefined' || !window.localStorage) return;
     try {
         const meta = getDailySettingsMeta();
@@ -193,14 +270,77 @@ function setDailySettingsMeta(days: DayOfWeek[], ts: number) {
     } catch (e) {}
 }
 
+const CANONICAL_CATS_FOR_STORAGE = [
+    'top_12_value',
+    'best_bet',
+    'bankers_dlive',
+    'bankers_jackpot',
+    'value_picks',
+    'value_bets',
+    'upsets',
+    'botb_best',
+    'high_confidence'
+];
+
+function compactCategoryMapForStorage(catMap: Record<string, OptimizedCategorySettings>): Record<string, any> {
+    const out: Record<string, any> = {};
+    if (!catMap || typeof catMap !== 'object') return out;
+    for (const catKey of CANONICAL_CATS_FOR_STORAGE) {
+        const cat = catMap[catKey]
+            || (catKey === 'top_12_value' ? catMap['top_10_value'] : undefined)
+            || (catKey === 'upsets' ? catMap['upset'] : undefined)
+            || (catKey === 'bankers_dlive' ? catMap['banker'] : undefined)
+            || (catKey === 'value_bets' ? catMap['value_bet'] : undefined);
+        if (!cat) continue;
+        out[catKey] = {
+            name: cat.name,
+            description: cat.description,
+            baseLogic: cat.baseLogic,
+            baseWeightIntervals: cat.baseWeightIntervals,
+            rules: (cat.rules || []).map(r => [r.description, r.points])
+        };
+    }
+    return out;
+}
+
 export function savePersistedDailySettings() {
     if (typeof window !== 'undefined' && window.localStorage) {
-        try {
-            window.localStorage.setItem(STORAGE_KEY, JSON.stringify(DAILY_OPTIMIZED_SETTINGS));
-            window.localStorage.setItem('optimized_weights_settings', JSON.stringify(OPTIMIZED_CATEGORY_SETTINGS));
-        } catch (e) {
-            console.warn('[optimizedweights] Failed to save settings to localStorage', e);
+        const compactDaily: Partial<Record<DayOfWeek, Record<string, any>>> = {};
+        for (const d of ALL_WEEK_DAYS) {
+            if (DAILY_OPTIMIZED_SETTINGS[d]) {
+                compactDaily[d] = compactCategoryMapForStorage(DAILY_OPTIMIZED_SETTINGS[d]);
+            }
         }
+        const serializedDaily = JSON.stringify(compactDaily);
+        const serializedMain = JSON.stringify(compactCategoryMapForStorage(OPTIMIZED_CATEGORY_SETTINGS));
+        try {
+            window.localStorage.setItem(STORAGE_KEY, serializedDaily);
+            window.localStorage.setItem('optimized_weights_settings', serializedMain);
+        } catch (e) {
+            // Free up localStorage quota by evicting regenerable slip cache ONLY (NEVER delete seer_opw_peak_memory_*)
+            try {
+                const keysToRemove: string[] = [];
+                for (let i = 0; i < window.localStorage.length; i++) {
+                    const k = window.localStorage.key(i);
+                    if (k && (
+                        k.startsWith('local_locked_slip_') ||
+                        k.startsWith('seer_locked_slip_hash_') ||
+                        (k.startsWith('daily_optimized_weights_settings_') && k !== STORAGE_KEY)
+                    )) {
+                        keysToRemove.push(k);
+                    }
+                }
+                keysToRemove.forEach(k => window.localStorage.removeItem(k));
+                window.localStorage.setItem(STORAGE_KEY, serializedDaily);
+                window.localStorage.setItem('optimized_weights_settings', serializedMain);
+            } catch (retryErr) {
+                console.warn('[optimizedweights] Failed to save settings to localStorage after quota cleanup', retryErr);
+            }
+        }
+        // Also persist to IndexedDB so quota limits can never lose calibrated settings
+        import('idb-keyval').then(({ set }) => {
+            set(STORAGE_KEY, DAILY_OPTIMIZED_SETTINGS).catch(() => {});
+        }).catch(() => {});
         // Mark weights keys for Supabase user_storage sync (lazy import avoids module cycles)
         import('../services/supabaseStorage').then(m => {
             m.markKeyDirty(STORAGE_KEY);
@@ -214,17 +354,33 @@ export function savePersistedDailySettings() {
  * Mutable runtime registry for day-specific settings, hydrated from localStorage if present
  */
 export let DAILY_OPTIMIZED_SETTINGS: Record<DayOfWeek, Record<string, OptimizedCategorySettings>> = loadPersistedDailySettings();
+isDailySettingsInitialized = true;
 
 // Sync initial OPTIMIZED_CATEGORY_SETTINGS with Saturday's hydrated settings
 if (DAILY_OPTIMIZED_SETTINGS.saturday) {
     OPTIMIZED_CATEGORY_SETTINGS = { ...OPTIMIZED_CATEGORY_SETTINGS, ...DAILY_OPTIMIZED_SETTINGS.saturday };
 }
 
+// Asynchronous fallback hydration from IndexedDB if localStorage was ever missing STORAGE_KEY
+if (typeof window !== 'undefined' && window.localStorage && !window.localStorage.getItem(STORAGE_KEY)) {
+    import('idb-keyval').then(async ({ get }) => {
+        try {
+            const idbSaved = await get(STORAGE_KEY);
+            if (idbSaved && typeof idbSaved === 'object') {
+                hydrateParsedDailySettings(DAILY_OPTIMIZED_SETTINGS, idbSaved);
+                clearOptimizedScoreCache();
+                savePersistedDailySettings();
+                window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: 'all', day: 'all', source: 'idb-restore' } }));
+            }
+        } catch (_) {}
+    }).catch(() => {});
+}
+
 export interface OpwSettingsUpdateOptions {
     /** Suppress the synchronous 'optimizedWeightsUpdated'/'seerLockedSlipsUpdated' events (caller dispatches later). */
     silent?: boolean;
-    /** 'server' = hydrated from /api/opw/rules (does not bump the local modified timestamp). */
-    source?: 'user' | 'server';
+    /** 'server' = hydrated from /api/opw/rules; 'codebase' = explicitly saved via Save to Codebase; 'user' = runtime-only session adjustment. */
+    source?: 'user' | 'server' | 'codebase';
 }
 
 export function updateDailyOptimizedCategorySettings(
@@ -239,9 +395,15 @@ export function updateDailyOptimizedCategorySettings(
     }
     const catKeys = (categoryId === 'top_12_value' || categoryId === 'top_10_value' || categoryId === 'top12' || categoryId === 'top10')
         ? ['top_12_value', 'top_10_value', 'top12', 'top10']
+        : (categoryId === 'upsets' || categoryId === 'upset')
+        ? ['upsets', 'upset']
+        : (categoryId === 'bankers_dlive' || categoryId === 'banker')
+        ? ['bankers_dlive', 'banker']
+        : (categoryId === 'bankers_jackpot' || categoryId === 'bankers' || categoryId === 'jackpot')
+        ? ['bankers_jackpot', 'bankers', 'jackpot']
         : [categoryId];
 
-    const sanitizedRules = settings.rules ? sanitizeRulePolarity(settings.rules, categoryId) : [];
+    const sanitizedRules = settings.rules ? sanitizeRulePolarity(settings.rules, categoryId, { preserveExact: true, day }) : [];
     const sanitizedSettings: OptimizedCategorySettings = {
         ...settings,
         rules: sanitizedRules
@@ -250,28 +412,23 @@ export function updateDailyOptimizedCategorySettings(
     for (const key of catKeys) {
         DAILY_OPTIMIZED_SETTINGS[day][key] = JSON.parse(JSON.stringify(sanitizedSettings));
     }
+    markDayCategoryCalibrated(day, categoryId);
 
     if (syncMainAlgo) {
         for (const key of catKeys) {
             OPTIMIZED_CATEGORY_SETTINGS[key] = JSON.parse(JSON.stringify(sanitizedSettings));
         }
-        const days: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-        for (const d of days) {
-            if (!DAILY_OPTIMIZED_SETTINGS[d]) {
-                DAILY_OPTIMIZED_SETTINGS[d] = JSON.parse(JSON.stringify(DAILY_DEFAULT_CATEGORY_SETTINGS[d]));
-            }
-            for (const key of catKeys) {
-                DAILY_OPTIMIZED_SETTINGS[d][key] = JSON.parse(JSON.stringify(sanitizedSettings));
-            }
-        }
     }
+    clearOptimizedScoreCache();
+    // Always persist updated settings to localStorage so runtime & codebase updates never revert
     if (options.source !== 'server') {
-        setDailySettingsMeta(syncMainAlgo ? ALL_WEEK_DAYS : [day], Date.now());
+        setDailySettingsMeta([day], Date.now());
     }
     savePersistedDailySettings();
     if (typeof window !== 'undefined' && !options.silent) {
-        window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: categoryId, day, syncMainAlgo } }));
-        window.dispatchEvent(new Event('seerLockedSlipsUpdated'));
+        window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: categoryId, day, syncMainAlgo: false, purge: false, wipeSlips: false } }));
+        window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: categoryId, day, purge: false, wipeSlips: false } }));
+        window.dispatchEvent(new Event('opw-weights-updated'));
     }
 }
 
@@ -282,9 +439,15 @@ export function updateOptimizedCategorySettings(categoryId: string, settings: Op
     }
     const catKeys = (categoryId === 'top_12_value' || categoryId === 'top_10_value' || categoryId === 'top12' || categoryId === 'top10')
         ? ['top_12_value', 'top_10_value', 'top12', 'top10']
+        : (categoryId === 'upsets' || categoryId === 'upset')
+        ? ['upsets', 'upset']
+        : (categoryId === 'bankers_dlive' || categoryId === 'banker')
+        ? ['bankers_dlive', 'banker']
+        : (categoryId === 'bankers_jackpot' || categoryId === 'bankers' || categoryId === 'jackpot')
+        ? ['bankers_jackpot', 'bankers', 'jackpot']
         : [categoryId];
 
-    const sanitizedRules = settings.rules ? sanitizeRulePolarity(settings.rules, categoryId) : [];
+    const sanitizedRules = settings.rules ? sanitizeRulePolarity(settings.rules, categoryId, { preserveExact: true }) : [];
     const sanitizedSettings: OptimizedCategorySettings = {
         ...settings,
         rules: sanitizedRules
@@ -302,21 +465,22 @@ export function updateOptimizedCategorySettings(categoryId: string, settings: Op
         for (const key of catKeys) {
             DAILY_OPTIMIZED_SETTINGS[d][key] = JSON.parse(JSON.stringify(sanitizedSettings));
         }
+        markDayCategoryCalibrated(d, categoryId);
     }
+    clearOptimizedScoreCache();
     if (options.source !== 'server') {
         setDailySettingsMeta(ALL_WEEK_DAYS, Date.now());
     }
     savePersistedDailySettings();
     if (typeof window !== 'undefined' && !options.silent) {
-        window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: categoryId, day: 'all', syncMainAlgo: true } }));
-        window.dispatchEvent(new Event('seerLockedSlipsUpdated'));
+        window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: categoryId, day: 'all', syncMainAlgo: true, purge: false, wipeSlips: false } }));
+        window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: categoryId, day: 'all', purge: false, wipeSlips: false } }));
     }
 }
 
 /**
- * Loads rules persisted by "Save to codebase" (server JSON at /api/opw/rules) and applies
- * them per day over the code defaults. A day is only overridden if the server copy is newer
- * than the last local Apply for that day. Fails silently (e.g. static hosting / offline).
+ * Loads rules persisted by "Save to codebase" / "Apply to Runtime" (server JSON + RDS at /api/opw/rules) and applies
+ * them per day on startup so saved rules permanently replace old trigger points across reloads.
  */
 let serverRulesLoadPromise: Promise<DayOfWeek[]> | null = null;
 export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]> {
@@ -325,50 +489,88 @@ export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]>
         const applied: DayOfWeek[] = [];
         if (typeof window === 'undefined' || typeof fetch === 'undefined') return applied;
         try {
-            const res = await fetch('/api/opw/rules');
+            const res = await fetch('/api/opw/rules', { cache: 'no-store' });
             if (!res.ok) return applied;
             const json = await res.json();
             const rulesByDay = (json && typeof json === 'object' && json.rules) ? json.rules : {};
-            const meta = getDailySettingsMeta();
+            const localMeta = getDailySettingsMeta();
             for (const day of ALL_WEEK_DAYS) {
                 const entry = rulesByDay[day];
                 if (!entry || !entry.categories || typeof entry.categories !== 'object') continue;
                 const savedAt = Date.parse(entry.savedAt) || 0;
-                if ((meta[day] || 0) >= savedAt) continue; // local Apply is newer — keep it
+
+                // Timestamp Guard: Never overwrite local settings if local has newer calibrations, UNLESS force = true
+                const localSavedAt = localMeta[day] || 0;
+                if (!force && localSavedAt > 0 && localSavedAt > savedAt) {
+                    continue;
+                }
 
                 for (const [catId, catData] of Object.entries<any>(entry.categories)) {
-                    // Value Picks / Bankers Jackpot now mirror Top 12 by default; ignore server copies saved before that alignment.
-                    if ((catId === 'value_picks' || catId === 'bankers_jackpot') && savedAt < TOP12_ALIGN_EPOCH) continue;
                     const rawRules = Array.isArray(catData?.rules) ? catData.rules : [];
                     const tuned = rawRules
                         .filter((r: any) => r && typeof r.description === 'string' && typeof r.points === 'number')
                         .map((r: any) => ({ description: r.description, points: r.points }));
                     if (tuned.length === 0) continue;
-                    const existing = DAILY_OPTIMIZED_SETTINGS[day]?.[catId] || DAILY_DEFAULT_CATEGORY_SETTINGS[day]?.[catId];
-                    if (!existing) continue;
                     const objective = (catData?.targetObjective === 'mfav_only' || catData?.targetObjective === 'underdog_only' || catData?.targetObjective === 'mfav_draw')
                         ? catData.targetObjective
-                        : (catId === 'upsets' ? 'underdog_only' : (catId === 'top_12_value' || catId === 'top_10_value') ? 'mfav_draw' : 'mfav_only');
-                    updateDailyOptimizedCategorySettings(
-                        day,
-                        catId,
-                        { ...existing, rules: populateCategoryWithMasterRules(tuned, objective) },
-                        false,
-                        { silent: true, source: 'server' }
-                    );
+                        : (catId === 'upsets' || catId === 'upset' ? 'underdog_only' : (catId === 'top_12_value' || catId === 'top_10_value' || catId === 'value_bets' || catId === 'value_bet') ? 'mfav_draw' : 'mfav_only');
+                    
+                    const aliasKey = catId === 'top_12_value' ? 'top_10_value' : (catId === 'top_10_value' ? 'top_12_value' : (catId === 'upsets' ? 'upset' : (catId === 'upset' ? 'upsets' : (catId === 'bankers_dlive' ? 'banker' : (catId === 'banker' ? 'bankers_dlive' : (catId === 'value_bets' ? 'value_bet' : (catId === 'value_bet' ? 'value_bets' : undefined)))))));
+                    const targetCats = [catId];
+                    if (aliasKey && !targetCats.includes(aliasKey)) targetCats.push(aliasKey);
+
+                    for (const targetCat of targetCats) {
+                        const existing = DAILY_OPTIMIZED_SETTINGS[day]?.[targetCat] || DAILY_DEFAULT_CATEGORY_SETTINGS[day]?.[targetCat];
+                        if (!existing) continue;
+                        const existingUntuned = Array.isArray(existing.rules)
+                            ? existing.rules.map(r => ({ description: r.description, points: r.points }))
+                            : [];
+                        const exactServerRules = populateCategoryWithMasterRules(
+                            [...tuned, ...existingUntuned],
+                            objective,
+                            targetCat,
+                            day,
+                            { preserveExact: true }
+                        );
+                        updateDailyOptimizedCategorySettings(
+                            day,
+                            targetCat,
+                            { ...existing, rules: exactServerRules },
+                            false,  // Never force syncMainAlgo from server load — prevents Saturday reversion
+                            { silent: true, source: 'server' }
+                        );
+                        // Keep Peak Memory points aligned with server-saved rules so old points never resurrect
+                        if (window.localStorage) {
+                            try {
+                                const pmKey = `seer_opw_peak_memory_${day}_${targetCat}`;
+                                const rawPm = window.localStorage.getItem(pmKey);
+                                const existingPm = rawPm ? JSON.parse(rawPm) : {};
+                                window.localStorage.setItem(pmKey, JSON.stringify({
+                                    cleanTopMatches: existingPm?.cleanTopMatches || 0,
+                                    firstTrapRank: existingPm?.firstTrapRank || 0,
+                                    quality: existingPm?.quality || 0,
+                                    trapRanks: existingPm?.trapRanks || [],
+                                    trapGaps: existingPm?.trapGaps || [],
+                                    points: Object.fromEntries(exactServerRules.map(r => [r.description, r.points])),
+                                    updatedAt: savedAt || Date.now()
+                                }));
+                            } catch (_) {}
+                        }
+                    }
                 }
-                if (day === 'saturday' && DAILY_OPTIMIZED_SETTINGS.saturday) {
-                    // Keep legacy Main Algo registry aligned with Saturday baseline (mirrors module init)
-                    Object.assign(OPTIMIZED_CATEGORY_SETTINGS, JSON.parse(JSON.stringify(DAILY_OPTIMIZED_SETTINGS.saturday)));
+                if (savedAt > 0) {
+                    setDailySettingsMeta([day], savedAt);
                 }
-                setDailySettingsMeta([day], savedAt);
                 applied.push(day);
             }
             if (applied.length > 0) {
+                clearOptimizedScoreCache();
                 savePersistedDailySettings();
                 window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', {
-                    detail: { category: 'all', day: applied.length === 1 ? applied[0] : 'all', days: applied, source: 'server-rules' }
+                    detail: { category: 'all', day: applied.length === 1 ? applied[0] : 'all', days: applied, source: 'server-rules', purge: false, wipeSlips: false }
                 }));
+                window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: 'all', purge: false, wipeSlips: false } }));
+                window.dispatchEvent(new Event('opw-weights-updated'));
             }
         } catch (e) {
             // Silent: server rules are optional
@@ -378,13 +580,17 @@ export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]>
     return serverRulesLoadPromise;
 }
 
+export function invalidateServerRulesCache(): void {
+    serverRulesLoadPromise = null;
+}
+
 // Invoke once at app startup (module is loaded early by MatchAnalysis / SeerAnalysis / OPW algo)
 if (typeof window !== 'undefined') {
-    loadServerOpwRules();
+    loadServerOpwRules(true);
 }
 
 export function replaceAllOptimizedCategorySettings(settings: Record<string, OptimizedCategorySettings>, day?: DayOfWeek) {
-    const HARDCODED_CATEGORIES = ['best_bet', 'bankers_dlive', 'top_12_value', 'top_10_value', 'upsets', 'botb_best', 'value_picks', 'bankers_jackpot', 'high_confidence'];
+    const HARDCODED_CATEGORIES = ['best_bet', 'bankers_dlive', 'top_12_value', 'top_10_value', 'upsets', 'botb_best', 'value_picks', 'value_bets', 'bankers_jackpot', 'high_confidence'];
     const activeDefaults = day ? DAILY_DEFAULT_CATEGORY_SETTINGS[day] : CODE_DEFAULT_CATEGORY_SETTINGS;
     
     const merged: Record<string, OptimizedCategorySettings> = {};
@@ -426,7 +632,7 @@ export function replaceAllOptimizedCategorySettings(settings: Record<string, Opt
 
     for (const k of Object.keys(merged)) {
         if (merged[k]?.rules) {
-            merged[k].rules = sanitizeRulePolarity(merged[k].rules, k);
+            merged[k].rules = sanitizeRulePolarity(merged[k].rules, k, { preserveExact: true });
         }
     }
 
@@ -445,12 +651,16 @@ export function replaceAllOptimizedCategorySettings(settings: Record<string, Opt
 }
 
 let scoreCache = new WeakMap<Match, Map<string, OptimizedScoreDetail>>();
+let weightsEpoch = Date.now();
 export function clearOptimizedScoreCache() {
     scoreCache = new WeakMap();
+    weightsEpoch = Date.now();
 }
 if (typeof window !== 'undefined') {
     window.addEventListener('optimizedWeightsUpdated', clearOptimizedScoreCache);
     window.addEventListener('seerLockedSlipsUpdated', clearOptimizedScoreCache);
+    window.addEventListener('opwProtectedGuardsUpdated', clearOptimizedScoreCache);
+    window.addEventListener('opw-weights-updated', clearOptimizedScoreCache);
 }
 
 /**
@@ -466,7 +676,10 @@ export function getOptimizedBaseWeight(
     const mFav = getMarketFavorite(match);
     const underdog = mFav === '1' ? '2' : '1';
     const isUnderdogBase = categoryId === 'upsets';
+    const isBankerDraws = ['banker_draws', 'bankers_draws', 'banker_draw'].includes(categoryId || '');
+    const isValueBets = ['value_bets', 'value_bet'].includes(categoryId || '');
     const isT12 = ['top_12_value', 'top_10_value', 'top12', 'top10'].includes(categoryId || '');
+    const isVb = isValueBets;
     const targetSide = isUnderdogBase ? underdog : mFav;
     
     let phaPercentage = 0;
@@ -474,8 +687,11 @@ export function getOptimizedBaseWeight(
     if (primaryPattern && phaStatsMap[primaryPattern]) {
         const stats = phaStatsMap[primaryPattern];
         if (stats.total > 0) {
-            if (isT12) {
-                // Top 12 Value target is Mfav + Draw combined
+            if (isBankerDraws) {
+                // Banker Draws base trigger: Draw Primary Pattern PHA %
+                phaPercentage = (((stats.outcomes?.['X'] ?? 0) / stats.total) * 100);
+            } else if (isT12 || isValueBets) {
+                // Top 12 Value and Value Bets target is Mfav + Draw combined
                 const favorableWins = (stats.outcomes?.[mFav] ?? 0) + (stats.outcomes?.['X'] ?? 0);
                 phaPercentage = (favorableWins / stats.total) * 100;
             } else {
@@ -489,8 +705,10 @@ export function getOptimizedBaseWeight(
     const catSettings = categoryId ? (
         daySettings?.[categoryId] || 
         (isT12 ? (daySettings?.['top_12_value'] || daySettings?.['top_10_value'] || daySettings?.['top12'] || daySettings?.['top10']) : undefined) ||
+        (isVb ? (daySettings?.['value_bets'] || daySettings?.['value_bet']) : undefined) ||
         OPTIMIZED_CATEGORY_SETTINGS[categoryId] ||
-        (isT12 ? (OPTIMIZED_CATEGORY_SETTINGS['top_12_value'] || OPTIMIZED_CATEGORY_SETTINGS['top_10_value'] || OPTIMIZED_CATEGORY_SETTINGS['top12'] || OPTIMIZED_CATEGORY_SETTINGS['top10']) : undefined)
+        (isT12 ? (OPTIMIZED_CATEGORY_SETTINGS['top_12_value'] || OPTIMIZED_CATEGORY_SETTINGS['top_10_value'] || OPTIMIZED_CATEGORY_SETTINGS['top12'] || OPTIMIZED_CATEGORY_SETTINGS['top10']) : undefined) ||
+        (isVb ? (OPTIMIZED_CATEGORY_SETTINGS['value_bets'] || OPTIMIZED_CATEGORY_SETTINGS['value_bet']) : undefined)
     ) : undefined;
 
     if (catSettings?.baseWeightIntervals && catSettings.baseWeightIntervals.length > 0) {
@@ -501,11 +719,20 @@ export function getOptimizedBaseWeight(
             }
         }
     } else {
-        if (phaPercentage >= 60) points = 35;
-        else if (phaPercentage >= 50) points = 30;
-        else if (phaPercentage >= 45) points = 25;
-        else if (phaPercentage >= 40) points = 20;
-        else if (phaPercentage >= 34) points = 15;
+        if (isBankerDraws) {
+            if (phaPercentage >= 35) points = 45;
+            else if (phaPercentage >= 30) points = 40;
+            else if (phaPercentage >= 25) points = 30;
+            else if (phaPercentage >= 20) points = 20;
+            else points = 10;
+        } else {
+            if (phaPercentage >= 60) points = 45;
+            else if (phaPercentage >= 50) points = 40;
+            else if (phaPercentage >= 45) points = 35;
+            else if (phaPercentage >= 40) points = 25;
+            else if (phaPercentage >= 34) points = 10;
+            else points = 5;
+        }
     }
 
     return { points, mFav, phaPercentage, isUnderdogBase };
@@ -531,7 +758,13 @@ export function getOptimizedScoreDetailed(
         };
     }
 
-    const cacheKey = `${categoryId}_${dayOverride || ''}`;
+    const day = dayOverride || getMatchDayOfWeek(match);
+    const cacheKey = `${categoryId}_${day}_${weightsEpoch}`;
+
+    if (match.lockedOpwScores) {
+        delete match.lockedOpwScores;
+    }
+
     let matchMap = scoreCache.get(match);
     if (!matchMap) {
         matchMap = new Map();
@@ -541,26 +774,47 @@ export function getOptimizedScoreDetailed(
     if (cached) return cached;
 
     try {
-        const day = dayOverride || getMatchDayOfWeek(match);
         const stats = extractMatchEvaluationStats(match, phaStatsMap, categoryId);
         const canonicalCat = stats.evalCategoryId || categoryId;
         const baseInfo = getOptimizedBaseWeight(match, phaStatsMap, canonicalCat, day);
 
+        const isBankerDraws = ['banker_draws', 'bankers_draws', 'banker_draw'].includes(canonicalCat) || ['banker_draws', 'bankers_draws', 'banker_draw'].includes(categoryId);
+
+        // Banker draws dont have trigger points, they just have the base triggers.
+        if (isBankerDraws) {
+            const optPred = 'X';
+            const scoreDetail: OptimizedScoreDetail = {
+                totalScore: baseInfo.points,
+                baseInfo,
+                rulesHit: [],
+                optimizedPrediction: optPred,
+                activeHedgingProtocol: null
+            };
+            matchMap.set(cacheKey, scoreDetail);
+            return scoreDetail;
+        }
+
         const daySettings = DAILY_OPTIMIZED_SETTINGS[day] || DAILY_DEFAULT_CATEGORY_SETTINGS[day];
         const isT12 = ['top_12_value', 'top_10_value', 'top12', 'top10'].includes(canonicalCat) || ['top_12_value', 'top_10_value', 'top12', 'top10'].includes(categoryId);
+        const isUpsets = ['upsets', 'upset', 'underdog_upsets', 'underdog_only'].includes(canonicalCat) || ['upsets', 'upset', 'underdog_upsets', 'underdog_only'].includes(categoryId);
+        const isBdl = ['bankers_dlive', 'banker'].includes(canonicalCat) || ['bankers_dlive', 'banker'].includes(categoryId);
+        const isBj = ['bankers_jackpot', 'bankers', 'jackpot'].includes(canonicalCat) || ['bankers_jackpot', 'bankers', 'jackpot'].includes(categoryId);
+        const isVp = ['value_picks', 'sandbox_value_picks'].includes(canonicalCat) || ['value_picks', 'sandbox_value_picks'].includes(categoryId);
+        const isVb = ['value_bets', 'value_bet', 'sandbox_value_bets'].includes(canonicalCat) || ['value_bets', 'value_bet', 'sandbox_value_bets'].includes(categoryId);
+        const isBb = ['best_bet', 'best'].includes(canonicalCat) || ['best_bet', 'best'].includes(categoryId);
+
+        // Strict day-specific settings lookup: NO falling back to Saturday or master defaults!
         const categoryConfig = daySettings?.[canonicalCat] || 
                                daySettings?.[categoryId] || 
                                (isT12 ? (daySettings?.['top_12_value'] || daySettings?.['top_10_value'] || daySettings?.['top12'] || daySettings?.['top10']) : undefined) ||
-                               OPTIMIZED_CATEGORY_SETTINGS[canonicalCat] || 
-                               OPTIMIZED_CATEGORY_SETTINGS[categoryId] || 
-                               (isT12 ? (OPTIMIZED_CATEGORY_SETTINGS['top_12_value'] || OPTIMIZED_CATEGORY_SETTINGS['top_10_value'] || OPTIMIZED_CATEGORY_SETTINGS['top12'] || OPTIMIZED_CATEGORY_SETTINGS['top10']) : undefined) ||
-                               CODE_DEFAULT_CATEGORY_SETTINGS[canonicalCat] || 
-                               CODE_DEFAULT_CATEGORY_SETTINGS[categoryId] ||
-                                (isT12 ? (CODE_DEFAULT_CATEGORY_SETTINGS['top_12_value'] || CODE_DEFAULT_CATEGORY_SETTINGS['top_10_value'] || CODE_DEFAULT_CATEGORY_SETTINGS['top12'] || CODE_DEFAULT_CATEGORY_SETTINGS['top10']) : undefined);
- 
-        if (categoryConfig && categoryConfig.rules && categoryConfig.rules.some(r => r.points === 0)) {
-            categoryConfig.rules = sanitizeRulePolarity(categoryConfig.rules, canonicalCat);
-        }
+                               (isUpsets ? (daySettings?.['upsets'] || daySettings?.['upset']) : undefined) ||
+                               (isBdl ? (daySettings?.['bankers_dlive'] || daySettings?.['banker']) : undefined) ||
+                               (isBj ? (daySettings?.['bankers_jackpot'] || daySettings?.['bankers'] || daySettings?.['jackpot']) : undefined) ||
+                               (isVp ? (daySettings?.['value_picks']) : undefined) ||
+                               (isVb ? (daySettings?.['value_bets'] || daySettings?.['value_bet']) : undefined) ||
+                               (isBb ? (daySettings?.['best_bet']) : undefined) ||
+                               DAILY_DEFAULT_CATEGORY_SETTINGS[day]?.[canonicalCat] ||
+                               DAILY_DEFAULT_CATEGORY_SETTINGS[day]?.[categoryId];
 
         let evalResult: { totalScore: number; rulesHit: { description: string; points: number }[]; activeHedgingProtocol: string | null; optimizedPrediction: string };
 
@@ -599,19 +853,13 @@ export function getOptimizedScoreDetailed(
             optPred = stats.underdog || (stats as any).moUnderdog || (baseInfo.mFav === '1' ? '2' : '1');
         }
 
-        // Strict non-zero guarantee for active penalties & bonuses:
-        // Any 0-point trigger is dynamically resolved via borrowTriggerPoints
-        const sanitizedRulesHit = evalResult.rulesHit.map(r => {
-            if (r.points !== 0) return r;
-            const borrowed = borrowTriggerPoints(r.description, canonicalCat, day);
-            return { description: r.description, points: borrowed };
-        });
-        const sanitizedEvalScore = sanitizedRulesHit.reduce((sum, r) => sum + r.points, 0);
+        const finalRulesHit = [...evalResult.rulesHit];
+        const finalEvalScore = finalRulesHit.reduce((sum, r) => sum + r.points, 0);
 
         const scoreDetail: OptimizedScoreDetail = {
-            totalScore: baseInfo.points + sanitizedEvalScore,
+            totalScore: baseInfo.points + finalEvalScore,
             baseInfo,
-            rulesHit: sanitizedRulesHit,
+            rulesHit: finalRulesHit,
             optimizedPrediction: optPred,
             activeHedgingProtocol: evalResult.activeHedgingProtocol
         };
@@ -619,7 +867,7 @@ export function getOptimizedScoreDetailed(
         matchMap.set(cacheKey, scoreDetail);
         return scoreDetail;
     } catch (err) {
-        console.error(`Error in getOptimizedScoreDetailed for ${categoryId}:`, err);
+        console.error(`Error in getOptimizedScoreDetailed for ${categoryId}:`, (err as any)?.stack || err);
         return {
             totalScore: 0,
             baseInfo: { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: categoryId === 'upsets' },

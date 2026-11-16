@@ -23,13 +23,38 @@ import { utils, writeFile } from 'xlsx';
 import { supabase } from '../lib/supabase';
 import { Match } from '../types';
 import { JACKPOT_OPTIONS } from '../constants';
-import { formatScore } from '../utils/matchProcessing';
+import { formatScore, getLogicalDate, sanitizeMatchOdds } from '../utils/matchProcessing';
 import { getNerdyMatchesCache, saveNerdyMatchesCache } from '../services/storage';
+import { formatL10ForNerdyTips, parseL10 } from '../utils/l10Utils';
 
 interface NerdyTipsProps {
   onPushToLive: (matches: Match[]) => void;
   onPushResultsToLive?: (matches: Match[]) => number;
   liveMatches?: Match[];
+}
+
+function resolveDoubleChanceFromOdds(mo?: string): '1X' | 'X' | 'X2' | null {
+  if (!mo || mo === 'Unknown') return null;
+  const parts = mo.split(/[\s,|/-]+/).map(s => parseFloat(s.replace(/[^0-9.]/g, '').trim())).filter(n => !isNaN(n) && n > 1.0);
+  if (parts.length >= 3) {
+    const odd1 = parts[0];
+    const odd2 = parts[2];
+    if (odd1 < odd2 - 0.15) return '1X';
+    if (odd2 < odd1 - 0.15) return 'X2';
+    return 'X';
+  }
+  return null;
+}
+
+function isLowTrustDoubleChance(rating?: string): boolean {
+  if (!rating || rating === 'Unknown' || rating === '-') return false;
+  const m = rating.match(/([0-9.]+)\s*\/\s*10/);
+  if (m) {
+    const val = parseFloat(m[1]);
+    return val <= 2.4;
+  }
+  const directVal = parseFloat(rating);
+  return !isNaN(directVal) && directVal <= 2.4;
 }
 
 const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive, liveMatches = [] }) => {
@@ -42,6 +67,8 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showSqlSetup, setShowSqlSetup] = useState(false);
+  const [nerdyPage, setNerdyPage] = useState(1);
+  const NERDY_PAGE_SIZE = 100;
   
   // Jackpot specific
   const [jackpotText, setJackpotText] = useState('');
@@ -50,16 +77,15 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
   
   const renderL10 = (formString: string) => {
     if (!formString || formString === '-' || formString === 'Unknown') return '-';
-    const str = formString.trim();
-    if (/^\d+\s*:\s*\d+$/.test(str)) return str;
-    
-    const parts = str.split(':');
-    if (parts.length === 2) {
-        const homeWins = (parts[0].match(/W/gi) || []).length;
-        const awayWins = (parts[1].match(/W/gi) || []).length;
-        return `${homeWins}:${awayWins}`;
+    const parsed = parseL10(formString);
+    if (parsed.isDetailed) {
+      return (
+        <span title={`Home LDW: ${parsed.homeL}L ${parsed.homeD}D ${parsed.homeW}W | Away WDL: ${parsed.awayW}W ${parsed.awayD}D ${parsed.awayL}L`}>
+          {parsed.homeWins}:{parsed.awayWins}
+        </span>
+      );
     }
-    return str;
+    return formatL10ForNerdyTips(formString);
   };
 
   const renderFormBadges = (formString: string) => {
@@ -122,15 +148,15 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     });
   };
 
-  const getActiveMatches = () => {
+  const activeMatches = useMemo(() => {
     if (activeTab === 'daily') return dailyMatches;
-    // Filter jackpot matches by selected type
     return jackpotMatches.filter(m => m.jackpotIds && m.jackpotIds.includes(jackpotType));
-  };
+  }, [activeTab, dailyMatches, jackpotMatches, jackpotType]);
+
+  const getActiveMatches = () => activeMatches;
   const getCollectionName = () => activeTab === 'daily' ? 'nerdy_matches' : 'nerdy_jackpot_matches';
 
   const filteredMatches = useMemo(() => {
-    const activeMatches = getActiveMatches();
     if (!searchTerm.trim()) return activeMatches;
     const term = searchTerm.toLowerCase();
     return activeMatches.filter(m => 
@@ -138,7 +164,18 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
       (m.league && m.league.toLowerCase().includes(term)) ||
       (m.pred1x2 && m.pred1x2.toLowerCase().includes(term))
     );
-  }, [dailyMatches, jackpotMatches, activeTab, searchTerm]);
+  }, [activeMatches, searchTerm]);
+
+  useEffect(() => {
+    setNerdyPage(1);
+  }, [activeTab, jackpotType, searchTerm]);
+
+  const totalNerdyPages = Math.max(1, Math.ceil(filteredMatches.length / NERDY_PAGE_SIZE));
+  const safeNerdyPage = Math.min(nerdyPage, totalNerdyPages);
+  const paginatedMatches = useMemo(() => {
+    const start = (safeNerdyPage - 1) * NERDY_PAGE_SIZE;
+    return filteredMatches.slice(start, start + NERDY_PAGE_SIZE);
+  }, [filteredMatches, safeNerdyPage]);
 
   const handlePushMatchToOther = async (match: Match) => {
     try {
@@ -267,7 +304,40 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     }
   };
 
-  // Extraction parameters
+  // Extraction parameters: prediction day window runs strictly between today 9:00 AM and tomorrow 8:59 AM
+  const getCurrentLogicalDate = (): string => {
+    const now = new Date();
+    if (now.getHours() < 9) {
+      now.setDate(now.getDate() - 1);
+    }
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const getCurrentPredictionStartDate = () => {
+    const now = new Date();
+    if (now.getHours() < 9) {
+      now.setDate(now.getDate() - 1);
+    }
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const getCurrentPredictionEndDate = () => {
+    const now = new Date();
+    if (now.getHours() >= 9) {
+      now.setDate(now.getDate() + 1);
+    }
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const getLocalDate = () => {
     const now = new Date();
     const year = now.getFullYear();
@@ -285,10 +355,10 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     return `${year}-${month}-${day}`;
   };
 
-  const [startDate, setStartDate] = useState(getLocalDate());
-  const [startTime, setStartTime] = useState("12:00");
-  const [endDate, setEndDate] = useState(getTomorrowDate());
-  const [endTime, setEndTime] = useState("08:00");
+  const [startDate, setStartDate] = useState(getCurrentPredictionStartDate());
+  const [startTime, setStartTime] = useState("09:00");
+  const [endDate, setEndDate] = useState(getCurrentPredictionEndDate());
+  const [endTime, setEndTime] = useState("08:59");
 
   useEffect(() => {
     fetchSavedMatches();
@@ -304,7 +374,13 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
 
       // 1. Initial load from local cache to be responsive
       const isValidStat = (val: string | undefined) => !val || val.length <= 15;
-      const filterMatches = (matches: Match[]) => matches.filter(m => isValidStat(m.ga) && isValidStat(m.gs) && isValidStat(m.l10));
+      const filterMatches = (matches: Match[]) => matches.filter(m => isValidStat(m.ga) && isValidStat(m.gs) && isValidStat(m.l10)).map(m => {
+        if ((!m.pred1x2 || m.pred1x2 === 'Unknown') && isLowTrustDoubleChance(m.rating)) {
+          const dc = resolveDoubleChanceFromOdds(m.mo);
+          if (dc) return { ...m, pred1x2: dc };
+        }
+        return m;
+      });
       const cachedDaily = filterMatches(getNerdyMatchesCache('daily'));
       const cachedJackpot = filterMatches(getNerdyMatchesCache('jackpot'));
       
@@ -340,6 +416,13 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
       } else if (dailyData) {
         const fetchedDaily: Match[] = dailyData.map(row => {
           const rowData = row.data || {};
+          let pred1x2 = row.pred1x2 || rowData.pred1x2 || '';
+          const rating = row.rating1x2 || row.rating || rowData.rating || rowData.rating1x2 || '';
+          const mo = row.mo || rowData.mo || '';
+          if ((!pred1x2 || pred1x2 === 'Unknown') && isLowTrustDoubleChance(rating)) {
+            const dc = resolveDoubleChanceFromOdds(mo);
+            if (dc) pred1x2 = dc;
+          }
           return {
             id: row.id,
             teams: row.teams,
@@ -350,14 +433,16 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
             stars: row.stars || rowData.stars || '',
             tip: row.tip || rowData.tip || '',
             odds: row.odds || rowData.odds || '',
-            rating: row.rating1x2 || row.rating || rowData.rating || rowData.rating1x2 || '',
+            rating: rating,
             jackpotIds: row.jackpot_ids || rowData.jackpotIds || [],
             ga: row.ga || rowData.ga || '',
             gs: row.gs || rowData.gs || '',
             l10: row.l10 || rowData.l10 || '',
             le: row.le || rowData.le || '',
-            mo: row.mo || rowData.mo || '',
-            pred1x2: row.pred1x2 || rowData.pred1x2 || '',
+            mo: mo,
+            pred1x2: pred1x2,
+            league: row.league || rowData.league || undefined,
+            country: row.country || rowData.country || undefined,
             isDaily: true,
             isJackpot: false
           } as any as Match;
@@ -380,6 +465,13 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
       } else if (jackpotData) {
         const fetchedJackpot: Match[] = jackpotData.map(row => {
           const rowData = row.data || {};
+          let pred1x2 = row.pred1x2 || rowData.pred1x2 || '';
+          const rating = row.rating1x2 || row.rating || rowData.rating || rowData.rating1x2 || '';
+          const mo = row.mo || rowData.mo || '';
+          if ((!pred1x2 || pred1x2 === 'Unknown') && isLowTrustDoubleChance(rating)) {
+            const dc = resolveDoubleChanceFromOdds(mo);
+            if (dc) pred1x2 = dc;
+          }
           return {
             id: row.id,
             teams: row.teams,
@@ -391,13 +483,15 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
             odds: row.odds || rowData.odds || '',
             result: row.result || rowData.result || '',
             jackpotIds: row.jackpot_ids || rowData.jackpotIds || [],
-            rating: row.rating1x2 || row.rating || rowData.rating || rowData.rating1x2 || '',
+            rating: rating,
             gs: row.gs || rowData.gs || '',
             ga: row.ga || rowData.ga || '',
             l10: row.l10 || rowData.l10 || '',
             le: row.le || rowData.le || '',
-            mo: row.mo || rowData.mo || '',
-            pred1x2: row.pred1x2 || rowData.pred1x2 || '',
+            mo: mo,
+            pred1x2: pred1x2,
+            league: row.league || rowData.league || undefined,
+            country: row.country || rowData.country || undefined,
             isDaily: false,
             isJackpot: true
           } as any as Match;
@@ -426,10 +520,19 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     try {
       let endpoint = '/api/nerdy/fetch';
       const activeMatches = getActiveMatches();
+      const currentLogicalDate = getCurrentLogicalDate();
+      // Only send matches from previous days as existing to avoid re-scraping past days,
+      // while allowing current day matches (today 9am to tomorrow 8:59am) to be re-scraped to update their LE.
+      const previousDaysMatches = activeMatches.filter(m => {
+        const isPrev = getLogicalDate(m.date, m.time) !== currentLogicalDate;
+        const hasResult = m.result && m.result !== 'Pending' && m.result !== 'Unknown' && m.result.includes(':');
+        return isPrev && hasResult;
+      });
+
       let payload: any = {
         start: `${startDate}T${startTime}:00`,
         end: `${endDate}T${endTime}:00`,
-        existingMatches: activeMatches.map(m => `${m.teams}_${m.date.split(' ')[0]}`)
+        existingMatches: previousDaysMatches.map(m => `${m.teams}_${m.date.split(' ')[0]}`)
       };
 
       if (activeTab === 'jackpot') {
@@ -496,14 +599,12 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
       
       const findExisting = (m: Match) => {
         const normTeams = m.teams.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-        const mDate = new Date(m.date.split(' ')[0]);
+        const mDateStr = m.date.split(' ')[0];
         return allExistingMatches.find(ex => {
           const exNorm = ex.teams.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
           if (normTeams !== exNorm && !normTeams.includes(exNorm) && !exNorm.includes(normTeams)) return false;
-          const exDate = new Date(ex.date.split(' ')[0]);
-          if (isNaN(mDate.getTime()) || isNaN(exDate.getTime())) return false;
-          const diffDays = Math.abs((mDate.getTime() - exDate.getTime()) / (1000 * 3600 * 24));
-          return diffDays <= 1; // Allow +/- 1 day for timezone shifts
+          const exDateStr = ex.date.split(' ')[0];
+          return mDateStr === exDateStr;
         });
       };
 
@@ -512,9 +613,17 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
         // Use existingRecord's id if it exists, otherwise use match.id from backend, otherwise fallback
         const docId = existingRecord?.id || match.id || `${match.teams.replace(/[^a-zA-Z0-9]/g, '_')}_${match.date.split(' ')[0]}`;
         
-        let finalJackpotIds = match.jackpotIds || [];
+        const parseArray = (val: any): string[] => {
+          if (Array.isArray(val)) return val;
+          if (typeof val === 'string' && val.trim().startsWith('[')) {
+            try { const p = JSON.parse(val); return Array.isArray(p) ? p : []; } catch { return []; }
+          }
+          return [];
+        };
+
+        let finalJackpotIds = parseArray(match.jackpotIds);
         if (activeTab === 'jackpot') {
-          const currentIds = existingRecord?.jackpotIds || (existingRecord as any)?.jackpot_ids || [];
+          const currentIds = parseArray(existingRecord?.jackpotIds || (existingRecord as any)?.jackpot_ids);
           if (!currentIds.includes(jackpotType)) {
             finalJackpotIds = [...currentIds, jackpotType];
           } else {
@@ -523,11 +632,42 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
         }
 
         if (existingRecord) {
-            // Overwrite the extracted match with the existing record to preserve odds and data
-            // but keep the NEWly extracted date to allow time adjustments to propagate
+            // Overwrite the extracted match with the existing record to preserve odds and user edits,
+            // but keep the NEWly extracted date, league/country, LE, valid 1X2 tip, and finished results
             const newDate = match.date;
+            const scrapedLeague = match.league || (match as any).data?.league;
+            const scrapedCountry = match.country || (match as any).data?.country;
+            const newlyExtractedLe = match.le;
+            const newlyExtractedPred = match.pred1x2;
+            const newlyExtractedRating = match.rating;
+            const newlyExtractedResult = match.result;
+            const isCurrentDay = getLogicalDate(existingRecord.date, existingRecord.time) === currentLogicalDate;
+
             Object.assign(match, existingRecord);
             match.date = newDate;
+            if (scrapedLeague && (!match.league || match.league === 'Unknown')) match.league = scrapedLeague;
+            if (scrapedCountry && (!match.country || match.country === 'Unknown')) match.country = scrapedCountry;
+
+            // Retain freshly extracted final score if match has completed
+            if (newlyExtractedResult && newlyExtractedResult !== 'Pending' && newlyExtractedResult !== 'Unknown' && newlyExtractedResult.trim() !== '' && newlyExtractedResult.includes(':')) {
+              match.result = newlyExtractedResult;
+            }
+
+            // Adopt newly extracted 1X2 tip if existing record had Unknown, empty, or placeholder,
+            // or if newly extracted tip is a valid tip (1, X, 2, 1X, X2)
+            if (newlyExtractedPred && ['1', 'X', '2', '1X', 'X2'].includes(newlyExtractedPred)) {
+              if (!match.pred1x2 || match.pred1x2 === 'Unknown' || match.pred1x2 === '-' || !['1', 'X', '2', '1X', 'X2'].includes(match.pred1x2)) {
+                match.pred1x2 = newlyExtractedPred;
+                if (newlyExtractedRating && newlyExtractedRating !== 'Unknown') {
+                  match.rating = newlyExtractedRating;
+                }
+              }
+            }
+
+            // Strictly update LE if this is a current day match OR if existing LE was NA / placeholder / missing
+            if (newlyExtractedLe && newlyExtractedLe !== 'Unknown' && (newlyExtractedLe !== 'NA' || isCurrentDay || !match.le || match.le === 'NA' || match.le === '-' || match.le === 'Unknown')) {
+              match.le = newlyExtractedLe;
+            }
         }
 
         if (activeTab === 'jackpot') {
@@ -556,7 +696,16 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
           le: source.le || null,
           mo: source.mo || null,
           pred1x2: source.pred1x2 || null,
-          data: (source as any).data || source,
+          league: source.league || (source as any).data?.league || null,
+          country: source.country || (source as any).data?.country || null,
+          data: {
+            ...((source as any).data || source),
+            pred1x2: source.pred1x2 || null,
+            rating: (source as any).rating1x2 || source.rating || null,
+            le: source.le || null,
+            league: source.league || (source as any).data?.league || null,
+            country: source.country || (source as any).data?.country || null,
+          },
           updated_at: new Date().toISOString()
         };
       });
@@ -793,6 +942,7 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     // Ensure matches have correct flags when pushed
     const matchesToPush = filteredMatches.map(m => ({
       ...m,
+      mo: sanitizeMatchOdds(m.mo),
       isJackpot: activeTab === 'jackpot' ? true : (m.isJackpot || false),
       isDaily: activeTab === 'daily' ? true : (m.isDaily || false),
       jackpotIds: activeTab === 'jackpot' 
@@ -831,12 +981,11 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     
     const matchesWithoutResults = activeMatches.filter(m => {
       const needsResult = !m.result || m.result === "Unknown" || m.result === "" || m.result === "Pending";
-      const needsTip = !m.pred1x2 || m.pred1x2 === "Unknown" || m.pred1x2 === "-";
-      return needsResult || needsTip;
+      return needsResult;
     });
     
     if (matchesWithoutResults.length === 0) {
-      setSuccess("All extracted matches already have results and tips.");
+      setSuccess("All extracted matches already have results.");
       return;
     }
     
@@ -888,25 +1037,31 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
         .replace(/\(w\)$|\(u\d+\)$|women$|u\d+$/g, '');
 
       for (const fetchedMatch of fetchedMatches) {
-        if (fetchedMatch.result && fetchedMatch.result !== "Unknown" && fetchedMatch.result !== "") {
-          const normalizedResult = fetchedMatch.result;
+        const normFetchedTeams = normalize(fetchedMatch.teams);
+        const existingMatch = activeMatches.find(m => {
+          const normMTeams = normalize(m.teams);
           
-          const normFetchedTeams = normalize(fetchedMatch.teams);
-          const existingMatch = activeMatches.find(m => {
-            const normMTeams = normalize(m.teams);
-            
-            const mDate = new Date(m.date.split(' ')[0]);
-            const fDate = new Date(fetchedMatch.date.split(' ')[0]);
-            const diffDays = (!isNaN(mDate.getTime()) && !isNaN(fDate.getTime())) ? Math.abs((mDate.getTime() - fDate.getTime()) / (1000 * 3600 * 24)) : 100;
-            const sameDate = diffDays <= 1;
-            
-            const teamsMatch = normMTeams === normFetchedTeams || 
-                               normMTeams.includes(normFetchedTeams) || 
-                               normFetchedTeams.includes(normMTeams);
-            return sameDate && teamsMatch;
-          });
+          const mDate = new Date(m.date.split(' ')[0]);
+          const fDate = new Date(fetchedMatch.date.split(' ')[0]);
+          const diffDays = (!isNaN(mDate.getTime()) && !isNaN(fDate.getTime())) ? Math.abs((mDate.getTime() - fDate.getTime()) / (1000 * 3600 * 24)) : 100;
+          const sameDate = diffDays <= 1;
+          
+          const teamsMatch = normMTeams === normFetchedTeams || 
+                             normMTeams.includes(normFetchedTeams) || 
+                             normFetchedTeams.includes(normMTeams);
+          return sameDate && teamsMatch;
+        });
 
-          if (existingMatch && existingMatch.result !== normalizedResult) {
+        if (existingMatch) {
+          let shouldUpdate = false;
+          let finalResult = existingMatch.result;
+
+          if (fetchedMatch.result && fetchedMatch.result !== "Unknown" && fetchedMatch.result !== "" && fetchedMatch.result !== existingMatch.result) {
+            finalResult = fetchedMatch.result;
+            shouldUpdate = true;
+          }
+
+          if (shouldUpdate) {
             recordsToUpdate.push({
               id: existingMatch.id,
               teams: existingMatch.teams,
@@ -916,8 +1071,8 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
               stars: existingMatch.stars || null,
               tip: existingMatch.tip || null,
               odds: existingMatch.odds || null,
-              result: normalizedResult,
-              jackpot_ids: existingMatch.jackpotIds || [],
+              result: finalResult,
+              jackpot_ids: Array.isArray(existingMatch.jackpotIds) ? existingMatch.jackpotIds : (Array.isArray((existingMatch as any).jackpot_ids) ? (existingMatch as any).jackpot_ids : []),
               rating1x2: existingMatch.rating || null,
               gs: existingMatch.gs || null,
               ga: existingMatch.ga || null,
@@ -925,7 +1080,7 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
               le: existingMatch.le || null,
               mo: existingMatch.mo || null,
               pred1x2: existingMatch.pred1x2 || null,
-              data: { ...existingMatch, result: normalizedResult },
+              data: { ...existingMatch, result: finalResult },
               updated_at: new Date().toISOString()
             });
             updatedCount++;
@@ -1012,8 +1167,14 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
           return m.date.split(' ')[0] === fm.date.split(' ')[0] && 
                  (normM === normFM || normM.includes(normFM) || normFM.includes(normM));
         });
-        if (fetched && fetched.result && fetched.result !== "Unknown") {
-          return { ...m, result: fetched.result };
+        if (fetched) {
+          const updated = { ...m };
+          let changed = false;
+          if (fetched.result && fetched.result !== "Unknown" && fetched.result !== "" && fetched.result !== updated.result) {
+            updated.result = fetched.result;
+            changed = true;
+          }
+          if (changed) return updated;
         }
         return m;
       });
@@ -1038,30 +1199,20 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
     }
   };
 
-  const handleUpdateMorningResults = async () => {
+  const handleUpdateMissingResults = async () => {
     const activeMatches = getActiveMatches();
     if (activeMatches.length === 0) return;
 
-    // Filter activeMatches that were played/started between 00:00 and 12:00 EAT
-    const morningMatches = activeMatches.filter(m => {
-      if (!m.date || !m.date.includes(' ')) return false;
-      const [, timeStr] = m.date.split(' ');
-      if (!timeStr || !timeStr.includes(':')) return false;
-      const [hStr, mStr] = timeStr.split(':');
-      const hours = parseInt(hStr, 10);
-      const minutes = parseInt(mStr, 10);
-      if (isNaN(hours) || isNaN(minutes)) return false;
-      const totalMin = hours * 60 + minutes;
-      
-      // Expand to 00:00 to 12:00 EAT (Morning matches)
-      return totalMin >= 0 && totalMin <= 720;
+    // Filter matches that either:
+    // 1. Don't have a final finished result (e.g. pending, unknown, empty, or currently in progress)
+    // 2. Are missing 1X2 tip (or tip is Unknown)
+    const targets = activeMatches.filter(m => {
+      const noResult = !m.result || m.result === 'Pending' || m.result === 'Unknown' || m.result === '' || m.result === '-';
+      const noTip = !m.pred1x2 || m.pred1x2 === 'Unknown' || m.pred1x2 === '-';
+      return noResult || noTip;
     });
 
-    if (morningMatches.length === 0) {
-      setError("No unfinished morning matches found (00:00 - 12:00 EAT). All results might be up to date.");
-      setSuccess(null);
-      return;
-    }
+    const matchesToCheck = targets.length > 0 ? targets : activeMatches;
 
     setLoading(true);
     setError(null);
@@ -1072,8 +1223,8 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          matches: morningMatches,
-          dailyMatches: [], // Empty array to bypass smart pull check and force fresh scrape
+          matches: matchesToCheck,
+          dailyMatches: [], // Force fresh scrape from NerdyTips
           isJackpot: activeTab === 'jackpot'
         })
       });
@@ -1106,26 +1257,31 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
         .replace(/\(w\)$|\(u\d+\)$|women$|u\d+$/g, '');
 
       for (const fetchedMatch of fetchedMatches) {
-        if (fetchedMatch.result && fetchedMatch.result !== "Unknown" && fetchedMatch.result !== "") {
-          const normalizedResult = fetchedMatch.result;
+        const normFetchedTeams = normalize(fetchedMatch.teams);
+        const existingMatch = activeMatches.find(m => {
+          const normMTeams = normalize(m.teams);
           
-          const normFetchedTeams = normalize(fetchedMatch.teams);
-          const existingMatch = morningMatches.find(m => {
-            const normMTeams = normalize(m.teams);
-            
-            const mDate = new Date(m.date.split(' ')[0]);
-            const fDate = new Date(fetchedMatch.date.split(' ')[0]);
-            const diffDays = (!isNaN(mDate.getTime()) && !isNaN(fDate.getTime())) ? Math.abs((mDate.getTime() - fDate.getTime()) / (1000 * 3600 * 24)) : 100;
-            const sameDate = diffDays <= 1;
-            
-            const teamsMatch = normMTeams === normFetchedTeams || 
-                               normMTeams.includes(normFetchedTeams) || 
-                               normFetchedTeams.includes(normMTeams);
-            return sameDate && teamsMatch;
-          });
+          const mDate = new Date(m.date.split(' ')[0]);
+          const fDate = new Date(fetchedMatch.date.split(' ')[0]);
+          const diffDays = (!isNaN(mDate.getTime()) && !isNaN(fDate.getTime())) ? Math.abs((mDate.getTime() - fDate.getTime()) / (1000 * 3600 * 24)) : 100;
+          const sameDate = diffDays <= 1;
+          
+          const teamsMatch = normMTeams === normFetchedTeams || 
+                             normMTeams.includes(normFetchedTeams) || 
+                             normFetchedTeams.includes(normMTeams);
+          return sameDate && teamsMatch;
+        });
 
-          // Update if the result is different (which is standard, but here we can update even if result was previously set/incomplete)
-          if (existingMatch && existingMatch.result !== normalizedResult) {
+        if (existingMatch) {
+          let shouldUpdate = false;
+          let finalResult = existingMatch.result;
+
+          if (fetchedMatch.result && fetchedMatch.result !== "Unknown" && fetchedMatch.result !== "" && fetchedMatch.result !== existingMatch.result) {
+            finalResult = fetchedMatch.result;
+            shouldUpdate = true;
+          }
+
+          if (shouldUpdate) {
             recordsToUpdate.push({
               id: existingMatch.id,
               teams: existingMatch.teams,
@@ -1135,8 +1291,8 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
               stars: existingMatch.stars || null,
               tip: existingMatch.tip || null,
               odds: existingMatch.odds || null,
-              result: normalizedResult,
-              jackpot_ids: existingMatch.jackpotIds || [],
+              result: finalResult,
+              jackpot_ids: Array.isArray(existingMatch.jackpotIds) ? existingMatch.jackpotIds : (Array.isArray((existingMatch as any).jackpot_ids) ? (existingMatch as any).jackpot_ids : []),
               rating1x2: existingMatch.rating || null,
               gs: existingMatch.gs || null,
               ga: existingMatch.ga || null,
@@ -1144,7 +1300,7 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
               le: existingMatch.le || null,
               mo: existingMatch.mo || null,
               pred1x2: existingMatch.pred1x2 || null,
-              data: { ...existingMatch, result: normalizedResult },
+              data: { ...existingMatch, result: finalResult },
               updated_at: new Date().toISOString()
             });
             updatedCount++;
@@ -1153,7 +1309,6 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
       }
       
       if (recordsToUpdate.length > 0) {
-        // Deduplicate records by ID before upserting
         const uniqueUpdatesMap = new Map<string, any>();
         recordsToUpdate.forEach(record => {
           uniqueUpdatesMap.set(record.id, record);
@@ -1166,9 +1321,6 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
 
         if (syncErr) {
            if (syncErr.message?.toLowerCase().includes('column') || syncErr.code === '42703') {
-              console.warn("Full sync upsert failed due to missing columns, trying JSON data upsert...", syncErr.message);
-              
-              // Try Level 2: Standard fields + data JSONB field
               const intermediateUpdates = finalRecordsToUpdate.map(r => ({
                 id: r.id,
                 teams: r.teams,
@@ -1188,39 +1340,14 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
                 .from(collectionName)
                 .upsert(intermediateUpdates, { onConflict: 'id' });
 
-              if (intermediateErr && (intermediateErr.message?.toLowerCase().includes('column') || intermediateErr.code === '42703')) {
-                console.warn("JSON data upsert failed as well, trying Level 3 extreme minimal upsert...", intermediateErr.message);
-                
-                // Try Level 3: Extreme minimal (without data column)
-                const minimalUpdates = finalRecordsToUpdate.map(r => ({
-                  id: r.id,
-                  teams: r.teams,
-                  date: r.date,
-                  analysis: r.analysis,
-                  percentage: r.percentage,
-                  stars: r.stars,
-                  tip: r.tip,
-                  odds: r.odds,
-                  result: r.result,
-                  jackpot_ids: r.jackpot_ids,
-                  updated_at: r.updated_at
-                }));
-
-                const { error: minSyncErr } = await supabase.from(collectionName).upsert(minimalUpdates, { onConflict: 'id' });
-                if (minSyncErr) throw minSyncErr;
-                setError("Note: Results synced with minimal data. Please update your database schema.");
-              } else if (intermediateErr) {
-                throw intermediateErr;
-              } else {
-                setError(null);
-              }
+              if (intermediateErr) throw intermediateErr;
            } else {
              throw syncErr;
            }
         }
       }
 
-      setSuccess(`Successfully updated results/goals for ${updatedCount} morning matches.`);
+      setSuccess(`Successfully updated missing results/tips for ${updatedCount} matches.`);
       
       // Update local state by merging results into the FULL lists
       const updateFullList = (list: Match[]) => list.map(m => {
@@ -1230,8 +1357,14 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
           return m.date.split(' ')[0] === fm.date.split(' ')[0] && 
                  (normM === normFM || normM.includes(normFM) || normFM.includes(normM));
         });
-        if (fetched && fetched.result && fetched.result !== "Unknown") {
-          return { ...m, result: fetched.result };
+        if (fetched) {
+          const updated = { ...m };
+          let changed = false;
+          if (fetched.result && fetched.result !== "Unknown" && fetched.result !== "" && fetched.result !== updated.result) {
+            updated.result = fetched.result;
+            changed = true;
+          }
+          if (changed) return updated;
         }
         return m;
       });
@@ -1250,13 +1383,13 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
         });
       }
     } catch (err: any) {
-      setError(`Morning Result Update Error: ${err.message}`);
+      setError(`Update Missing Results Error: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  return (
+    return (
     <div className="space-y-6">
       <div className="flex border-b border-gray-200">
         <button
@@ -1376,13 +1509,13 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
           </button>
 
           <button
-            onClick={handleUpdateMorningResults}
+            onClick={handleUpdateMissingResults}
             disabled={loading || getActiveMatches().length === 0}
             className={`flex-1 md:flex-none bg-amber-50 border ${activeTab === 'jackpot' ? 'border-indigo-300 text-indigo-800 hover:bg-indigo-100' : 'border-amber-300 text-amber-800 hover:bg-amber-100'} px-6 py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all disabled:opacity-50 shadow-sm`}
-            title="Re-fetch and update goals of all morning matches (00:00 - 12:00) to overwrite half-time scores with full-time results."
+            title="Re-fetch and update results and missing tips for matches, comparing with NerdyTips to update midway or completed games."
           >
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-            Update Morning Results (00:00-12:00)
+            Update Missing Results
           </button>
 
           <button
@@ -1545,8 +1678,12 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
                   </td>
                 </tr>
               ) : (
-                filteredMatches.map((match, idx) => (
-                  <tr key={`${match.id}_${idx}`} className={`hover:${activeTab === 'jackpot' ? 'bg-indigo-50/30' : 'bg-amber-50/30'} transition-colors group`}>
+                paginatedMatches.map((match, idx) => (
+                  <tr
+                    key={`${match.id}_${idx}`}
+                    style={{ contentVisibility: 'auto', containIntrinsicSize: '0 44px' }}
+                    className={`hover:${activeTab === 'jackpot' ? 'bg-indigo-50/30' : 'bg-amber-50/30'} transition-colors group`}
+                  >
                     <td className="px-4 py-3 text-xs font-mono text-gray-500">
                       {match.date}
                     </td>
@@ -1581,7 +1718,7 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
                       {match.le || '-'}
                     </td>
                     <td className="px-4 py-3 text-xs font-mono text-gray-600">
-                      {match.mo || '-'}
+                      {sanitizeMatchOdds(match.mo) || '-'}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -1611,6 +1748,35 @@ const NerdyTips: React.FC<NerdyTipsProps> = ({ onPushToLive, onPushResultsToLive
             </tbody>
           </table>
         </div>
+
+        {filteredMatches.length > NERDY_PAGE_SIZE && (
+          <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/60 flex items-center justify-between text-xs text-gray-600">
+            <span>
+              Showing {(safeNerdyPage - 1) * NERDY_PAGE_SIZE + 1}–{Math.min(safeNerdyPage * NERDY_PAGE_SIZE, filteredMatches.length)} of {filteredMatches.length} matches
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={safeNerdyPage <= 1}
+                onClick={() => setNerdyPage(p => Math.max(1, p - 1))}
+                className="px-3 py-1.5 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 font-semibold"
+              >
+                Prev
+              </button>
+              <span className="font-mono font-bold">
+                Page {safeNerdyPage} / {totalNerdyPages}
+              </span>
+              <button
+                type="button"
+                disabled={safeNerdyPage >= totalNerdyPages}
+                onClick={() => setNerdyPage(p => Math.min(totalNerdyPages, p + 1))}
+                className="px-3 py-1.5 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 font-semibold"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {showSqlSetup && (

@@ -31,9 +31,10 @@ const STUDY_LABELS: Record<string, string> = {
 export const MachineLearningDashboard: React.FC<{
   historicalMatches: Match[];
   liveMatches: Match[];
-}> = ({ historicalMatches, liveMatches }) => {
+  phaStatsMap?: Record<string, any>;
+}> = ({ historicalMatches, liveMatches, phaStatsMap }) => {
   const matches = [...historicalMatches, ...liveMatches];
-  const [activeTab, setActiveTab] = useState<'live' | 'global' | 'patterns' | 'matrix'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'global' | 'patterns' | 'matrix'>('matrix');
   const [testMatch, setTestMatch] = useState<Match | null>(null);
   const [report, setReport] = useState<IntelligenceReport | null>(null);
   const [mlResult, setMlResult] = useState<MLPivotResult | null>(null);
@@ -74,22 +75,22 @@ export const MachineLearningDashboard: React.FC<{
         </div>
         <div className="flex-1 text-center md:text-left">
           <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">SEER Intelligence</h1>
-          <p className="text-gray-500 text-lg mt-1">Machine Learning Module & Pattern Studies</p>
+          <p className="text-gray-500 text-lg mt-1">Per-Sub-Pattern ML Compute Sandbox & Pattern Studies</p>
         </div>
         <Card className="border-emerald-200 bg-emerald-50/50 shadow-sm w-full md:w-auto">
           <CardContent className="p-4 flex gap-4 items-center">
              <BrainCircuit size={32} className="text-emerald-500" />
              <div>
-               <p className="text-sm font-bold text-emerald-900">Model Active</p>
-               <p className="text-xs text-emerald-700">Trained on {totalMatchesAnalyzed} matches</p>
+               <p className="text-sm font-bold text-emerald-900">Sandbox Ready</p>
+               <p className="text-xs text-emerald-700">{historicalMatches.length.toLocaleString()} Historical Matches Loaded</p>
              </div>
           </CardContent>
         </Card>
       </div>
 
       <div className="flex gap-2 p-1 bg-gray-100 rounded-lg w-full md:w-max flex-wrap">
+        <button onClick={() => setActiveTab('matrix')} className={`px-4 py-2 text-sm font-semibold rounded-md flex items-center gap-2 transition ${activeTab === 'matrix' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'}`}><Database size={16} /> 🧪 Compute Sandbox & Matrix</button>
         <button onClick={() => setActiveTab('live')} className={`px-4 py-2 text-sm font-semibold rounded-md flex items-center gap-2 transition ${activeTab === 'live' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'}`}><Target size={16} /> Live Engine</button>
-        <button onClick={() => setActiveTab('matrix')} className={`px-4 py-2 text-sm font-semibold rounded-md flex items-center gap-2 transition ${activeTab === 'matrix' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'}`}><Database size={16} /> Matrix Data</button>
         <button onClick={() => setActiveTab('global')} className={`px-4 py-2 text-sm font-semibold rounded-md flex items-center gap-2 transition ${activeTab === 'global' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'}`}><Database size={16} /> Global Studies</button>
         <button onClick={() => setActiveTab('patterns')} className={`px-4 py-2 text-sm font-semibold rounded-md flex items-center gap-2 transition ${activeTab === 'patterns' ? 'bg-white text-amber-700 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'}`}><GitBranch size={16} /> Discovered SI Patterns</button>
       </div>
@@ -309,7 +310,7 @@ export const MachineLearningDashboard: React.FC<{
                     <div className="flex-1 p-4 bg-gray-50/50 border border-gray-200 rounded-xl">
                       <p className="text-xs text-gray-600 font-bold uppercase tracking-wider">Draw</p>
                       <p className="text-3xl font-black text-gray-700 mt-2">
-                        {mlResult?.mlPercentages ? `${mlResult.mlPercentages.draw}%` : `${report.overallDrawProb.toFixed(1)}%`}
+                        {mlResult?.mlPercentages ? `${Math.max(12, mlResult.mlPercentages.draw)}%` : `${Math.max(12, report.overallDrawProb).toFixed(1)}%`}
                       </p>
                     </div>
                     <div className="flex-1 p-4 bg-orange-50/50 border border-orange-100 rounded-xl">
@@ -440,7 +441,7 @@ export const MachineLearningDashboard: React.FC<{
 
       {activeTab === 'matrix' && (
         <div className="animate-in fade-in duration-500">
-           <SeerIntelligence historicalMatches={historicalMatches} liveMatches={liveMatches} />
+           <SeerIntelligence historicalMatches={historicalMatches} liveMatches={liveMatches} phaStatsMap={phaStatsMap} />
         </div>
       )}
 

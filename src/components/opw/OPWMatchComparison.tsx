@@ -23,6 +23,7 @@ import {
 import { Match } from '../../types';
 import { getActualResult, processMatch, calculatePAAPrediction } from '../../utils/matchProcessing';
 import { predictWithHybridML } from '../../utils/hybridMachineLearning';
+import { L10Display } from '../../utils/l10Utils';
 import { 
   getMarketFavorite, 
   getOptimizedScoreDetailed, 
@@ -169,7 +170,7 @@ const CATEGORIES: CategoryOption[] = [
   { id: 'bankers_dlive', label: 'Bankers Dlive', tagPrefix: 'bankers_dlive:', description: 'Optimized weights for Bankers D.live selections.' },
   { id: 'bankers_jackpot', label: 'Bankers Jackpot', tagPrefix: 'bankers_jackpot:', description: 'Optimized weights for Bankers Jackpot selections.' },
   { id: 'upsets', label: 'Upsets', tagPrefix: 'upsets:', description: 'High value underdogs based on pattern support.' },
-  { id: 'value_picks', label: 'Value Picks', tagPrefix: 'value_picks:', description: 'Value picks evaluated using Banker Jackpots OPW rules.' },
+  { id: 'value_picks', label: 'Value Picks', tagPrefix: 'value_picks:', description: 'Requires Market Favorite to win (odds 2.0-2.50) without draw or underdog traps.' },
   { id: 'botb_best', label: 'BOTB', tagPrefix: 'botb_best:', description: 'Premium tier selections with zero risk flags.' }
 ];
 
@@ -786,12 +787,12 @@ export const OPWMatchComparison: React.FC<OPWMatchComparisonProps> = ({
         description: existingSettings?.description || `${cat.label} calibrated settings`,
         baseLogic: existingSettings?.baseLogic || "Points based on Primary Pattern PHA %.",
         baseWeightIntervals: existingSettings?.baseWeightIntervals || [
-          { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-          { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-          { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-          { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-          { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-          { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+          { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
         ],
         rules: finalRules
       };
@@ -1014,8 +1015,8 @@ export const OPWMatchComparison: React.FC<OPWMatchComparisonProps> = ({
           </div>
           <div className="p-1.5 rounded bg-gray-50 border border-gray-100">
             <span className="text-[9px] text-gray-500 block uppercase font-bold">L10 Form</span>
-            <span className="font-bold text-gray-800 text-[11px]">
-              {match.l10 || '—'}
+            <span className="font-bold text-gray-800 text-[11px] block">
+              <L10Display l10={match.l10} />
             </span>
           </div>
           <div className="p-1.5 rounded bg-gray-50 border border-gray-100">

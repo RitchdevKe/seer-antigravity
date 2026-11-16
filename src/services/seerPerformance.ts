@@ -11,6 +11,19 @@ import { getMatchEvaluatorTags } from "../utils/matchEvaluator";
 import { Pick } from "../components/ai/GeminiCards";
 import { getMatchDayOfWeek } from "../utils/opwCommon";
 
+function isMatchForPick(m: Match, pId: string, pTeam?: string): boolean {
+  const mId = m.id?.toString() || "";
+  const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normPTeam = (pTeam || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
+  const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
+    normMTeam === normPTeam ||
+    normMTeam.includes(normPTeam) ||
+    normPTeam.includes(normMTeam)
+  );
+  return isIdMatch || isTeamMatch;
+}
+
 export interface DailySnapshot {
   date: string; // YYYY-MM-DD (Analysis Date)
   compressedMatches?: string;
@@ -128,17 +141,6 @@ export const syncSeerData = async (
       });
 
       for (const [dateStr, dateMatches] of Object.entries(grouped)) {
-        // Generate slips for THIS specific date group
-        const matchDay = getMatchDayOfWeek({ date: dateStr } as Match);
-        const slipsObj = generateSeerSlips(
-          dateMatches,
-          phaStatsMap,
-          matchStars,
-          false,
-          false,
-          matchDay
-        );
-
         // Core auto-lock categories + SEER AI categories
         const BASE_CATS = [
           "top_12_value",
@@ -165,41 +167,22 @@ export const syncSeerData = async (
         ];
 
         for (const catId of TARGET_CATS) {
-          // Update any existing locked slip for this category/date to keep results sticky
+          // Strictly hydrate results and accuracy on existing locked slips (preserving exact match picks)
           try {
             const existingSlip = await getLockedSlip(dateStr, catId);
-            if (existingSlip) {
+            if (existingSlip && existingSlip.picks && existingSlip.picks.length > 0) {
               let slipChanged = false;
               const cleanCat = catId.replace(/^ai_/, '').replace(/^sandbox_/, '');
               const updatedPicks = existingSlip.picks.map((p) => {
                 const pId = p.match_id?.toString() || "";
-                const normPTeam = (p.team || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-                const matchingM = dateMatches.find(
-                  (m) => {
-                    const mId = m.id?.toString() || "";
-                    const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-                    const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-                    const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-                      normMTeam === normPTeam ||
-                      normMTeam.includes(normPTeam) ||
-                      normPTeam.includes(normMTeam)
-                    );
-                    return isIdMatch || isTeamMatch;
-                  }
-                ) || matches.find(
-                  (m) => {
-                    const mId = m.id?.toString() || "";
-                    const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-                    const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-                    const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-                      normMTeam === normPTeam ||
-                      normMTeam.includes(normPTeam) ||
-                      normPTeam.includes(normMTeam)
-                    );
-                    return isIdMatch || isTeamMatch;
-                  }
-                );
+                const matchingM = dateMatches.find(m => isMatchForPick(m, pId, p.team));
                 if (matchingM) {
+                  if (matchingM.l10 && matchingM.l10 !== p.l10) { p.l10 = matchingM.l10; slipChanged = true; }
+                  if (matchingM.gs && matchingM.gs !== p.gs) { p.gs = matchingM.gs; slipChanged = true; }
+                  if (matchingM.ga && matchingM.ga !== p.ga) { p.ga = matchingM.ga; slipChanged = true; }
+                  if (matchingM.le && matchingM.le !== p.le) { p.le = matchingM.le; slipChanged = true; }
+                  if (matchingM.mo && matchingM.mo !== p.odds) { p.odds = matchingM.mo; slipChanged = true; }
+                  if (matchingM.rating && matchingM.rating !== p.rating) { p.rating = matchingM.rating; slipChanged = true; }
                   const actual = getActualResult(matchingM.result);
                   if (actual && actual !== "pending") {
                     const outcome: "Pending" | "Correct" | "Incorrect" = isMatchCorrectForCategory(matchingM, p.prediction, actual, cleanCat) ? "Correct" : "Incorrect";
@@ -223,126 +206,12 @@ export const syncSeerData = async (
                   picks: updatedPicks,
                   createdAt: existingSlip.createdAt || new Date().toISOString(),
                 };
-                await saveLockedSlip(updatedSlip, true); // Force overwrite to true
-                console.log(`Updated results inside existing locked slip: ${dateStr}_${catId}`);
+                await saveLockedSlip(updatedSlip, true);
+                console.log(`[syncSeerData] Hydrated match results for locked slip: ${dateStr}_${catId}`);
               }
             }
           } catch (slipErr) {
             console.error(`Failed to update existing locked slip ${dateStr}_${catId}:`, slipErr);
-          }
-
-          // Check both live (Daily) and spec (Specialty/Jackpot) slips
-          let picks = slipsObj.live[catId] || slipsObj.spec[catId];
-
-          if (!picks || picks.length === 0) {
-            if (["banker", "upset", "jackpot", "safety"].includes(catId)) {
-              const catConf = {
-                banker: { targetTags: ["bankers_jackpot", "bankers_dlive"], minSeer: 33 },
-                upset: { targetTags: ["upsets", "value_bets"], minSeer: 25 },
-                jackpot: { targetTags: ["bankers_jackpot", "top10"], minSeer: 30 },
-                safety: { targetTags: ["best_bet"], minSeer: 35 }
-              }[catId as "banker" | "upset" | "jackpot" | "safety"];
-
-              if (catConf) {
-                const getMatchDetails = (m: Match) => {
-                  const tags = getMatchEvaluatorTags(m, phaStatsMap, false, true, matchStars);
-                  const hardBans = tags.filter(
-                    (t) => t.startsWith("BANNED:") && t !== "PHA_TIE",
-                  );
-                  const hasHardBan = hardBans.length > 0;
-                  const hasPhaTie = tags.includes("PHA_TIE");
-
-                  const p1 = getMatchScore(m, "1", DEFAULT_WEIGHTS, phaStatsMap, matchStars);
-                  const p2 = getMatchScore(m, "2", DEFAULT_WEIGHTS, phaStatsMap, matchStars);
-                  const isBanker = tags.some(
-                    (t) => t.includes("bankers") || t.includes("jackpot"),
-                  );
-                  const isUpset = tags.some(
-                    (t) => t.includes("upsets") || t.includes("value_bets"),
-                  );
-
-                  let conflictRes = "none";
-                  if (isBanker && isUpset) {
-                    conflictRes = p1 > p2 ? "banker_win" : "upset_win";
-                  }
-
-                  return {
-                    tags,
-                    hasHardBan,
-                    hasPhaTie,
-                    p1,
-                    p2,
-                    isBanker,
-                    isUpset,
-                    conflictRes,
-                  };
-                };
-
-                const filtered = dateMatches.filter((m) => {
-                  const details = getMatchDetails(m);
-                  if (details.hasHardBan) return false;
-
-                  const matchesCategory = catConf.targetTags.some((tt) =>
-                    details.tags.some((t) => t.includes(tt)),
-                  );
-                  if (!matchesCategory) return false;
-
-                  // Resolve Banker/Upset conflicts
-                  if (catId === "banker" && details.conflictRes === "upset_win")
-                    return false;
-                  if (catId === "upset" && details.conflictRes === "banker_win")
-                    return false;
-
-                  const score = Math.max(
-                    details.p1,
-                    details.p2,
-                    getMatchScore(m, "X", DEFAULT_WEIGHTS, phaStatsMap, matchStars),
-                  );
-                  return score >= catConf.minSeer;
-                });
-
-                // Sort recommended by Seer Score + PHA Tie penalty
-                filtered.sort((a, b) => {
-                  const detA = getMatchDetails(a);
-                  const detB = getMatchDetails(b);
-                  const scoreA =
-                    Math.max(detA.p1, detA.p2) - (detA.hasPhaTie ? 100 : 0);
-                  const scoreB =
-                    Math.max(detB.p1, detB.p2) - (detB.hasPhaTie ? 100 : 0);
-                  return scoreB - scoreA;
-                });
-
-                picks = filtered.map((m) => ({
-                  match_id: m.id,
-                  team: m.teams,
-                  prediction: predictWithSeer(
-                    m,
-                    DEFAULT_WEIGHTS,
-                    phaStatsMap,
-                    matchStars,
-                    catId,
-                  ),
-                  odds: m.mo?.split(",")[0] || "1.0",
-                  reason: "Locked Selection",
-                  confidence: "100%",
-                  category: catId,
-                }));
-              }
-            }
-          }
-
-          if (picks && picks.length > 0) {
-            const slip: SeerLockedSlip = {
-              id: `${dateStr}_${catId}`,
-              date: dateStr,
-              category: catId,
-              picks: picks,
-              backups: [],
-              weightsAtTime: DEFAULT_WEIGHTS,
-              createdAt: new Date().toISOString(),
-              type: dateMatches.some((m) => m.isJackpot) ? "jackpot" : "daily",
-            };
-            // Auto-lock removed to allow manual selection and keep deleted slips unlocked
           }
         }
       }

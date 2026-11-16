@@ -8,8 +8,8 @@ import { filterTombstoned } from './matchTombstones';
 import { safeSupabaseUpsert } from './supabaseHelper';
 
 
-const CACHE_KEY = 'prm_supabase_matches_cache_v2';
-const CACHE_TIME_KEY = 'prm_supabase_matches_cache_time_v2';
+const CACHE_KEY = 'prm_supabase_matches_cache_v4';
+const CACHE_TIME_KEY = 'prm_supabase_matches_cache_time_v4';
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 let memoryPrecalculatedMatches: Match[] | null = null;

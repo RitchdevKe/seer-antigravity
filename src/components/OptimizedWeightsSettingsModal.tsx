@@ -29,7 +29,7 @@ export default function OptimizedWeightsSettingsModal({ isOpen, onClose, categor
                 ? OPTIMIZED_CATEGORY_SETTINGS[categoryId]
                 : DAILY_OPTIMIZED_SETTINGS[selectedDay]?.[categoryId];
             
-            const HARDCODED_CATEGORIES = ['best_bet', 'bankers_dlive', 'top_10_value', 'upsets', 'botb_best', 'bankers_jackpot', 'value_picks', 'high_confidence'];
+            const HARDCODED_CATEGORIES = ['best_bet', 'bankers_dlive', 'top_12_value', 'top_10_value', 'upsets', 'botb_best', 'bankers_jackpot', 'value_picks', 'high_confidence'];
             if (HARDCODED_CATEGORIES.includes(categoryId)) {
                 const codeDefault = selectedDay === 'all'
                     ? CODE_DEFAULT_CATEGORY_SETTINGS[categoryId]
@@ -66,7 +66,7 @@ export default function OptimizedWeightsSettingsModal({ isOpen, onClose, categor
         
         // Before saving, force-inject code defaults for all hardcoded categories
         // to prevent any corrupted/empty state from being persisted
-        const HARDCODED_CATEGORIES = ['best_bet', 'bankers_dlive', 'top_10_value', 'upsets', 'botb_best', 'bankers_jackpot', 'value_picks', 'high_confidence'];
+        const HARDCODED_CATEGORIES = ['best_bet', 'bankers_dlive', 'top_12_value', 'top_10_value', 'upsets', 'botb_best', 'bankers_jackpot', 'value_picks', 'high_confidence'];
         for (const hcKey of HARDCODED_CATEGORIES) {
             const codeDefault = CODE_DEFAULT_CATEGORY_SETTINGS[hcKey];
             if (codeDefault && (!OPTIMIZED_CATEGORY_SETTINGS[hcKey] || 

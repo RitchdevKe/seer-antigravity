@@ -141,7 +141,13 @@ const minifyMatch = (m: any): any => {
         phaReliability: m.phaReliability,
         paaWin: m.paaWin,
         paaDraw: m.paaDraw,
-        paaUpset: m.paaUpset
+        paaUpset: m.paaUpset,
+        mlInfo: m.mlInfo,
+        mlPrediction: m.mlPrediction,
+        mlConfidence: m.mlConfidence,
+        mlReasoning: m.mlReasoning,
+        mlStats: m.mlStats,
+        mlPercentages: m.mlPercentages || m.mlInfo?.mlPercentages
     };
 };
 
@@ -462,15 +468,17 @@ export const saveLiveMatches = async (matches: Match[], sync: boolean = true, fo
     // Regenerate and standardize IDs for all live matches to prevent duplicates/drift
     const idUpdatedMatches = matches.map(m => {
       const stableId = getStableMatchId(m);
-      return { ...m, id: stableId };
+      return m.id === stableId ? m : { ...m, id: stableId };
     });
     const uniqueMatches = deduplicateMatches(idUpdatedMatches);
     memoryLiveMatches = uniqueMatches;
 
-    // Save to Supabase live_matches relational table in background to keep UI instantly responsive
-    saveLiveMatchesToSupabase(uniqueMatches).catch(err => {
-      console.error("Failed to sync live matches to relational DB table in background:", err);
-    });
+    // Save to Supabase live_matches relational table in background ONLY when sync is true
+    if (sync) {
+      saveLiveMatchesToSupabase(uniqueMatches).catch(err => {
+        console.error("Failed to sync live matches to relational DB table in background:", err);
+      });
+    }
 
     try {
         if (uniqueMatches.length > CHUNK_SIZE) {
@@ -554,15 +562,17 @@ export const saveUploadedMatches = async (matches: Match[], sync: boolean = true
     // Regenerate and standardize IDs for all uploaded matches to prevent duplicates/drift
     const idUpdatedMatches = matches.map(m => {
       const stableId = getStableMatchId(m);
-      return { ...m, id: stableId };
+      return m.id === stableId ? m : { ...m, id: stableId };
     });
     const uniqueMatches = deduplicateMatches(idUpdatedMatches);
     memoryUploadedMatches = uniqueMatches;
 
-    // 1. Backup to Supabase relational table in background to keep UI instantly responsive
-    saveUploadedMatchesToSupabase(uniqueMatches).catch(err => {
-      console.error("Failed to sync uploaded matches to relational DB table in background:", err);
-    });
+    // 1. Backup to Supabase relational table in background ONLY when sync is true
+    if (sync) {
+      saveUploadedMatchesToSupabase(uniqueMatches).catch(err => {
+        console.error("Failed to sync uploaded matches to relational DB table in background:", err);
+      });
+    }
 
     // 2. Always persist full array to IndexedDB (supports gigabytes without localStorage quota limits)
     try {
@@ -596,7 +606,13 @@ export const getUploadedMatchesAsync = async (): Promise<Match[]> => {
     return memoryUploadedMatches;
   }
   try {
-    let data = await get('seer_uploaded_matches_idb_cache_v2');
+    let data = await get('seer_uploaded_matches_idb_cache_v5');
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      data = await get('seer_uploaded_matches_idb_cache_v4');
+    }
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      data = await get('seer_uploaded_matches_idb_cache_v2');
+    }
     if (!data || !Array.isArray(data) || data.length === 0) {
       data = await get(KEYS.UPLOADED_MATCHES);
     }
@@ -928,19 +944,28 @@ export const getSeerWeights = (): Record<string, any> => {
 
 // --- NERDY TIPS CACHE ---
 
+const nerdyCacheTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const memoryNerdyCache: Record<string, Match[]> = {};
+
 export const saveNerdyMatchesCache = async (type: 'daily' | 'jackpot', matches: Match[]) => {
     const key = type === 'daily' ? KEYS.NERDY_DAILY_MATCHES : KEYS.NERDY_JACKPOT_MATCHES;
-    try {
-        await saveCompressed(key, matches);
-    } catch (e) {
-        console.error(`Failed to cache ${type} nerdy matches`, e);
-    }
+    memoryNerdyCache[key] = matches;
+    if (nerdyCacheTimers[key]) clearTimeout(nerdyCacheTimers[key]);
+    nerdyCacheTimers[key] = setTimeout(() => {
+        delete nerdyCacheTimers[key];
+        saveCompressed(key, matches).catch(e => {
+            console.error(`Failed to cache ${type} nerdy matches`, e);
+        });
+    }, 150);
 };
 
 export const getNerdyMatchesCache = (type: 'daily' | 'jackpot'): Match[] => {
     const key = type === 'daily' ? KEYS.NERDY_DAILY_MATCHES : KEYS.NERDY_JACKPOT_MATCHES;
+    if (memoryNerdyCache[key]) return memoryNerdyCache[key];
     try {
-        return loadCompressed(key) || [];
+        const loaded = loadCompressed(key) || [];
+        memoryNerdyCache[key] = loaded;
+        return loaded;
     } catch {
         return [];
     }

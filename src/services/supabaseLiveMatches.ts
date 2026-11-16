@@ -13,7 +13,7 @@ import { updateMLMatrixFromMatches } from './mlMatrixUpdater';
  * no stale/duplicated matches remain in the database.
  */
 
-const LIVE_CACHE_KEY = 'seer_live_matches_idb_cache';
+const LIVE_CACHE_KEY = 'seer_live_matches_idb_cache_v5';
 const LIVE_CACHE_TIME_KEY = 'seer_live_matches_idb_cache_time';
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 let memoryLiveMatches: Match[] | null = null;
@@ -40,11 +40,14 @@ export const saveLiveMatchesToSupabase = async (matches: Match[]): Promise<boole
 
     const CHUNK_SIZE = 100;
     
-    // De-duplicate matches by stable ID to avoid upsert primary key conflicts
+    // De-duplicate matches by stable ID to avoid upsert primary key conflicts, and strip any cached OPW scores
     const uniqueMatchesMap = new Map<string, Match>();
     matches.forEach(m => {
       if (m && m.id) {
-        uniqueMatchesMap.set(String(m.id), m);
+        const cleaned = { ...m };
+        delete cleaned.lockedOpwScores;
+        delete cleaned.lockedOpwScore;
+        uniqueMatchesMap.set(String(m.id), cleaned);
       }
     });
     const uniqueMatches = Array.from(uniqueMatchesMap.values());
@@ -59,8 +62,12 @@ export const saveLiveMatchesToSupabase = async (matches: Match[]): Promise<boole
         teams: match.teams || 'Unknown',
         result: match.result || '-', // Store as dash if unknown/empty
         date: match.date || '',
+        league: match.league || (match as any).data?.league || null,
+        country: match.country || (match as any).data?.country || null,
         data: {
           ...match,
+          league: match.league || (match as any).data?.league || null,
+          country: match.country || (match as any).data?.country || null,
           result: match.result || '-' // Enforce result format in JSON representation as well
         },
         updated_at: new Date().toISOString()
@@ -154,11 +161,22 @@ export const saveLiveMatchesToSupabase = async (matches: Match[]): Promise<boole
 
 export const deleteLiveMatchFromSupabase = async (id: string | number): Promise<boolean> => {
     try {
-        const { error } = await supabase.from('live_matches').delete().eq('id', String(id));
+        const strId = String(id);
+        const { error } = await supabase.from('live_matches').delete().eq('id', strId);
         if (error) {
             console.error("Failed to delete match from live_matches:", error);
             return false;
         }
+        if (memoryLiveMatches) {
+            memoryLiveMatches = memoryLiveMatches.filter(m => String(m.id) !== strId);
+        }
+        try {
+            const idbData = await idbGet(LIVE_CACHE_KEY);
+            if (idbData && Array.isArray(idbData)) {
+                const filteredData = idbData.filter(m => String(m.id) !== strId);
+                await idbSet(LIVE_CACHE_KEY, filteredData);
+            }
+        } catch(e) {}
         return true;
     } catch (error) {
         console.error("Error deleting match:", error);
@@ -169,14 +187,25 @@ export const deleteLiveMatchFromSupabase = async (id: string | number): Promise<
 export const deleteLiveMatchesFromSupabaseBulk = async (ids: (string | number)[]): Promise<boolean> => {
     if (!ids || ids.length === 0) return true;
     try {
-        const stringIds = ids.map(id => String(id));
-        for (let i = 0; i < stringIds.length; i += 100) {
-            const chunk = stringIds.slice(i, i + 100);
+        const stringIds = new Set(ids.map(id => String(id)));
+        const stringIdsArr = Array.from(stringIds);
+        for (let i = 0; i < stringIdsArr.length; i += 100) {
+            const chunk = stringIdsArr.slice(i, i + 100);
             const { error } = await supabase.from('live_matches').delete().in('id', chunk);
             if (error) {
                 console.error("Failed to bulk delete matches from live_matches:", error);
             }
         }
+        if (memoryLiveMatches) {
+            memoryLiveMatches = memoryLiveMatches.filter(m => !stringIds.has(String(m.id)));
+        }
+        try {
+            const idbData = await idbGet(LIVE_CACHE_KEY);
+            if (idbData && Array.isArray(idbData)) {
+                const filteredData = idbData.filter(m => !stringIds.has(String(m.id)));
+                await idbSet(LIVE_CACHE_KEY, filteredData);
+            }
+        } catch(e) {}
         return true;
     } catch (error) {
         console.error("Error bulk deleting matches:", error);
@@ -189,7 +218,7 @@ export const deleteLiveMatchesFromSupabaseBulk = async (ids: (string | number)[]
  */
 export const loadLiveMatchesFromSupabase = async (forceRefresh = false): Promise<Match[]> => {
   if (!forceRefresh && memoryLiveMatches && memoryLiveMatches.length > 0) {
-    return memoryLiveMatches;
+    return filterTombstoned(memoryLiveMatches);
   }
   const now = Date.now();
   const cachedTimeStr = localStorage.getItem(LIVE_CACHE_TIME_KEY);
@@ -199,8 +228,14 @@ export const loadLiveMatchesFromSupabase = async (forceRefresh = false): Promise
       try {
         const idbData = await idbGet(LIVE_CACHE_KEY);
         if (idbData && Array.isArray(idbData)) {
+          idbData.forEach((m: any) => {
+            if (m && typeof m === 'object') {
+              delete m.lockedOpwScores;
+              delete m.lockedOpwScore;
+            }
+          });
           memoryLiveMatches = idbData;
-          return idbData;
+          return filterTombstoned(idbData);
         }
       } catch (e) {}
     }
@@ -214,7 +249,7 @@ export const loadLiveMatchesFromSupabase = async (forceRefresh = false): Promise
     while (hasMore) {
       const { data, error } = await supabase
         .from('live_matches')
-        .select('data')
+        .select('*')
         .order('date', { ascending: false })
         .order('id', { ascending: true })
         .range(from, from + step - 1);
@@ -227,7 +262,17 @@ export const loadLiveMatchesFromSupabase = async (forceRefresh = false): Promise
       if (data && data.length > 0) {
         data.forEach(row => {
           if (row.data) {
-            matches.push(row.data as Match);
+            const m = row.data as Match;
+            delete m.lockedOpwScores;
+            delete m.lockedOpwScore;
+            if (row.country && !m.country) m.country = row.country;
+            if (row.league && !m.league) m.league = row.league;
+            matches.push(m);
+          } else if (row.teams) {
+            const m = row as unknown as Match;
+            delete m.lockedOpwScores;
+            delete m.lockedOpwScore;
+            matches.push(m);
           }
         });
         if (data.length < step) {

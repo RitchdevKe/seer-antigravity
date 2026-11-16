@@ -2,6 +2,7 @@
 import { Match } from '../../types';
 import { matchesPrediction, enforceAlgoPredictionRules } from '../../utils/matchProcessing';
 import { Algorithm, PredictionDetail } from './algorithm';
+import { parseL10 } from '../../utils/l10Utils';
 
 export const predictDaily = (match: Match, algo: Algorithm): PredictionDetail & { probabilities: { '1': number; 'X': number; '2': number }, category: string } => {
     const mainP = match.patternAnalysis?.mainPattern || 'NA';
@@ -1975,16 +1976,15 @@ export const predictDaily = (match: Match, algo: Algorithm): PredictionDetail & 
         finalPrediction = 'X2';
     }
 
-    if (match.l10 && match.l10 !== 'NA') {
-        const parts = match.l10.split(':').map(s => parseFloat(s));
-        if (parts.length === 2) {
-            const [l10H, l10A] = parts;
-            if (prediction === '1' && !isNaN(o1) && !isNaN(o2) && o1 > o2 && l10H < l10A) {
-                finalPrediction = '1X';
-            }
-            if (prediction === '2' && !isNaN(o1) && !isNaN(o2) && o2 > o1 && l10A < l10H) {
-                finalPrediction = 'X2';
-            }
+    const parsedDliveL10 = parseL10(match.l10);
+    if (parsedDliveL10.isValid) {
+        const l10H = parsedDliveL10.homeWins;
+        const l10A = parsedDliveL10.awayWins;
+        if (prediction === '1' && !isNaN(o1) && !isNaN(o2) && o1 > o2 && l10H < l10A) {
+            finalPrediction = '1X';
+        }
+        if (prediction === '2' && !isNaN(o1) && !isNaN(o2) && o2 > o1 && l10A < l10H) {
+            finalPrediction = 'X2';
         }
     }
 
@@ -2467,8 +2467,8 @@ export const predictDaily = (match: Match, algo: Algorithm): PredictionDetail & 
 
     // [PROTOCOL: DOMINANT AWAY FAV SAFEGUARD]
     if (finalPrediction === '2' && !isNaN(minOddsFinal) && minOddsFinal < 1.50) {
-        const l10Parts = match.l10?.split(':') || [];
-        const l10Home = parseFloat(l10Parts[0] || '0');
+        const parsedSafeguard = parseL10(match.l10);
+        const l10Home = parsedSafeguard.isValid ? parsedSafeguard.homeWins : 0;
         if (l10Home > 5.0) { 
              finalPrediction = 'X2';
              reasonParts.push("Dominant Away Fav Safeguard");

@@ -1,6 +1,7 @@
 import { Match } from '../../types';
 import { matchesPrediction, enforceAlgoPredictionRules } from '../../utils/matchProcessing';
 import { Algorithm, PredictionDetail } from './algorithm';
+import { parseL10 } from '../../utils/l10Utils';
 
 export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail & { probabilities: { '1': number; 'X': number; '2': number }, category: string } => {
     const mainP = match.patternAnalysis?.mainPattern || 'NA';
@@ -728,9 +729,9 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
         if (category === 'Banker' && !isNaN(Math.min(o1, o2)) && Math.min(o1, o2) < 2.50) {
             // Team Points Per Game (Last 5) < 1.0 check
             // Using L10 as proxy. Format "H:A".
-            const l10 = match.l10?.split(':').map(Number);
-            if (l10 && l10.length === 2) {
-                const favPts = moFav === '1' ? l10[0] : l10[1];
+            const parsedL10JK = parseL10(match.l10);
+            if (parsedL10JK.isValid) {
+                const favPts = moFav === '1' ? parsedL10JK.homeWins : parsedL10JK.awayWins;
                 // Assuming L10 is sum of points in last 5 games. < 5 pts = < 1.0 ppg
                 if (favPts < 5) {
                     category = 'Standard'; // Demote from Banker
@@ -746,7 +747,7 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
                 // Check if Fav lost 2+ consecutive away (Proxy: Away form very low)
                 // If Away team is Fav (2) and L10(Away) is high, REJECT Upset
                 if (moFav === '2') {
-                    const l10A = match.l10?.split(':')[1] ? parseFloat(match.l10.split(':')[1]) : 0;
+                    const l10A = parsedL10JK.isValid ? parsedL10JK.awayWins : 0;
                     if (l10A > 6) { // Decent form
                         // Reject Upset
                         category = 'Standard';
@@ -756,7 +757,7 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
                 }
                 // If Home team is Fav (1) and L10(Home) is high
                 if (moFav === '1') {
-                    const l10H = match.l10?.split(':')[0] ? parseFloat(match.l10.split(':')[0]) : 0;
+                    const l10H = parsedL10JK.isValid ? parsedL10JK.homeWins : 0;
                     if (l10H > 6) {
                         category = 'Standard';
                         finalPrediction = '1';
@@ -2217,16 +2218,15 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
         finalPrediction = 'X2';
     }
 
-    if (match.l10 && match.l10 !== 'NA') {
-        const parts = match.l10.split(':').map(s => parseFloat(s));
-        if (parts.length === 2) {
-            const [l10H, l10A] = parts;
-            if (prediction === '1' && !isNaN(o1) && !isNaN(o2) && o1 > o2 && l10H < l10A) {
-                finalPrediction = '1X';
-            }
-            if (prediction === '2' && !isNaN(o1) && !isNaN(o2) && o2 > o1 && l10A < l10H) {
-                finalPrediction = 'X2';
-            }
+    const parsedJkForm = parseL10(match.l10);
+    if (parsedJkForm.isValid) {
+        const l10H = parsedJkForm.homeWins;
+        const l10A = parsedJkForm.awayWins;
+        if (prediction === '1' && !isNaN(o1) && !isNaN(o2) && o1 > o2 && l10H < l10A) {
+            finalPrediction = '1X';
+        }
+        if (prediction === '2' && !isNaN(o1) && !isNaN(o2) && o2 > o1 && l10A < l10H) {
+            finalPrediction = 'X2';
         }
     }
 
@@ -2519,9 +2519,9 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
     if (category === 'Upset' && moFav) {
         // Market Favorite Form > 60% (Last 5 Games)
         // Proxy using L10 (Points in last 5 games). Max 15. 60% is 9.
-        const l10 = match.l10?.split(':').map(Number);
-        if (l10 && l10.length === 2) {
-            const favPts = moFav === '1' ? l10[0] : l10[1];
+        const parsedUpsetL10 = parseL10(match.l10);
+        if (parsedUpsetL10.isValid) {
+            const favPts = moFav === '1' ? parsedUpsetL10.homeWins : parsedUpsetL10.awayWins;
             if (favPts >= 9) {
                 // Override Upset
                 finalPrediction = moFav === '1' ? '1X' : 'X2';
@@ -2936,9 +2936,9 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
     if (category === 'Banker' && !isNaN(Math.min(o1, o2)) && Math.min(o1, o2) < 2.50) {
         // Team Points Per Game (Last 5) < 1.0 check
         // Using L10 as proxy. Format "H:A".
-        const l10 = match.l10?.split(':').map(Number);
-        if (l10 && l10.length === 2) {
-            const favPts = moFav === '1' ? l10[0] : l10[1];
+        const parsedBankerL10 = parseL10(match.l10);
+        if (parsedBankerL10.isValid) {
+            const favPts = moFav === '1' ? parsedBankerL10.homeWins : parsedBankerL10.awayWins;
             // Assuming L10 is sum of points in last 5 games. < 5 pts = < 1.0 ppg
             if (favPts < 5) {
                 category = 'Standard'; // Demote from Banker
@@ -2954,7 +2954,7 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
             // Check if Fav lost 2+ consecutive away (Proxy: Away form very low)
             // If Away team is Fav (2) and L10(Away) is high, REJECT Upset
             if (moFav === '2') {
-                const l10A = match.l10?.split(':')[1] ? parseFloat(match.l10.split(':')[1]) : 0;
+                const l10A = parsedBankerL10.isValid ? parsedBankerL10.awayWins : 0;
                 if (l10A > 6) { // Decent form
                     // Reject Upset
                     category = 'Standard';
@@ -2964,7 +2964,7 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
             }
             // If Home team is Fav (1) and L10(Home) is high
             if (moFav === '1') {
-                const l10H = match.l10?.split(':')[0] ? parseFloat(match.l10.split(':')[0]) : 0;
+                const l10H = parsedBankerL10.isValid ? parsedBankerL10.homeWins : 0;
                 if (l10H > 6) {
                     category = 'Standard';
                     finalPrediction = '1';
@@ -3047,8 +3047,8 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
     // [PROTOCOL: HOME FORTRESS CORRECTION (UPSET LOGIC)]
     // "IF Step 2 Upset suggests Away Win/Draw (X2) BUT Home Team has lost < 20% of last 10 Home Games"
     if (finalPrediction === 'X2') {
-        const l10Parts = match.l10?.split(':') || [];
-        const l10Home = parseFloat(l10Parts[0] || '0');
+        const parsedFortress = parseL10(match.l10);
+        const l10Home = parsedFortress.isValid ? parsedFortress.homeWins : 0;
         // L10 Home usually points. If they lost < 20%, they won/drew > 80%.
         // Assuming L10 score > 7 means strong home form.
         if (l10Home > 7) {
@@ -3091,7 +3091,10 @@ export const predictJackpot = (match: Match, algo: Algorithm): PredictionDetail 
     // If Upset (X2 or 1X against Fav), Fav must have poor form (L10 < 4).
     if (category === 'Upset') {
         const favTeam = moFav === '1' ? 'Home' : 'Away';
-        const l10Fav = favTeam === 'Home' ? parseFloat(match.l10?.split(':')[0] || '0') : parseFloat(match.l10?.split(':')[1] || '0');
+        const parsedUnderdogForm = parseL10(match.l10);
+        const l10Fav = parsedUnderdogForm.isValid 
+            ? (favTeam === 'Home' ? parsedUnderdogForm.homeWins : parsedUnderdogForm.awayWins)
+            : 0;
         
         if (l10Fav > 6) { // Fav has good form
              // Invalidate Upset

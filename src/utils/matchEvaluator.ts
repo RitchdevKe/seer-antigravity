@@ -75,8 +75,11 @@ export const getMatchStats = (match: Match, phaStatsMap: Record<string, any>): M
     let moFav = '1';
     let moUnderdog = '2';
     if (match.mo) {
-        // Robust parsing: handle commas, spaces, dashes
-        const parts = match.mo.split(/[- ,]+/).map(p => parseFloat(p.trim())).filter(p => !isNaN(p));
+        // Robust parsing: handle commas, spaces, dashes, slashes, pipes and strip arrow decorations (▾, ▴)
+        const parts = match.mo
+            .split(/[- ,/|]+|\s+/)
+            .map(p => parseFloat(p.replace(/[^0-9.]/g, '').trim()))
+            .filter(p => !isNaN(p));
         if (parts.length >= 3) {
             o1 = parts[0];
             oX = parts[1];
@@ -84,7 +87,7 @@ export const getMatchStats = (match: Match, phaStatsMap: Record<string, any>): M
             moFav = o1 < o2 ? '1' : '2';
             moUnderdog = o1 < o2 ? '2' : '1';
         } else if (parts.length === 1) {
-            const pred = match.finalPrediction || match.targetPrediction || match.seerPrediction || match.pred1x2 || '1';
+            const pred = match.finalPrediction || (match as any).targetPrediction || match.seerPrediction || match.pred1x2 || '1';
             moFav = pred.includes('2') ? '2' : '1';
             moUnderdog = moFav === '1' ? '2' : '1';
             if (moFav === '1') { o1 = parts[0]; o2 = 99; } else { o2 = parts[0]; o1 = 99; }
@@ -188,9 +191,9 @@ export const isMatchAccurate = (match: Match, category: string, priority: string
     const cat = category.toLowerCase();
     
     // Get Market Favorite
-    let o1 = 0, o2 = 0;
+    let o1 = 0, oX = 0, o2 = 0, moFav = '1', moUnderdog = '2';
     if (match.mo) {
-        const parts = match.mo.split(/[- ,]+/).map(p => parseFloat(p.trim())).filter(p => !isNaN(p));
+        const parts = match.mo.split(/[- ,]+/).map(p => parseFloat(p.replace(/[^0-9.]/g, '').trim())).filter(p => !isNaN(p));
         if (parts.length >= 3) {
             o1 = parts[0];
             oX = parts[1];
@@ -198,7 +201,7 @@ export const isMatchAccurate = (match: Match, category: string, priority: string
             moFav = o1 < o2 ? '1' : '2';
             moUnderdog = o1 < o2 ? '2' : '1';
         } else if (parts.length === 1) {
-            const pred = match.finalPrediction || match.targetPrediction || match.seerPrediction || match.pred1x2 || '1';
+            const pred = match.finalPrediction || (match as any).targetPrediction || match.seerPrediction || match.pred1x2 || '1';
             moFav = pred.includes('2') ? '2' : '1';
             moUnderdog = moFav === '1' ? '2' : '1';
             if (moFav === '1') { o1 = parts[0]; o2 = 99; } else { o2 = parts[0]; o1 = 99; }
@@ -213,7 +216,7 @@ export const isMatchAccurate = (match: Match, category: string, priority: string
 
     // --- CATEGORY CALCULATOR RULES ---
     // Overall accuracy for all category matches is calculated by asking whether the match hit the hedged prediction (1X/X2 or 12).
-    const rawPred = String(match.targetPrediction || match.finalPrediction || match.rawPrediction || '').trim().toUpperCase();
+    const rawPred = String((match as any).targetPrediction || match.finalPrediction || match.rawPrediction || '').trim().toUpperCase();
 
     // 1. If the match has an explicit '12' hedge (from hedging protocols or consensus)
     if (rawPred === '12') {
@@ -359,83 +362,77 @@ export const evaluateMatchCategory = (
 
     // --- BEST BET ---
     if (category === 'best_bet') {
-        if (isUnderdogConsensus) return false;
-        if (!matchesPrediction(finalPred, moFav)) return false;
-        if (favOdds < 1.30 || favOdds > 1.60) return false;
+        if (favOdds < 1.30 || favOdds >= 1.60) return false;
         
         const algoAgrees = matchesPrediction(algoPred, moFav);
+        const predAgrees = matchesPrediction(finalPred, moFav);
         
-        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60;
-        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50;
+        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60 && predAgrees;
+        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50 && (predAgrees || algoAgrees);
         const isPR3 = phaFavWinSupport >= 50 && probFav >= 45;
         const isPR4 = phaFavWinSupport >= 50;
-        const isPR5 = phaFavWinSupport >= 40;
+        const isPR5 = phaFavWinSupport >= 40 || probFav >= 45;
+        const isPR6 = probFav >= 35 || algoAgrees || (favOdds >= 1.30 && favOdds < 1.60);
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        if (priority === 'PR6') return isPR6;
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- TOP 12 ---
-    if (category === 'top12' || category === 'top10') {
-        // UCS: Underdog consensus → route to upsets only
-        if (isUnderdogConsensus) return false;
-        // 1. All matches must be hedged
-        // Let slip enforce hedge constraints
-        // 2. Must be a bet on the market favorite
-        if (!matchesPrediction(finalPred, moFav)) return false;
-        // 3. Odds must be 2.0 to 3.00 (Tight range: 2.0-2.4, Above 2.4 is Last Resort)
-        if (favOdds < 2.00 || favOdds > 3.00) return false;
+    if (category === 'top12') {
+        // Odds must be => 2.0 to < 2.50
+        if (favOdds < 2.00 || favOdds >= 2.50) return false;
         
         const algoAgrees = matchesPrediction(algoPred, moFav);
+        const predAgrees = matchesPrediction(finalPred, moFav);
         
-        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60;
-        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50;
+        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60 && predAgrees;
+        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50 && (predAgrees || algoAgrees);
         const isPR3 = phaFavWinSupport >= 50 && probFav >= 45;
         const isPR4 = phaFavWinSupport >= 50;
-        const isPR5 = phaFavWinSupport >= 40;
+        const isPR5 = phaFavWinSupport >= 40 || probFav >= 40;
+        const isPR6 = probFav >= 30 || algoAgrees || (favOdds >= 2.00 && favOdds < 2.50);
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        if (priority === 'PR6') return isPR6;
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- BANKERS DLIVE ---
     if (category === 'bankers_dlive') {
-        // UCS: Underdog consensus → not safe
-        if (isUnderdogConsensus) return false;
-        // Exclude Draw Risk Banned patterns unless in Live Analysis (Hedged) - Removed to allow tagging
+        // Odds must be > 1.50 to < 1.80
+        if (favOdds <= 1.50 || favOdds >= 1.80) return false;
 
-        // 1. No hedge (straight 1 or 2) - let slip deal with constraints
-        // 2. Must be a bet on the market favorite
-        if (!matchesPrediction(finalPred, moFav)) return false;
-        // 3. Odds must be > 1.60 to < 2.00
-        if (favOdds <= 1.60 || favOdds >= 2.00) return false;
+        const algoAgrees = matchesPrediction(algoPred, moFav);
+        const predAgrees = matchesPrediction(finalPred, moFav);
 
-        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60;
-        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50;
+        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60 && predAgrees;
+        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50 && (predAgrees || algoAgrees);
         const isPR3 = phaFavWinSupport >= 50 && probFav >= 45;
         const isPR4 = phaFavWinSupport >= 50;
-        const isPR5 = phaFavWinSupport >= 40;
+        const isPR5 = phaFavWinSupport >= 40 || probFav >= 45;
+        const isPR6 = probFav >= 35 || algoAgrees || (favOdds > 1.50 && favOdds < 1.80);
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        if (priority === 'PR6') return isPR6;
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- BOTB (BEST OF THE BEST) ---
     if (category === 'botb_best') {
-        // UCS: Underdog consensus → not safe
-        if (isUnderdogConsensus) return false;
         const ratingStr = match.rating || '0/10';
         const ratingVal = parseInt(ratingStr.split('/')[0]);
         const extAgrees = matchesPrediction(match.pred1x2 || '', moFav);
@@ -493,86 +490,80 @@ export const evaluateMatchCategory = (
         const isPR3 = (isRelaxedHedged || isRelaxedUnhedged) && phaFavWinSupport >= 50;
         const isPR4 = (isRelaxedHedged || isRelaxedUnhedged) && phaFavWinSupport >= 45;
         const isPR5 = (isRelaxedHedged || isRelaxedUnhedged) && phaFavWinSupport >= 40;
+        const isPR6 = probFav >= 40 || favOdds < 2.4 || isLiveAnalysisUI;
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
+        if (priority === 'PR6') return isPR6;
         
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- 11-20 & Top 20 ---
     if (category === 'top20') {
-        // UCS: Underdog consensus → not safe
-        if (isUnderdogConsensus) return false;
-        // Must be a bet on the market favorite.
-        if (!matchesPrediction(finalPred, moFav)) return false;
         // Odds must be >= 1.5.
         if (favOdds < 1.5) return false;
 
-        // Exclusion Protocol: IF Category == 'TOP20' AND (Home_Odds > 2.20 OR League CONTAINS 'U21' OR League CONTAINS 'Youth') THEN Exclude
-        // Let matches be tagged, slips will handle constraints.
-        const league = match.league?.toLowerCase() || '';
-        
         const algoAgrees = matchesPrediction(algoPred, moFav);
-        const subPatRaw = match.patternAnalysis?.subPattern || '';
-        
-        // Mitigation Protocol: IF Category == 'TOP20' AND Algo_Prediction IN ['1', '2'] AND SubPat == '12' AND Group == '2' THEN Modify Algo_Prediction to '1X' or 'X2' (Hedge)
-        // Let matches be tagged, the slip compilation rules can enforce the hedge or drop.
+        const predAgrees = matchesPrediction(finalPred, moFav);
 
-        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60;
-        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50;
+        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60 && predAgrees;
+        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50 && (predAgrees || algoAgrees);
         const isPR3 = phaFavWinSupport >= 50 && probFav >= 45;
         const isPR4 = phaFavWinSupport >= 50;
-        const isPR5 = phaFavWinSupport >= 40;
+        const isPR5 = phaFavWinSupport >= 40 || probFav >= 40;
+        const isPR6 = probFav >= 30 || algoAgrees || favOdds >= 1.5;
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        if (priority === 'PR6') return isPR6;
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- BANKERS (JACKPOT) ---
     if (category === 'bankers_jackpot') {
-        // UCS: Underdog consensus → not safe
-        if (isUnderdogConsensus) return false;
-        // Must be a bet on the market favorite.
-        if (!matchesPrediction(finalPred, moFav)) return false;
-        // Odds must be >= 1.80 to 2.4
-        if (favOdds < 1.80 || favOdds > 2.4) return false;
-        
-        // PAA_S.win/Mfav should be >= 40%, or combined safety (Fav + Draw) >= 65%
-        if (phaFavWinSupport < 40 && (phaFavWinSupport + (paaStats?.drawRate || 0)) < 65) return false;
+        // Odds must be >= 1.80 to < 2.00
+        if (favOdds < 1.80 || favOdds >= 2.00) return false;
 
-        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60;
-        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50;
+        const algoAgrees = matchesPrediction(algoPred, moFav);
+        const predAgrees = matchesPrediction(finalPred, moFav);
+
+        const isPR1 = phaFavWinSupport >= 60 && probFav >= 60 && predAgrees;
+        const isPR2 = phaFavWinSupport >= 50 && probFav >= 50 && (predAgrees || algoAgrees);
         const isPR3 = phaFavWinSupport >= 50 && probFav >= 45;
         const isPR4 = phaFavWinSupport >= 50;
-        const isPR5 = phaFavWinSupport >= 40;
+        const isPR5 = phaFavWinSupport >= 40 || probFav >= 40;
+        const isPR6 = probFav >= 30 || algoAgrees || (favOdds >= 1.80 && favOdds < 2.00);
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        if (priority === 'PR6') return isPR6;
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- VALUE BETS ---
     if (category === 'value_bets') {
+        // Market favorite odds must be >= 2.50. Both teams must have odds >= 2.50.
+        // Both teams must have valid realistic odds (not missing, 0, or dummy 99) and both must be >= 2.50
+        const mfavOdds = favOdds > 0 ? favOdds : Math.min(o1, o2);
+        if (mfavOdds < 2.50 || o1 < 2.50 || o2 < 2.50 || o1 > 90 || o2 > 90 || isNaN(o1) || isNaN(o2) || isNaN(mfavOdds) || mfavOdds <= 0) return false;
+
         // Must be a bet on the market favorite or the underdog.
-        if (!matchesPrediction(finalPred, moFav) && !matchesPrediction(finalPred, moUnderdog)) return false;
-        // Odds must be >= 2.5 on both teams.
-        if (o1 < 2.50 || o2 < 2.50) return false;
+        if (!matchesPrediction(finalPred, moFav) && !matchesPrediction(finalPred, moUnderdog) && !isLiveAnalysisUI) return false;
         // Must be hedged - let slip handle this constraint
 
         // Weighting Protocol: IF Category == 'VALUE_BETS' AND Algo Prediction != Sub Pattern Prediction, THEN DEFER to Sub Pattern Prediction
         // We'll check if finalPred matches subPatPred if they disagree
-        if (subPatPred && algoPred !== subPatPred) {
+        if (subPatPred && algoPred !== subPatPred && !isLiveAnalysisUI) {
             if (!matchesPrediction(finalPred, subPatPred)) return false;
         }
 
@@ -582,8 +573,8 @@ export const evaluateMatchCategory = (
         const isPR4 = phaUnderdogSupport >= 45 && probUnderdog >= 45;
         const isPR5 = phaFavSupport >= 40 && probFav >= 40;
         const isPR6 = phaUnderdogSupport >= 40 && probUnderdog >= 40;
-        const isPR7 = phaFavSupport >= 40;
-        const isPR8 = phaUnderdogSupport >= 40;
+        const isPR7 = phaFavSupport >= 40 || probFav >= 35;
+        const isPR8 = phaUnderdogSupport >= 40 || probUnderdog >= 35 || (o1 >= 2.50 && o2 >= 2.50);
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
@@ -598,47 +589,39 @@ export const evaluateMatchCategory = (
 
     // --- VALUE PICKS ---
     if (category === 'value_picks') {
-        // UCS: Underdog consensus → not safe
-        if (isUnderdogConsensus) return false;
-        // Exclude Draw Risk Banned patterns unless in Live Analysis (Hedged) - Removed to allow tagging
+        // Odds must be > 2.0 to < 2.50
+        if (favOdds <= 2.00 || favOdds >= 2.50) return false;
 
-        // Odds must be >= 2.0 to 2.50
-        const minOdds = 2.00;
-        if (favOdds < minOdds || favOdds > 2.50) return false;
-        
-        // PAA_S.win/Mfav should be >= 40%, or combined safety >= 65%
-        if (phaFavWinSupport < 40 && (phaFavWinSupport + (paaStats?.drawRate || 0)) < 65) return false;
+        const algoAgrees = matchesPrediction(algoPred, moFav);
 
         const isPR1 = phaFavWinSupport >= 60 && probFav >= 60;
         const isPR2 = phaFavWinSupport >= 50 && probFav >= 50;
         const isPR3 = phaFavWinSupport >= 50 && probFav >= 45;
         const isPR4 = phaFavWinSupport >= 50;
-        const isPR5 = phaFavWinSupport >= 40;
+        const isPR5 = phaFavWinSupport >= 40 || probFav >= 40;
+        const isPR6 = probFav >= 30 || algoAgrees || (favOdds > 2.00 && favOdds < 2.50);
 
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
+        if (priority === 'PR6') return isPR6;
         
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
     // --- BANKER DRAWS ---
     if (category === 'banker_draws') {
         // Market favorite or underdog.
-        // Odds must be > 2.0.
-        // Rule: "Both home and away odds MUST be >= 2.0."
-        if (o1 < 2.0 || o2 < 2.0) return false;
+        // Odds must be >= 2.0 on both home and away.
+        if (o1 < 2.00 || o2 < 2.00) return false;
         
         // Draw Odds Cap: IF Category == 'BANKER_DRAWS' AND Draw_Odds > 3.80 THEN EXCLUDE
         if (oX > 3.80) return false;
 
         // Must be hedged or straight X - let slip handle constraints
         const isStraightX = finalPred === 'X';
-        
-        // [PROTOCOL: Banker Draw Hedging Strategy]
-        // NO STRAIGHT DRAWS logic removed to support straight X.
         
         // Use Probability or PAA Draw Rate to allow unhedged draw
         const satisfiesUnhedgedDraw = probDraw >= 40 || paaStats.drawRate >= 40;
@@ -668,111 +651,37 @@ export const evaluateMatchCategory = (
             (paaStats.upsetRate < 30 && satisfiesHedgeFav)
         );
 
+        const isPR5 = probDraw >= 25 || (o1 >= 2.0 && o2 >= 2.0 && oX <= 3.50);
+
         if (priority === 'PR1') return isPR1;
         if (priority === 'PR2') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
-        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4);
+        if (priority === 'PR5') return isPR5;
+        return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5);
     }
 
-    // --- UPSETS ---
+    // --- UPSETS (Rebuilt to mirror Best Bets architecture) ---
     if (category === 'upsets') {
-        // Enforce valid odds and favorite/underdog structure to prevent blind tagging
         if (o1 <= 0 || o2 <= 0 || o1 === o2) return false;
         if (moUnderdog !== '1' && moUnderdog !== '2') return false;
 
         // Final prediction must support/cover the underdog
         if (!finalPred || !matchesPrediction(finalPred, moUnderdog)) return false;
+        // Underdog odds filter: underdog odds must be >= 2.00
+        if (underdogOdds < 2.00) return false;
 
-        // 1. Core predictions support — require actual data before crediting support.
-        // PAA primary prediction (must exist and equal the underdog side)
-        const paaPrimPred = (match.paaPrimaryPrediction || '').trim();
-        const paaPrimSupports = paaPrimPred.length > 0 && paaPrimPred === moUnderdog;
+        const algoAgrees = matchesPrediction(algoPred, moUnderdog);
 
-        // Seer primary prediction: prefer the sticky value stored on the match
-        // (this is exactly what the match card displays). Only fall back to a
-        // fresh computation using the SAME parameters the card uses ('all' +
-        // DEFAULT_WEIGHTS) so we never disagree with what the user sees.
-        let seerPrimPred = (match.seerPrimaryPrediction || '').trim();
-        if (!seerPrimPred) {
-            const seerDetailed = predictSeerDetailed(match, DEFAULT_WEIGHTS, phaStatsMap, matchStars, 'all');
-            seerPrimPred = (seerDetailed?.primary || '').trim();
-        }
-        const seerPrimSupports = seerPrimPred.length > 0 && seerPrimPred === moUnderdog;
+        const isPR1 = (phaUnderdogSupport >= 45 || isUnderdogConsensus) && probUnderdog >= 40;
+        const isPR2 = phaUnderdogSupport >= 35 && probUnderdog >= 35;
+        const isPR3 = (phaUnderdogSupport >= 30 || paaUpsetSupport >= 30) && (probUnderdog >= 30 || algoAgrees);
+        const isPR4 = phaUnderdogSupport >= 25 || paaUpsetSupport >= 25 || isUnderdogConsensus;
+        const isPR5 = probUnderdog >= 25 || algoAgrees;
+        const isPR6 = underdogOdds >= 2.50 && matchesPrediction(subPatPred, moUnderdog);
 
-        // Algo final prediction (must exist; single or hedge that covers underdog)
-        const algoPredVal = (match.algoReport?.prediction || '').trim();
-        const algoSupports = algoPredVal.length > 0 && matchesPrediction(algoPredVal, moUnderdog);
-
-        // Sub-pattern primary prediction (derived from PHA stats)
-        const stats = getMatchStats(match, phaStatsMap);
-        const pha = stats.phaStats;
-        const maxPha = Math.max(pha.home, pha.draw, pha.away);
-        let subPattPrimSupports = false;
-        if (maxPha > 0) {
-            const maxOutcomes = [];
-            if (pha.home === maxPha) maxOutcomes.push('1');
-            if (pha.draw === maxPha) maxOutcomes.push('X');
-            if (pha.away === maxPha) maxOutcomes.push('2');
-            subPattPrimSupports = maxOutcomes.includes(moUnderdog);
-        }
-
-        // PR1(a)-(d) Evaluation
-        const isPR1a = subPattPrimSupports && algoSupports && seerPrimSupports;
-        const isPR1b = subPattPrimSupports && seerPrimSupports && !isPR1a;
-        const isPR1c = subPattPrimSupports && algoSupports && !isPR1a && !isPR1b;
-        const isPR1d = subPattPrimSupports && !isPR1a && !isPR1b && !isPR1c;
-
-        const isPR1 = isPR1a || isPR1b || isPR1c || isPR1d;
-
-        // PR2(a)-(d) Evaluation
-        const isPR2a = paaPrimSupports && seerPrimSupports && algoSupports;
-        const isPR2b = paaPrimSupports && seerPrimSupports;
-        const isPR2c = seerPrimSupports && algoSupports;
-        const isPR2d = paaPrimSupports && algoSupports;
-
-        const isPR2 = isPR2a || isPR2b || isPR2c || isPR2d;
-
-        // PR3: Use the SAME points shown on the Match Card (match.totalPoints).
-        // If they haven't been computed for this match yet, do NOT tag — otherwise
-        // we'd score off a fresh recompute that disagrees with the card.
-        const cardPoints = match.totalPoints;
-        let isPR3 = false;
-        if (cardPoints && typeof cardPoints.home === 'number' && typeof cardPoints.away === 'number') {
-            const teamPointsUnderdog = moUnderdog === '1' ? cardPoints.home : cardPoints.away;
-            const teamPointsFav = moFav === '1' ? cardPoints.home : cardPoints.away;
-            isPR3 = teamPointsUnderdog >= (teamPointsFav + 5);
-        }
-
-        // PR4: Seer draw predictions % is >= 40% (default weights, 'all')
-        const defaultSeerDetailed = predictSeerDetailed(match, DEFAULT_WEIGHTS, phaStatsMap, matchStars, 'all');
-        const isPR4 = (defaultSeerDetailed?.percentages?.['X'] || 0) >= 40;
-
-        // PR5: Algo confidence of the underdog is >=40% (requires an algo report)
-        const isPR5 = !!match.algoReport && probUnderdog >= 40;
-
-        // PR6: Match carries a genuine "Potential Upset" flag on the card.
-        // Require either a positive upsetPotential.bonus favouring the underdog,
-        // or an explicit "Potential Upset" tsIndicator — no null/undefined free passes.
-        const upsetPotential: any = cardPoints?.breakdown?.upsetPotential;
-        const hasUpsetPotentialBonus = !!upsetPotential
-            && typeof upsetPotential === 'object'
-            && (upsetPotential.bonus || 0) > 0
-            && (!upsetPotential.team || upsetPotential.team === moUnderdog);
-        const hasUpsetIndicator = typeof cardPoints?.breakdown?.tsIndicators === 'string'
-            && cardPoints.breakdown.tsIndicators.includes('Potential Upset');
-        const isPR6 = hasUpsetPotentialBonus || hasUpsetIndicator;
-
-        if (priority === 'PR1') return isPR1;
-        if (priority === 'PR1a') return isPR1a;
-        if (priority === 'PR1b') return isPR1b;
-        if (priority === 'PR1c') return isPR1c;
-        if (priority === 'PR1d') return isPR1d;
-        if (priority === 'PR2a') return isPR2a;
-        if (priority === 'PR2b') return isPR2b;
-        if (priority === 'PR2c') return isPR2c;
-        if (priority === 'PR2d') return isPR2d;
-        if (priority === 'PR2') return isPR2;
+        if (priority === 'PR1' || priority === 'PR1a' || priority === 'PR1b' || priority === 'PR1c' || priority === 'PR1d') return isPR1;
+        if (priority === 'PR2' || priority === 'PR2a' || priority === 'PR2b' || priority === 'PR2c' || priority === 'PR2d') return isPR2;
         if (priority === 'PR3') return isPR3;
         if (priority === 'PR4') return isPR4;
         if (priority === 'PR5') return isPR5;
@@ -781,13 +690,14 @@ export const evaluateMatchCategory = (
         return priority === 'all' && (isPR1 || isPR2 || isPR3 || isPR4 || isPR5 || isPR6);
     }
 
-    return true;
+    return false;
 };
 
 export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, any>, isJackpot: boolean, isLiveAnalysisUI: boolean = false, matchStars: Record<string, number> = {}): string[] => {
     const tags: string[] = [];
     const categories: MatchCategory[] = ['best_bet', 'top12', 'bankers_dlive', 'botb_best', 'top20', 'bankers_jackpot', 'value_bets', 'value_picks', 'banker_draws', 'upsets'];
-    const priorities: Priority[] = ['PR1a', 'PR1b', 'PR1c', 'PR1d', 'PR2a', 'PR2b', 'PR2c', 'PR2d', 'PR1', 'PR2', 'PR3', 'PR4', 'PR5', 'PR6', 'PR7', 'PR8', 'PR9', 'PR10', 'PR11', 'PR12', 'PR13'];
+    const standardPriorities: Priority[] = ['PR1', 'PR2', 'PR3', 'PR4', 'PR5', 'PR6', 'PR7', 'PR8', 'PR9', 'PR10', 'PR11', 'PR12', 'PR13'];
+    const upsetPriorities: Priority[] = ['PR1a', 'PR1b', 'PR1c', 'PR1d', 'PR2a', 'PR2b', 'PR2c', 'PR2d', 'PR1', 'PR2', 'PR3', 'PR4', 'PR5', 'PR6', 'PR7', 'PR8', 'PR9', 'PR10', 'PR11', 'PR12', 'PR13'];
 
     const stats = getMatchStats(match, phaStatsMap);
 
@@ -838,13 +748,11 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
     for (const cat of categories) {
         let hasCategory = false;
         let matchedPriority: Priority | null = null;
-        for (const pr of priorities) {
+        const currentPriorities = cat === 'upsets' ? upsetPriorities : standardPriorities;
+        for (const pr of currentPriorities) {
             if (evaluateMatchCategory(match, cat, pr, phaStatsMap, isJackpot, isLiveAnalysisUI, matchStars)) {
                 matchedPriority = pr;
                 tags.push(`${cat}:${pr}`);
-                if (cat === 'top12') {
-                    tags.push(`top10:${pr}`);
-                }
                 hasCategory = true;
                 break; // Only tag with the highest priority met for this category
             }
@@ -934,7 +842,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
                 }
             }
 
-            const isTargetSlip = ['best_bet', 'top12', 'top10', 'bankers_dlive', 'botb_best', 'top20', 'bankers_jackpot', 'value_picks'].includes(cat);
+            const isTargetSlip = ['best_bet', 'top12', 'bankers_dlive', 'botb_best', 'top20', 'bankers_jackpot', 'value_picks'].includes(cat);
             const ratingStr = match.rating || '0/10';
             const ratingVal = parseInt(ratingStr.split('/')[0]);
             const isHighRatingFor12 = ratingVal >= 5;
@@ -956,7 +864,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
             if (isTargetSlip) {
                 // Calculate stars for this specific tag
                 const abbrMap: Record<string, string> = {
-                    'top12': 'T12', 'top10': 'T12', 'bankers_dlive': 'BDL', 'top20': 'T20', 
+                    'top12': 'T12', 'bankers_dlive': 'BDL', 'top20': 'T20', 
                     'bankers': 'BNK', 'bankers_jackpot': 'BNK',
                     'value_bets': 'VB', 'value_picks': 'VP', 
                     'banker_draws': 'BD', 'upsets': 'UPS'
@@ -979,7 +887,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
                 const isPriorityUnderdog = stats.underdogOdds > 3.0;
 
                 const hasMainPriorities = isSubPatValid && 
-                                          ((cat === 'top12' || cat === 'top10') ? (isUnderdogGreaterEqualDraw && isPriorityUnderdog) : isUnderdogGreaterDraw) && 
+                                          (cat === 'top12' ? (isUnderdogGreaterEqualDraw && isPriorityUnderdog) : isUnderdogGreaterDraw) && 
                                           isPhaDiffValid && 
                                           !isExcludedGroup;
                 
@@ -989,13 +897,12 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
                     catPromote = true;
                     if (hasSupportPriorities) {
                         tags.push(`${cat}:AUTO_PICK`);
-                        if (cat === 'top12') tags.push(`top10:AUTO_PICK`);
                     }
                 }
             }
 
             // 9. TOP 12 / TOP 20: Algo Synergy & Safety Vetoes
-            if (['top12', 'top10', 'top20'].includes(cat)) {
+            if (['top12', 'top20'].includes(cat)) {
                 const reasonStr = (match.algoReport?.reason || '') + (match.qualityAudit?.reason || '');
                 const hasCriticalDrawRisk = reasonStr.includes('Critical Draw Risk') || reasonStr.includes('High PHA Draw');
                 const drawCeilingCap = stats.phaDrawSupport > 30;
@@ -1003,7 +910,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
                 const isUnhedged = !stats.isHedged;
 
                 let shouldVeto = false;
-                if (cat === 'top12' || cat === 'top10') {
+                if (cat === 'top12') {
                     // Top 12 usually hedged, draw is okay.
                     shouldVeto = false;
                 } else {
@@ -1013,7 +920,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
 
                 if (shouldVeto) {
                     catPromote = false;
-                } else if ((cat === 'top12' || cat === 'top10') && stats.underdogOdds <= 3.0) {
+                } else if (cat === 'top12' && stats.underdogOdds <= 3.0) {
                     // Deprioritize Top 12 matches with Underdog odds <= 3.0
                     catPromote = false;
                 } else if (matchesPrediction(rawAlgoPred || '', stats.moFav) && stats.phaFavSupport >= 50) {
@@ -1102,7 +1009,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
             // 3. Sub pat predicts 1X/X2 but algo predicts opposite (1X/X2), this doesnt include Algo predicting 12,X,1 or 2.
             const dRule3 = ((subPatPred === '1X' && rawAlgoPred === 'X2') || (subPatPred === 'X2' && rawAlgoPred === '1X'));
             
-            const isTargetCat = ['best_bet', 'top12', 'top10', 'bankers_dlive', 'top20', 'bankers_jackpot', 'value_picks'].includes(cat);
+            const isTargetCat = ['best_bet', 'top12', 'bankers_dlive', 'top20', 'bankers_jackpot', 'value_picks'].includes(cat);
 
             // 4. Underdog odds <= 3.0 (Volatility Rule)
             const dRule4 = isTargetCat ? stats.underdogOdds <= 3.0 : stats.underdogOdds <= 2.8;
@@ -1121,10 +1028,9 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
             }
 
             // New User Rule: High Favorite Odds (>= 2.4 to <= 2.5) are LAST RESORT for Top 12, Bankers Jackpot, and Value Picks
-            if (['top12', 'top10', 'bankers_jackpot', 'value_picks'].includes(cat) && stats.favOdds >= 2.4 && stats.favOdds <= 2.5) {
+            if (['top12', 'bankers_jackpot', 'value_picks'].includes(cat) && stats.favOdds >= 2.4 && stats.favOdds <= 2.5) {
                 catDemote = true;
                 tags.push(`${cat}:HIGH_ODDS_RISK`);
-                if (cat === 'top12') tags.push(`top10:HIGH_ODDS_RISK`);
             }
 
             if (cat === 'banker_draws' && subPatPred === '12') catDemote = true;
@@ -1137,7 +1043,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
                     if (hasSevereUpset) {
                         finalAction = 'DEMOTE';
                     }
-                } else if (['top12', 'top10', 'top20'].includes(cat)) {
+                } else if (['top12', 'top20'].includes(cat)) {
                     // ... (existing code for Top 12/20 demote)
                     const reasonStr = (match.algoReport?.reason || '') + (match.qualityAudit?.reason || '');
                     const hasCriticalDrawRisk = reasonStr.includes('Critical Draw Risk') || reasonStr.includes('High PHA Draw');
@@ -1146,7 +1052,7 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
                     const isUnhedged = !stats.isHedged;
 
                     let shouldDemote = false;
-                    if (cat === 'top12' || cat === 'top10') {
+                    if (cat === 'top12') {
                         shouldDemote = stats.underdogOdds <= 3.0;
                     } else {
                         shouldDemote = isUnhedged && (hasCriticalDrawRisk || drawCeilingCap);
@@ -1169,23 +1075,20 @@ export const getMatchEvaluatorTags = (match: Match, phaStatsMap: Record<string, 
 
             if (finalAction === 'PROMOTE') {
                 tags.push(`${cat}:PROMOTE`);
-                if (cat === 'top12') tags.push(`top10:PROMOTE`);
             } else if (finalAction === 'DEMOTE') {
                 if (cat === 'top20' && stats.isHedged) {
                     // Specific escape: hedged top 20 does not get demoted
                 } else {
                     tags.push(`${cat}:DEMOTE`);
-                    if (cat === 'top12') tags.push(`top10:DEMOTE`);
                 }
             }
             
             // Last Resort Check for Market Favorite Odds > 2.40 or PAA Upset >= 30% or Underdog Threat
-            if (['best_bet', 'top12', 'top10', 'top20', 'bankers_jackpot', 'value_picks', 'bankers_dlive', 'botb_best'].includes(cat)) {
+            if (['best_bet', 'top12', 'top20', 'bankers_jackpot', 'value_picks', 'bankers_dlive', 'botb_best'].includes(cat)) {
                 const isUnderdogThreat = stats.underdogOdds <= 3.0 && stats.underdogOdds > 0;
                 if (stats.favOdds > 2.40 || stats.paaStats.upsetRate >= 30 || isUnderdogThreat) {
                     if (!tags.includes(`${cat}:LAST_RESORT`)) {
                         tags.push(`${cat}:LAST_RESORT`);
-                        if (cat === 'top12') tags.push(`top10:LAST_RESORT`);
                     }
                 }
             }

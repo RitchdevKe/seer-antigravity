@@ -1,5 +1,6 @@
 import React from 'react';
 import { OPWAlgo, OPWAlgoProps } from './opwalgo';
+export { MONDAY_RULES_MAP, getMondayCategorySettings, evaluateMondayScoreDetailed } from './mondayopw';
 
 /**
  * Dedicated Monday OPW Algorithm Engine (src/opwalgomonday.tsx)

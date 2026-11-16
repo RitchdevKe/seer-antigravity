@@ -113,7 +113,10 @@ const LivePredictions: React.FC<LivePredictionsProps> = ({ matches, expandedMatc
           if (isCorrect) mlCorrect++;
 
           const source = m.mlInfo?.mlPredictionSource;
-          if (source && mlEngines[source]) {
+          if (source) {
+              if (!mlEngines[source]) {
+                  mlEngines[source] = { total: 0, correct: 0 };
+              }
               mlEngines[source].total += 1;
               if (isCorrect) mlEngines[source].correct += 1;
           }

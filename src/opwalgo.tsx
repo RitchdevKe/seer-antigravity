@@ -28,10 +28,13 @@ import {
   Trash2,
   History,
   Shield,
-  ShieldCheck
+  ShieldCheck,
+  Eye,
+  X
 } from 'lucide-react';
 import { Match } from './types';
-import { getActualResult } from './utils/matchProcessing';
+import { DEFAULT_WEIGHTS } from './utils/seerLogic';
+import { getActualResult, getLogicalDate } from './utils/matchProcessing';
 import {
   DayOfWeek,
   getMatchDayOfWeek,
@@ -40,43 +43,36 @@ import {
   OptimizedCategorySettings,
   extractMatchEvaluationStats,
   evaluateAllCatalogTriggers,
-  CandidateComboTrigger,
-  ApprovedCustomTrigger,
-  loadApprovedCustomTriggers,
-  saveApprovedCustomTrigger,
-  removeApprovedCustomTrigger,
-  toggleApprovedCustomTrigger,
-  mineSynergisticCombos,
-  mineParameterContinuations,
-  MatchStatSummary,
-  hydrateCustomTriggersFromServer
+  getMatchCountryAndLeague
 } from './utils/opwCommon';
 import {
   populateCategoryWithMasterRules,
   getMasterTriggerDefaultPoints,
+  getNewTriggerDefaultPoints,
   getTriggerSemanticPolarity,
+  isLeagueTrigger,
+  getLeagueTriggerMaxPenalty,
+  getLeagueTriggerMaxBonus,
+  isManuallyAdjustedProUnderdogLeague,
+  isLeagueLockedProUnderdog,
+  lockLeagueAsProUnderdog,
+  unlockLeagueProUnderdog,
+  markLeagueAsProUnderdog,
+  markLeagueAsNeutral,
+  DUAL_BONUS_TRIGGERS,
   sanitizeRulePolarity,
-  borrowTriggerPoints
+  MASTER_TOP_12_RULES,
+  MASTER_BEST_BET_RULES,
+  MASTER_BANKERS_DLIVE_RULES,
+  MASTER_BANKERS_JACKPOT_RULES,
+  MASTER_VALUE_PICKS_RULES,
+  MASTER_VALUE_BETS_RULES,
+  MASTER_UPSETS_RULES,
+  MASTER_BOTB_RULES,
+  UPSETS_EXPLICIT_PENALTIES,
+  DYNAMIC_LEAGUE_TRIGGERS,
+  registerDiscoveredLeagueTrigger
 } from './utils/opwCatalog';
-import {
-  ProtectedPenaltyGuard,
-  SlipUpsetPostMortem,
-  loadProtectedPenaltyGuards,
-  saveProtectedPenaltyGuard,
-  removeProtectedPenaltyGuard,
-  analyzeSlipUpsets,
-  isProtectedPenalty,
-  getProtectedFloor
-} from './utils/opwPenaltyProtection';
-import {
-  SATURDAY_TOP_12_RULES,
-  SATURDAY_BEST_BET_RULES,
-  SATURDAY_BANKERS_DLIVE_RULES,
-  SATURDAY_BANKERS_JACKPOT_RULES,
-  SATURDAY_VALUE_PICKS_RULES,
-  SATURDAY_UPSETS_RULES,
-  SATURDAY_BOTB_RULES
-} from './utils/opwSaturdayRules';
 import {
   DAILY_OPTIMIZED_SETTINGS,
   DAILY_DEFAULT_CATEGORY_SETTINGS,
@@ -86,10 +82,16 @@ import {
   updateOptimizedCategorySettings,
   updateDailyOptimizedCategorySettings,
   savePersistedDailySettings,
-  resetToCodeDefaults
+  resetToCodeDefaults,
+  clearOptimizedScoreCache,
+  loadServerOpwRules,
+  invalidateServerRulesCache,
+  setDailySettingsMeta
 } from './utils/optimizedweights';
 import { getMatchEvaluatorTags } from './utils/matchEvaluator';
-import { deleteLockedSlip, getLockedSlip } from './services/seerSlips';
+import { deleteLockedSlip, getLockedSlip, invalidateLockedSlipsForWeights, saveLockedSlip, saveLockedSlipsBulk, SESSION_SLIP_CACHE, SeerLockedSlip } from './services/seerSlips';
+import { generateSeerSlips } from './utils/seerSlipSelection';
+import { isBannedFromSeerSlips } from './utils/leagueFilters';
 import { getAnalysisDateString } from './services/seerPerformance';
 
 export interface OPWAlgoProps {
@@ -120,19 +122,121 @@ const CATEGORIES: CategoryOption[] = [
   { id: 'bankers_dlive', label: 'Bankers Dlive', tagPrefix: 'bankers_dlive:', targetObjective: 'mfav_only', targetCapacity: 10, description: 'Bankers D.live selections (Mfav must win).' },
   { id: 'bankers_jackpot', label: 'Bankers Jackpot', tagPrefix: 'bankers_jackpot:', targetObjective: 'mfav_only', targetCapacity: 5, description: 'Bankers Jackpot selections (Mfav must win).' },
   { id: 'value_picks', label: 'Value Picks', tagPrefix: 'value_picks:', targetObjective: 'mfav_only', targetCapacity: 5, description: 'Requires Mfav to win (odds 2.0-2.50) without draw or underdog traps.' },
+  { id: 'value_bets', label: 'Value Bets', tagPrefix: 'value_bets:', targetObjective: 'mfav_draw', targetCapacity: 5, description: 'Value Bets (Mfav win or draw) with independent triggers calibrated per day.' },
   { id: 'upsets', label: 'Upsets', tagPrefix: 'upsets:', targetObjective: 'underdog_only', targetCapacity: 5, description: 'Underdog wins with high pattern conviction.' },
   { id: 'botb_best', label: 'BOTB', tagPrefix: 'botb_best:', targetObjective: 'mfav_only', targetCapacity: 10, description: 'Premium selections (Mfav must win).' }
 ];
 
 export const MASTER_RULES_MAP: Record<string, { description: string; points: number }[]> = {
-  top_12_value: SATURDAY_TOP_12_RULES,
-  top_10_value: SATURDAY_TOP_12_RULES,
-  best_bet: SATURDAY_BEST_BET_RULES,
-  bankers_dlive: SATURDAY_BANKERS_DLIVE_RULES,
-  bankers_jackpot: SATURDAY_BANKERS_JACKPOT_RULES,
-  value_picks: SATURDAY_VALUE_PICKS_RULES,
-  upsets: SATURDAY_UPSETS_RULES,
-  botb_best: SATURDAY_BOTB_RULES,
+  top_12_value: MASTER_TOP_12_RULES,
+  top_10_value: MASTER_TOP_12_RULES,
+  best_bet: MASTER_BEST_BET_RULES,
+  bankers_dlive: MASTER_BANKERS_DLIVE_RULES,
+  bankers_jackpot: MASTER_BANKERS_JACKPOT_RULES,
+  value_picks: MASTER_VALUE_PICKS_RULES,
+  value_bets: MASTER_VALUE_BETS_RULES,
+  value_bet: MASTER_VALUE_BETS_RULES,
+  upsets: MASTER_UPSETS_RULES,
+  upset: MASTER_UPSETS_RULES,
+  botb_best: MASTER_BOTB_RULES,
+};
+
+export interface OptimizerPeakMemory {
+  cleanTopMatches: number;
+  firstTrapRank: number;
+  quality: number;
+  trapRanks?: number[];
+  trapGaps?: number[];
+  points: Record<string, number>;
+  savedAt: string;
+}
+
+export const getOptimizerPeakStorageKey = (day: string, categoryId: string): string => {
+  return `seer_opw_peak_memory_${day.toLowerCase()}_${categoryId.toLowerCase()}`;
+};
+
+export const saveOptimizerPeakMemory = (day: string, categoryId: string, peakData: {
+  cleanTopMatches: number;
+  firstTrapRank: number;
+  quality: number;
+  trapRanks?: number[];
+  trapGaps?: number[];
+  points: Map<string, number> | Record<string, number>;
+}) => {
+  try {
+    const key = getOptimizerPeakStorageKey(day, categoryId);
+    const pointsObj: Record<string, number> = {};
+    const isUd = categoryId === 'upsets' || categoryId === 'upset' || categoryId === 'underdog_only';
+    const sanitizePeakVal = (desc: string, val: number): number | null => {
+      if (typeof val !== 'number' || isNaN(val)) return null;
+      if (val === 0) return isUd ? 0 : null;
+      const leagueMaxPenalty = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
+      const leagueMaxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUd) : 40;
+      return val > 0 ? Math.max(5, Math.min(leagueMaxBonus, val)) : Math.min(-5, Math.max(leagueMaxPenalty, val));
+    };
+    if (peakData.points instanceof Map) {
+      peakData.points.forEach((v, k) => {
+        const clean = sanitizePeakVal(k, v);
+        if (clean !== null) pointsObj[k] = clean;
+      });
+    } else if (typeof peakData.points === 'object') {
+      Object.entries(peakData.points).forEach(([k, v]) => {
+        const clean = sanitizePeakVal(k, v as number);
+        if (clean !== null) pointsObj[k] = clean;
+      });
+    }
+    const payload: OptimizerPeakMemory = {
+      cleanTopMatches: peakData.cleanTopMatches,
+      firstTrapRank: peakData.firstTrapRank,
+      quality: peakData.quality,
+      trapRanks: peakData.trapRanks,
+      trapGaps: peakData.trapGaps,
+      points: pointsObj,
+      savedAt: new Date().toISOString()
+    };
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch (e) {
+    console.warn('[OPW Peak Memory] Error saving peak memory:', e);
+  }
+};
+
+export const loadOptimizerPeakMemory = (day: string, categoryId: string): OptimizerPeakMemory | null => {
+  try {
+    const key = getOptimizerPeakStorageKey(day, categoryId);
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.cleanTopMatches === 'number' && parsed.points) {
+      const isUd = categoryId === 'upsets' || categoryId === 'upset' || categoryId === 'underdog_only';
+      const cleanPoints: Record<string, number> = {};
+      Object.entries(parsed.points).forEach(([k, val]) => {
+        const v = val as number;
+        if (typeof v === 'number' && !isNaN(v)) {
+          if (v === 0) {
+            if (isUd) cleanPoints[k] = 0;
+          } else {
+            const leagueMaxPenalty = isLeagueTrigger(k) ? getLeagueTriggerMaxPenalty(k) : -30;
+            const leagueMaxBonus = isLeagueTrigger(k) ? getLeagueTriggerMaxBonus(k, isUd) : 40;
+            cleanPoints[k] = v > 0 ? Math.max(5, Math.min(leagueMaxBonus, v)) : Math.min(-5, Math.max(leagueMaxPenalty, v));
+          }
+        }
+      });
+      parsed.points = cleanPoints;
+      return parsed;
+    }
+  } catch (e) {
+    console.warn('[OPW Peak Memory] Error loading peak memory:', e);
+  }
+  return null;
+};
+
+export const clearOptimizerPeakMemory = (day: string, categoryId: string) => {
+  try {
+    const key = getOptimizerPeakStorageKey(day, categoryId);
+    window.localStorage.removeItem(key);
+  } catch (e) {
+    console.warn('[OPW Peak Memory] Error clearing peak memory:', e);
+  }
 };
 
 export interface TriggerRecommendation {
@@ -187,6 +291,21 @@ export interface MultiHorizonSummary {
   h3000: HorizonBreakdown;
 }
 
+export interface TrapRankInfo {
+  trapNumber: number;  // 1 to 5
+  rank: number;
+  score: number;
+  gapToPrev: number;
+}
+
+export interface OptimizerPhaseState {
+  currentPhase: number;        // 1 to 5
+  phaseComps: number;          // computations executed in this phase
+  phaseBudget: number;         // 500k for phase 1; 350k for phases 2-5
+  establishedRanks: number[];  // [peakR1, peakR2, ...]
+  establishedScores: number[]; // [peakS1, peakS2, ...]
+}
+
 export interface SeparationEvaluation {
   quality: number;
   purityPct: number;
@@ -207,19 +326,18 @@ export interface SeparationEvaluation {
   regularizationCost: number;
   targetsInTop5000?: number;
   horizonMetrics?: MultiHorizonSummary;
+  trapRanks?: number[];
+  trapScores?: number[];
+  trapGaps?: number[];
+  trapDispersionHealth?: 'HEALTHY' | 'MODERATE' | 'CLUSTERED';
 }
 
-export const ALLOWED_POINT_VALUES = [-40, -35, -30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25];
+export const ALLOWED_POINT_VALUES = [-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30, 35, 40];
 
 export function getFullActiveCatalogTriggers(): string[] {
-  try {
-    const approved = loadApprovedCustomTriggers().filter(t => t.isActive).map(t => t.description);
-    if (approved.length === 0) return ALL_MASTER_CATALOG_TRIGGERS;
-    const set = new Set([...ALL_MASTER_CATALOG_TRIGGERS, ...approved]);
-    return Array.from(set);
-  } catch (e) {
-    return ALL_MASTER_CATALOG_TRIGGERS;
-  }
+  const set = new Set(ALL_MASTER_CATALOG_TRIGGERS);
+  DYNAMIC_LEAGUE_TRIGGERS.forEach(t => set.add(t));
+  return Array.from(set);
 }
 
 export interface TargetHorizon {
@@ -367,6 +485,81 @@ export interface TriggerAccuracyProfile {
   tier: 1 | 2 | 3 | 4 | 5;
   allowedBand: number[];
   maxStep: number;
+  zeroEligible: boolean;
+}
+
+/**
+ * In Upsets (underdog_only), 0 points is a last resort — never a general shortcut.
+ * A trigger is eligible for 0 points ONLY if empirical live and/or overall history shows:
+ *   1. Wrong side: PRO_UNDERDOG leans Pro-Mfav, or PRO_MFAV leans Pro-Underdog
+ *   2. No statistical value / no contribution: 0 total hits, or flat/balanced near baseline (no discriminative lift)
+ *   3. Stale overall: overall historical universe lacks discriminative edge on its assigned side
+ */
+export function isUpsetTriggerZeroEligible(
+  desc: string,
+  liveCounts: { mfav: number; draw: number; underdog: number } | undefined,
+  histCounts?: { mfav: number; draw: number; underdog: number } | undefined,
+  categoryId?: string,
+  day?: string
+): boolean {
+  const isLeagueLockedUd = isLeagueTrigger(desc) && isLeagueLockedProUnderdog(desc, categoryId, day);
+  const polarity = isLeagueTrigger(desc) ? 'NEUTRAL' : (isLeagueLockedUd ? 'PRO_UNDERDOG' : getTriggerSemanticPolarity(desc, categoryId || 'underdog_only'));
+
+  const assess = (c?: { mfav: number; draw: number; underdog: number }) => {
+    if (!c) return { total: 0, status: 'no_value' as const, udLift: 1.0, mfavLift: 1.0 };
+    const total = c.mfav + c.draw + c.underdog;
+    if (total === 0) return { total: 0, status: 'no_value' as const, udLift: 1.0, mfavLift: 1.0 };
+    if (total < 5) return { total, status: 'insufficient' as const, udLift: (c.underdog / total) / 0.18, mfavLift: (c.mfav / total) / 0.58 };
+    const udRate = c.underdog / total;
+    const mfavRate = c.mfav / total;
+    const drawRate = c.draw / total;
+    const udLift = udRate / 0.18;
+    const mfavLift = mfavRate / 0.58;
+
+    // 1. Wrong Side check (PRO_UNDERDOG vs PRO_MFAV mismatch)
+    if (polarity === 'PRO_UNDERDOG' && (udLift < 0.90 || mfavLift >= 1.10 || (mfavRate >= 0.62 && udRate < 0.18))) {
+      return { total, status: 'wrong_side' as const, udLift, mfavLift };
+    }
+    if (polarity === 'PRO_MFAV' && (udLift >= 1.15 || udRate >= 0.22 || (mfavRate <= 0.45 && udRate >= 0.18))) {
+      return { total, status: 'wrong_side' as const, udLift, mfavLift };
+    }
+
+    // 2. No statistical value / flat balanced signal around baseline
+    const isThreeWay = Math.abs(mfavRate * 100 - 33.3) <= 8 && Math.abs(drawRate * 100 - 33.3) <= 8 && Math.abs(udRate * 100 - 33.3) <= 8;
+    const isTwoWayTied = Math.abs(mfavRate - udRate) <= 0.06 && mfavRate <= 0.45;
+    const flatLift = udLift >= 0.85 && udLift <= 1.15 && mfavLift >= 0.85 && mfavLift <= 1.15;
+    if (isThreeWay || isTwoWayTied || flatLift) {
+      return { total, status: 'no_value' as const, udLift, mfavLift };
+    }
+
+    return { total, status: 'valid' as const, udLift, mfavLift };
+  };
+
+  const liveEval = assess(liveCounts);
+  const histEval = assess(histCounts);
+
+  // If neither live nor overall history has any hits, trigger contributes nothing
+  if (liveEval.total === 0 && histEval.total === 0) return true;
+
+  // Wrong side on either sample (unless strongly contradicted by >= 8 valid hits in the other sample)
+  if (liveEval.status === 'wrong_side' && !(histEval.status === 'valid' && histEval.total >= 12)) return true;
+  if (histEval.status === 'wrong_side' && !(liveEval.status === 'valid' && liveEval.total >= 8)) return true;
+
+  // No statistical value / flat baseline signal
+  if (histEval.status === 'no_value' && !(liveEval.status === 'valid' && liveEval.total >= 8)) return true;
+  if (liveEval.status === 'no_value' && histEval.status !== 'valid') return true;
+
+  // Stale overall check: overall historical sample >= 10 shows no meaningful edge on its assigned side and live isn't strongly valid
+  if (histEval.total >= 10) {
+    const liveStrong = liveEval.status === 'valid' && liveEval.total >= 5;
+    if (!liveStrong) {
+      if (polarity === 'PRO_UNDERDOG' && histEval.udLift < 1.05) return true;
+      if (polarity === 'PRO_MFAV' && histEval.mfavLift < 1.05 && histEval.udLift >= 0.95) return true;
+      if (polarity === 'NEUTRAL' && histEval.udLift >= 0.85 && histEval.udLift <= 1.15 && histEval.mfavLift >= 0.85 && histEval.mfavLift <= 1.15) return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -383,56 +576,82 @@ export function getTriggerAccuracyProfile(
   counts: { mfav: number; draw: number; underdog: number } | undefined,
   objective: 'mfav_draw' | 'mfav_only' | 'underdog_only',
   customHistoricalAnchor?: number,
-  isHistoryMode: boolean = false
+  isHistoryMode: boolean = false,
+  categoryId?: string,
+  day?: string,
+  histCounts?: { mfav: number; draw: number; underdog: number }
 ): TriggerAccuracyProfile {
-  const fullBand = [-40, -35, -30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25];
-
-  const polarity = getTriggerSemanticPolarity(desc);
+  const isBig5 = desc === "Match belongs to England: Premier League";
   const isUpsets = objective === 'underdog_only';
+  const zeroEligible = isUpsets ? isUpsetTriggerZeroEligible(desc, counts, histCounts, categoryId, day) : false;
+  const leagueMaxPen = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
+  const leagueMaxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUpsets) : (isBig5 && !isUpsets ? 40 : 30);
+  const minFull = Math.min(-30, leagueMaxPen);
+  const maxFull = Math.max(30, leagueMaxBonus);
+  const fullBand = [-35, -30, -25, -20, -15, -10, -5, ...(zeroEligible ? [0] : []), 5, 10, 15, 20, 25, 30, 35, 40].filter(v => v >= minFull && v <= maxFull);
+
+  const isLeagueLockedUd = isLeagueTrigger(desc) && isLeagueLockedProUnderdog(desc, categoryId, day);
+  const polarity = isLeagueTrigger(desc) ? 'NEUTRAL' : (isLeagueLockedUd ? 'PRO_UNDERDOG' : getTriggerSemanticPolarity(desc, categoryId || objective));
   const isMfavDraw = objective === 'mfav_draw';
 
-  // Allowed candidate bounds based strictly on user-approved domain polarity:
-  // 1. Pro-underdog: strictly [0, -40] (for Mfav/Top 12) -> max bonus is 0!
-  // 2. Pro-Mfav: strictly [0, +25] (for Mfav/Top 12) -> worst penalty is 0!
-  // 3. Neutral: [-15, +15] (neutral triggers can swing between +15 to minus 15)
-  // 4. Upsets (underdog_only): Underdog triggers [0, +25], Mfav triggers [-40, 0], Neutral [-15, +15].
+  // Allowed candidate bounds based strictly on user-approved domain polarity (0 is allowed ONLY in Upsets when zeroEligible):
+  // 1. Pro-underdog on Mfav: [leagueMaxPen, -5] (minimum penalty is -5, max penalty is -35/-20)
+  // 2. Pro-Mfav on Mfav: [+5, +30] (minimum bonus is +5, up to +20 standard or manual cap for leagues, up to +40 for Big 5 league)
+  // 3. Upsets: Underdog triggers [+5, +30] (0 allowed ONLY if zeroEligible), Mfav triggers [-30, -5] (0 allowed ONLY if zeroEligible)
+  // 4. Underdog odds >3.0: bonus trigger for all categories, including upsets [+5, +30] (or 0 if zeroEligible)
+  // 5. Neutral (League triggers): [getLeagueTriggerMaxPenalty(desc), leagueMaxBonus]
   let minPolarityBound: number;
   let maxPolarityBound: number;
 
-  if (isUpsets) {
-    if (polarity === 'PRO_UNDERDOG') {
-      minPolarityBound = 5;
-      maxPolarityBound = 25;
-    } else if (polarity === 'PRO_MFAV') {
-      minPolarityBound = -40;
-      maxPolarityBound = -5;
+  if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
+    minPolarityBound = getLeagueTriggerMaxPenalty(desc);
+    maxPolarityBound = leagueMaxBonus;
+  } else if (isUpsets && UPSETS_EXPLICIT_PENALTIES[desc] !== undefined) {
+    minPolarityBound = -30;
+    maxPolarityBound = zeroEligible ? 0 : -5;
+  } else if (DUAL_BONUS_TRIGGERS.has(desc) && !isLeagueLockedUd) {
+    minPolarityBound = (isUpsets && zeroEligible) ? 0 : 5;
+    maxPolarityBound = isBig5 && !isUpsets ? 40 : (isLeagueTrigger(desc) ? leagueMaxBonus : 30);
+  } else if (desc === "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)") {
+    if (isUpsets) {
+      minPolarityBound = -30;
+      maxPolarityBound = zeroEligible ? 0 : -5;
     } else {
-      minPolarityBound = -15;
-      maxPolarityBound = 15;
+      minPolarityBound = 5;
+      maxPolarityBound = 30;
+    }
+  } else if (isUpsets) {
+    if (polarity === 'PRO_UNDERDOG' || isLeagueLockedUd) {
+      minPolarityBound = zeroEligible ? 0 : 5;
+      maxPolarityBound = isLeagueTrigger(desc) ? leagueMaxBonus : 30;
+    } else {
+      minPolarityBound = isLeagueTrigger(desc) ? leagueMaxPen : -30;
+      maxPolarityBound = zeroEligible ? 0 : -5;
     }
   } else {
-    if (polarity === 'PRO_UNDERDOG') {
-      minPolarityBound = -40;
+    if (polarity === 'PRO_UNDERDOG' || isLeagueLockedUd) {
+      minPolarityBound = isLeagueTrigger(desc) ? leagueMaxPen : -30;
       maxPolarityBound = -5;
-    } else if (polarity === 'PRO_MFAV') {
-      minPolarityBound = 5;
-      maxPolarityBound = 25;
     } else {
-      minPolarityBound = -15;
-      maxPolarityBound = 15;
+      minPolarityBound = 5;
+      maxPolarityBound = isLeagueTrigger(desc) ? leagueMaxBonus : (isBig5 ? 40 : 30);
     }
   }
 
-  const rawAnchor = (customHistoricalAnchor !== undefined && customHistoricalAnchor !== 0)
+  const rawAnchor = (customHistoricalAnchor !== undefined && (zeroEligible || customHistoricalAnchor !== 0))
     ? customHistoricalAnchor
-    : getMasterTriggerDefaultPoints(desc, objective);
-  let historicalAnchor = Math.max(minPolarityBound, Math.min(maxPolarityBound, rawAnchor));
-  if (historicalAnchor === 0) {
+    : getMasterTriggerDefaultPoints(desc, objective, categoryId);
+  let historicalAnchor = (zeroEligible && customHistoricalAnchor === 0)
+    ? 0
+    : (rawAnchor !== 0
+      ? Math.max(minPolarityBound, Math.min(maxPolarityBound, rawAnchor))
+      : (isUpsets ? (polarity === 'PRO_UNDERDOG' ? 15 : -15) : (polarity === 'PRO_UNDERDOG' ? -15 : 15)));
+  if (!zeroEligible && historicalAnchor === 0) {
     historicalAnchor = isUpsets ? (polarity === 'PRO_UNDERDOG' ? 15 : -15) : (polarity === 'PRO_UNDERDOG' ? -15 : 15);
   }
 
   if (!counts || (counts.mfav + counts.draw + counts.underdog) === 0) {
-    const allowedBand = fullBand.filter(v => v !== 0 && v >= minPolarityBound && v <= maxPolarityBound);
+    const allowedBand = fullBand.filter(v => (zeroEligible || v !== 0) && v >= minPolarityBound && v <= maxPolarityBound);
     return {
       totalHits: 0,
       targetHits: 0,
@@ -449,7 +668,8 @@ export function getTriggerAccuracyProfile(
       historicalAnchor,
       tier: 3,
       allowedBand: allowedBand.length > 0 ? allowedBand : [historicalAnchor],
-      maxStep: 15
+      maxStep: 15,
+      zeroEligible
     };
   }
 
@@ -509,11 +729,21 @@ export function getTriggerAccuracyProfile(
     }
   }
 
+  // Within-Sign Collateral Damage Cap:
+  // Strictly preserve domain polarity (PRO_MFAV is always +5..+30/+40 in favorite categories, PRO_UNDERDOG is always -30..-5).
+  // If a negative penalty trigger hits a large volume of winning targets, cap its deepest penalty at -10 ([-10, -5])
+  // so it never crushes winning matches while strictly remaining a negative penalty.
+  if (totalHits >= 2 && maxPolarityBound < 0) {
+    if (targetHits >= 8 && targetAccuracy >= 0.35 && trapHits <= targetHits * 2) {
+      minPolarityBound = Math.max(minPolarityBound, -10);
+    }
+  }
+
   // User directive: paused historical anchor restriction tying live/daily computations to trigger history.
   // Daily algos are improved per day across valid domain semantic polarity bounds [minPolarityBound, maxPolarityBound].
-  let allowedBand = fullBand.filter(v => v !== 0 && v >= minPolarityBound && v <= maxPolarityBound);
+  let allowedBand = fullBand.filter(v => (zeroEligible || v !== 0) && v >= minPolarityBound && v <= maxPolarityBound);
   if (allowedBand.length === 0) {
-    allowedBand = [historicalAnchor];
+    allowedBand = [historicalAnchor !== 0 || zeroEligible ? historicalAnchor : (polarity === 'PRO_UNDERDOG' ? (isUpsets ? 15 : -15) : (isUpsets ? -15 : 15))];
   }
 
   return {
@@ -532,7 +762,8 @@ export function getTriggerAccuracyProfile(
     historicalAnchor,
     tier,
     allowedBand,
-    maxStep: 15
+    maxStep: 15,
+    zeroEligible
   };
 }
 
@@ -563,8 +794,8 @@ export function evaluateSeparation(
       regularizationCost: 0
     };
   }
-  const SCORE_OFFSET = 300;
-  const BUCKET_COUNT = 601;
+  const SCORE_OFFSET = 1500;
+  const BUCKET_COUNT = 3001;
   const buckets: { outcome: 'mfav' | 'draw' | 'underdog'; score: number }[][] = Array.from({ length: BUCKET_COUNT }, () => []);
 
   for (let i = 0; i < profiles.length; i++) {
@@ -573,7 +804,7 @@ export function evaluateSeparation(
     p.triggersHit.forEach(desc => {
       score += pointsMap.get(desc) ?? 0;
     });
-    const clamped = Math.max(-299, Math.min(299, score));
+    const clamped = Math.max(-1499, Math.min(1499, score));
     buckets[clamped + SCORE_OFFSET].push({ outcome: p.outcome, score });
   }
 
@@ -612,17 +843,37 @@ export function evaluateSeparation(
   const totalCorrect = profiles.filter(p => targetOutcomes.has(p.outcome)).length;
   const horizons = calculateTargetHorizons(profiles.length, totalCorrect, targetCapacity, objective);
 
-  // Find index of first trap outcome
+  // Find indices and ranks of top 5 trap outcomes
   let firstTrapIndex = scored.length;
+  const trapIndices: number[] = [];
+  const trapScoresList: number[] = [];
   for (let i = 0; i < scored.length; i++) {
     if (trapOutcomes.has(scored[i].outcome)) {
-      firstTrapIndex = i;
-      break;
+      if (trapIndices.length === 0) firstTrapIndex = i;
+      if (trapIndices.length < 5) {
+        trapIndices.push(i);
+        trapScoresList.push(scored[i].score);
+      }
     }
   }
 
   const cleanTopMatches = firstTrapIndex;
   const firstTrapRank = firstTrapIndex + 1;
+  const trapRanks = trapIndices.map(idx => idx + 1);
+  const trapGaps: number[] = [];
+  for (let i = 0; i < trapRanks.length; i++) {
+    if (i === 0) trapGaps.push(trapRanks[0] - 1);
+    else trapGaps.push(trapRanks[i] - trapRanks[i - 1]);
+  }
+  let avgTrapGap = 0;
+  if (trapGaps.length > 1) {
+    const sumGaps = trapGaps.slice(1).reduce((acc, g) => acc + g, 0);
+    avgTrapGap = sumGaps / (trapGaps.length - 1);
+  } else if (trapGaps.length === 1) {
+    avgTrapGap = trapGaps[0];
+  }
+  const trapDispersionHealth: 'HEALTHY' | 'MODERATE' | 'CLUSTERED' =
+    avgTrapGap >= 10 ? 'HEALTHY' : avgTrapGap >= 5 ? 'MODERATE' : 'CLUSTERED';
 
   // Dual-horizon convergence criteria strictly requires positive OPW scores (> 0) on top target matches
   const floorSlice = scored.slice(0, Math.min(scored.length, horizons.floor));
@@ -810,27 +1061,23 @@ export function evaluateSeparation(
     (horizonMetrics.h3000.targets * 5  - horizonMetrics.h3000.traps * 15)
   ) : 0;
 
-  // Weight Regularization: Minimal tie-breaker on extreme weights (max penalty 40, max bonus 25)
+  // Weight Regularization: meaningful parsimony guard against arbitrary extreme weights
+  const isUpsets = objective === 'underdog_only';
   let regSum = 0;
-  pointsMap.forEach(pts => {
-    const normalized = pts < 0 ? Math.abs(pts) / 40 : pts / 25;
+  pointsMap.forEach((pts, desc) => {
+    const isBig5 = desc === "Match belongs to England: Premier League";
+    const maxBonus = isBig5 ? (isUpsets ? 25 : 40) : 30;
+    const normalized = pts < 0 ? Math.abs(pts) / 45 : pts / maxBonus;
     regSum += normalized * normalized;
   });
-  const regularizationCost = regSum * 1.0;
-
-  // Target 100+ points reward: Reward winning target matches having robust high scores (>= 100 pts)
-  let target100Reward = 0;
-  for (const s of targetScores) {
-    if (s >= 100) target100Reward += 150;
-    else if (s >= 50) target100Reward += 50;
-  }
+  const regularizationCost = regSum * 8.0;
 
   // Clean streak completion bonus
   const cleanStreakBonus = (cleanTopMatches >= Math.min(totalCorrect, topN) && totalCorrect > 0) ? 3000 : 0;
 
   // Pure mathematical quality across all categories:
   // Maximizes target density across volume horizons, suppresses traps across volume thresholds,
-  // maintains clean target streak, and penalizes inversions
+  // maintains clean target streak, and penalizes inversions without rewarding unbounded score inflation
   const quality = (cleanTopMatches * 500) +
     cleanStreakBonus +
     horizonFitness +
@@ -839,8 +1086,7 @@ export function evaluateSeparation(
     (trapInTopN * 500) -
     elevatedTrapPenalty +
     Math.min(50, bufferMargin) +
-    positiveTargetReward +
-    target100Reward -
+    positiveTargetReward -
     nonPositiveTargetPenalty -
     trapPositivePenalty -
     regularizationCost;
@@ -864,9 +1110,38 @@ export function evaluateSeparation(
     targetCeiling: horizons.ceiling,
     regularizationCost,
     targetsInTop5000,
-    horizonMetrics
+    horizonMetrics,
+    trapRanks,
+    trapScores: trapScoresList,
+    trapGaps,
+    trapDispersionHealth
   };
 }
+
+const MODULE_DAY_HIST_CACHE = new Map<string, Map<string, { mfav: number; draw: number; underdog: number }>>();
+const MODULE_OVERALL_HIST_CACHE = new Map<string, Map<string, {
+  mfav: number;
+  draw: number;
+  underdog: number;
+  total: number;
+  weekdays: Record<string, { mfav: number; draw: number; underdog: number; total: number }>;
+}>>();
+const EMPTY_HIST_COUNTS = { mfav: 0, draw: 0, underdog: 0 };
+const EMPTY_OVERALL_HIST = {
+  mfav: 0,
+  draw: 0,
+  underdog: 0,
+  total: 0,
+  weekdays: {
+    monday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+    tuesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+    wednesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+    thursday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+    friday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+    saturday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+    sunday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+  }
+};
 
 export function computeCategoryRecommendations(
   cat: CategoryOption,
@@ -914,42 +1189,36 @@ export function computeCategoryRecommendations(
     return actual === '1' || actual === 'X' || actual === '2';
   });
 
-  // Extract combined historical matches for the selected day of week for < 5 match sample fallbacks
-  const dayHistoricalMatches = (allMatches && allMatches.length > 0)
-    ? (selectedDay !== 'all' ? allMatches.filter(m => getMatchDayOfWeek(m) === selectedDay) : allMatches)
-    : [];
-
-  const dayHistoricalCategoryMatches = dayHistoricalMatches.filter(m => {
-    let tags = m.evaluatorTags;
-    if (!tags || tags.length === 0) {
-      tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
-      m.evaluatorTags = tags;
-    }
-    if (isTop12Cat) {
-      return tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'));
-    }
-    return !prefix || tags.some(t => t.startsWith(prefix));
-  });
-
-  const dayHistoricalCompletedMatches = dayHistoricalCategoryMatches.filter(m => {
-    const actual = getActualResult(m.result || '');
-    return actual === '1' || actual === 'X' || actual === '2';
-  });
-
-  // Lazy cache of historical day hit stats for triggers with < 5 live matches
-  let dayHistStatsMap: Map<string, { mfav: number; draw: number; underdog: number }> | null = null;
+  // Persistent module-cached historical day hit stats (0ms on repeated category/day renders)
+  const dayCacheKey = `${cat.id}_${selectedDay}_${allMatches ? Math.min(allMatches.length, 300) : 0}`;
+  let dayHistStatsMap = MODULE_DAY_HIST_CACHE.get(dayCacheKey) || null;
   const getDayHistStats = (desc: string): { mfav: number; draw: number; underdog: number } => {
     if (!dayHistStatsMap) {
       dayHistStatsMap = new Map();
-      getFullActiveCatalogTriggers().forEach(d => dayHistStatsMap!.set(d, { mfav: 0, draw: 0, underdog: 0 }));
-      dayHistoricalCompletedMatches.forEach(m => {
+      const daySample: Match[] = [];
+      if (allMatches && allMatches.length > 0) {
+        const minIdx = Math.max(0, allMatches.length - 300);
+        for (let i = allMatches.length - 1; i >= minIdx && daySample.length < 40; i--) {
+          const m = allMatches[i];
+          const actual = getActualResult(m.result || '');
+          if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
+          if (selectedDay !== 'all' && getMatchDayOfWeek(m) !== selectedDay) continue;
+          let tags = m.evaluatorTags;
+          if (!tags || tags.length === 0) {
+            tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+            m.evaluatorTags = tags;
+          }
+          const inCat = isTop12Cat
+            ? tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'))
+            : (!prefix || tags.some(t => t.startsWith(prefix)));
+          if (inCat) daySample.push(m);
+        }
+      }
+      daySample.forEach(m => {
         const actual = getActualResult(m.result || '');
         if (actual !== '1' && actual !== 'X' && actual !== '2') return;
         const mFav = getMarketFavorite(m);
-        let outcome: 'mfav' | 'draw' | 'underdog';
-        if (actual === mFav) outcome = 'mfav';
-        else if (actual === 'X') outcome = 'draw';
-        else outcome = 'underdog';
+        const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
 
         let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
         if (!allTriggers) {
@@ -958,76 +1227,51 @@ export function computeCategoryRecommendations(
           (m as any)._opwCatalogTriggers = allTriggers;
         }
         allTriggers.forEach(t => {
-          const st = dayHistStatsMap!.get(t);
-          if (st) {
-            if (outcome === 'mfav') st.mfav++;
-            else if (outcome === 'draw') st.draw++;
-            else st.underdog++;
+          let st = dayHistStatsMap!.get(t);
+          if (!st) {
+            st = { mfav: 0, draw: 0, underdog: 0 };
+            dayHistStatsMap!.set(t, st);
           }
+          if (outcome === 'mfav') st.mfav++;
+          else if (outcome === 'draw') st.draw++;
+          else st.underdog++;
         });
       });
+      MODULE_DAY_HIST_CACHE.set(dayCacheKey, dayHistStatsMap);
     }
-    return dayHistStatsMap.get(desc) || { mfav: 0, draw: 0, underdog: 0 };
+    return dayHistStatsMap.get(desc) || EMPTY_HIST_COUNTS;
   };
 
-  // Extract overall historical completed matches for this category across ALL days of the week
-  const overallHistoricalCategoryMatches = (allMatches && allMatches.length > 0)
-    ? allMatches.filter(m => {
-        let tags = m.evaluatorTags;
-        if (!tags || tags.length === 0) {
-          tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
-          m.evaluatorTags = tags;
-        }
-        if (isTop12Cat) {
-          return tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'));
-        }
-        return !prefix || tags.some(t => t.startsWith(prefix));
-      })
-    : [];
-
-  const overallHistoricalCompletedMatches = overallHistoricalCategoryMatches.filter(m => {
-    const actual = getActualResult(m.result || '');
-    return actual === '1' || actual === 'X' || actual === '2';
-  });
-
-  // Lazy cache of overall historical hit stats (all days combined + weekday breakdown)
-  let overallHistStatsMap: Map<string, {
-    mfav: number;
-    draw: number;
-    underdog: number;
-    total: number;
-    weekdays: Record<string, { mfav: number; draw: number; underdog: number; total: number }>;
-  }> | null = null;
+  // Persistent module-cached overall historical hit stats (0ms on repeated renders)
+  const overallCacheKey = `${cat.id}_${allMatches ? Math.min(allMatches.length, 300) : 0}`;
+  let overallHistStatsMap = MODULE_OVERALL_HIST_CACHE.get(overallCacheKey) || null;
 
   const getOverallHistStats = (desc: string) => {
     if (!overallHistStatsMap) {
       overallHistStatsMap = new Map();
-      getFullActiveCatalogTriggers().forEach(d => {
-        overallHistStatsMap!.set(d, {
-          mfav: 0,
-          draw: 0,
-          underdog: 0,
-          total: 0,
-          weekdays: {
-            monday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-            tuesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-            wednesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-            thursday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-            friday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-            saturday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-            sunday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+      const overallSample: Match[] = [];
+      if (allMatches && allMatches.length > 0) {
+        const minIdx = Math.max(0, allMatches.length - 300);
+        for (let i = allMatches.length - 1; i >= minIdx && overallSample.length < 40; i--) {
+          const m = allMatches[i];
+          const actual = getActualResult(m.result || '');
+          if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
+          let tags = m.evaluatorTags;
+          if (!tags || tags.length === 0) {
+            tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+            m.evaluatorTags = tags;
           }
-        });
-      });
-
-      overallHistoricalCompletedMatches.forEach(m => {
+          const inCat = isTop12Cat
+            ? tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'))
+            : (!prefix || tags.some(t => t.startsWith(prefix)));
+          if (inCat) overallSample.push(m);
+        }
+      }
+      overallSample.forEach(m => {
         const actual = getActualResult(m.result || '');
         if (actual !== '1' && actual !== 'X' && actual !== '2') return;
         const mFav = getMarketFavorite(m);
-        let outcome: 'mfav' | 'draw' | 'underdog';
-        if (actual === mFav) outcome = 'mfav';
-        else if (actual === 'X') outcome = 'draw';
-        else outcome = 'underdog';
+        const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
         const matchDay = getMatchDayOfWeek(m);
 
         let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
@@ -1037,39 +1281,42 @@ export function computeCategoryRecommendations(
           (m as any)._opwCatalogTriggers = allTriggers;
         }
         allTriggers.forEach(t => {
-          const st = overallHistStatsMap!.get(t);
-          if (st) {
-            st.total++;
-            if (outcome === 'mfav') st.mfav++;
-            else if (outcome === 'draw') st.draw++;
-            else st.underdog++;
+          let st = overallHistStatsMap!.get(t);
+          if (!st) {
+            st = {
+              mfav: 0,
+              draw: 0,
+              underdog: 0,
+              total: 0,
+              weekdays: {
+                monday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+                tuesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+                wednesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+                thursday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+                friday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+                saturday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+                sunday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
+              }
+            };
+            overallHistStatsMap!.set(t, st);
+          }
+          st.total++;
+          if (outcome === 'mfav') st.mfav++;
+          else if (outcome === 'draw') st.draw++;
+          else st.underdog++;
 
-            const wd = st.weekdays[matchDay];
-            if (wd) {
-              wd.total++;
-              if (outcome === 'mfav') wd.mfav++;
-              else if (outcome === 'draw') wd.draw++;
-              else wd.underdog++;
-            }
+          const wd = st.weekdays[matchDay];
+          if (wd) {
+            wd.total++;
+            if (outcome === 'mfav') wd.mfav++;
+            else if (outcome === 'draw') wd.draw++;
+            else wd.underdog++;
           }
         });
       });
+      MODULE_OVERALL_HIST_CACHE.set(overallCacheKey, overallHistStatsMap);
     }
-    return overallHistStatsMap.get(desc) || {
-      mfav: 0,
-      draw: 0,
-      underdog: 0,
-      total: 0,
-      weekdays: {
-        monday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-        tuesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-        wednesday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-        thursday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-        friday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-        saturday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-        sunday: { mfav: 0, draw: 0, underdog: 0, total: 0 },
-      }
-    };
+    return overallHistStatsMap.get(desc) || EMPTY_OVERALL_HIST;
   };
 
   let activeSettings: OptimizedCategorySettings | undefined;
@@ -1078,8 +1325,7 @@ export function computeCategoryRecommendations(
       DAILY_DEFAULT_CATEGORY_SETTINGS[selectedDay]?.[cat.id] ||
       OPTIMIZED_CATEGORY_SETTINGS[cat.id];
   } else {
-    activeSettings = OPTIMIZED_CATEGORY_SETTINGS[cat.id] ||
-      DAILY_DEFAULT_CATEGORY_SETTINGS.saturday?.[cat.id];
+    activeSettings = OPTIMIZED_CATEGORY_SETTINGS[cat.id];
   }
 
   const currentRulePointsMap = new Map<string, number>();
@@ -1136,7 +1382,6 @@ export function computeCategoryRecommendations(
 
     const triggersHit = new Set<string>();
     allTriggers.forEach(t => {
-      if (t === "Odds for underdog >= 3.0" && cat.targetObjective !== 'underdog_only') return;
       triggersHit.add(t);
 
       let stat = hitStats.get(t);
@@ -1398,7 +1643,7 @@ export function computeCategoryRecommendations(
     .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
     .map(([desc]) => desc);
 
-  const POINT_VALUES = [-40, -35, -30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25];
+  const POINT_VALUES = [-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30];
   const OPTIMIZATION_PASSES = 5;
   let totalComputations = 0;
 
@@ -1417,15 +1662,18 @@ export function computeCategoryRecommendations(
 
   const catalogTriggers = getFullActiveCatalogTriggers();
   const optimizedPoints = new Map<string, number>();
+  const isUpsetsObj = objective === 'underdog_only';
+  const recLockDay = selectedDay !== 'all' ? selectedDay : undefined;
   catalogTriggers.forEach(desc => {
     const counts = hitStats.get(desc);
+    const overallCounts = getOverallHistStats(desc);
     const currentVal = currentRulePointsMap.get(desc);
-    const profile = getTriggerAccuracyProfile(desc, counts, objective, currentVal);
-    let initialPts = (currentVal !== undefined && currentVal !== 0 && ALLOWED_POINT_VALUES.includes(currentVal))
+    const profile = getTriggerAccuracyProfile(desc, counts, objective, currentVal, false, cat.id, recLockDay, overallCounts);
+    let initialPts = (currentVal !== undefined && ((profile.zeroEligible && currentVal === 0) || (currentVal !== 0 && ALLOWED_POINT_VALUES.includes(currentVal))))
       ? currentVal
-      : borrowTriggerPoints(desc, cat.id, selectedDay);
-    if (initialPts === 0) {
-      initialPts = borrowTriggerPoints(desc, cat.id, selectedDay);
+      : getNewTriggerDefaultPoints(desc);
+    if (!profile.zeroEligible && initialPts === 0) {
+      initialPts = getNewTriggerDefaultPoints(desc);
     }
     
     // Clamp to trigger's empirical allowed band
@@ -1435,152 +1683,104 @@ export function computeCategoryRecommendations(
     optimizedPoints.set(desc, initialPts);
   });
 
-  if (matchProfiles.length > 60) {
-    // Instantaneous O(N) Empirical Lift & Relative-Risk Calibration
-    // For large universes (e.g. Historical Universe), skip synchronous render-thread permutations to prevent browser hang!
-    // Deep multi-permutation search is executed asynchronously in the Self-Learn Engine.
-    const isHistUniv = matchProfiles.length > 60;
-    catalogTriggers.forEach(desc => {
-      const counts = hitStats.get(desc);
-      const totalHits = counts ? counts.mfav + counts.draw + counts.underdog : 0;
-      const currentVal = currentRulePointsMap.get(desc);
-      const profile = getTriggerAccuracyProfile(desc, counts, objective, currentVal, isHistUniv);
+  // Instantaneous O(N) Empirical Lift & Relative-Risk Calibration
+  // Always execute fast empirical calibration on the render thread to ensure zero UI freeze (< 10ms).
+  // Deep multi-permutation search is executed asynchronously in the background Deep Continuous Optimizer.
+  const isHistUniv = matchProfiles.length > 60;
+  catalogTriggers.forEach(desc => {
+    const counts = hitStats.get(desc);
+    const totalHits = counts ? counts.mfav + counts.draw + counts.underdog : 0;
+    const currentVal = currentRulePointsMap.get(desc);
+    const profile = getTriggerAccuracyProfile(desc, counts, objective, currentVal, isHistUniv, cat.id, recLockDay, getOverallHistStats(desc));
 
-      if (totalHits < 5 || (totalHits >= 8 && isTriggerEmpiricallyBalanced(counts))) {
-        optimizedPoints.set(desc, profile.historicalAnchor);
-        return;
-      }
+    if (totalHits < 5 || (totalHits >= 8 && isTriggerEmpiricallyBalanced(counts))) {
+      optimizedPoints.set(desc, profile.historicalAnchor);
+      return;
+    }
 
-      let pts = 0;
-      if (objective === 'underdog_only') {
-        // Upsets: Pro-underdog/volatile gets natural bonus, pro-Mfav gets natural penalty
-        const udRate = profile.underdogRate;
-        const mfavRate = profile.mfavRate;
-        if (profile.isVolatileSignal || udRate >= 0.22 || udRate > mfavRate) {
-          if (udRate >= 0.45) pts = 25;
-          else if (udRate >= 0.38) pts = 20;
-          else if (udRate >= 0.30 || profile.underdogLift >= 1.40) pts = 15;
-          else if (udRate >= 0.24 || profile.underdogLift >= 1.25) pts = 10;
-          else pts = 5;
-        } else if (mfavRate >= 0.55 || udRate <= 0.12) {
-          if (mfavRate >= 0.85) pts = -40;
-          else if (mfavRate >= 0.78) pts = -35;
-          else if (mfavRate >= 0.70) pts = -30;
-          else if (mfavRate >= 0.65) pts = -25;
-          else if (mfavRate >= 0.58) pts = -20;
-          else pts = -10;
-        } else {
-          pts = profile.historicalAnchor !== 0 ? profile.historicalAnchor : 5;
-        }
-      } else if (objective === 'mfav_only') {
-        // Best Bets / Bankers: Mfav must win. Pro-Mfav gets natural bonus, volatile/trap triggers get natural penalty
-        const mfavRate = profile.mfavRate;
-        const udRate = profile.underdogRate;
-        const trapRate = profile.trapFrequency;
-        if (profile.isVolatileSignal || udRate >= 0.25 || trapRate >= 0.52 || mfavRate < 0.48) {
-          if (udRate >= 0.45 || mfavRate <= 0.25) pts = -40;
-          else if (udRate >= 0.40 || mfavRate <= 0.30) pts = -35;
-          else if (udRate >= 0.35 || mfavRate <= 0.34) pts = -30;
-          else if (udRate >= 0.30 || mfavRate <= 0.38) pts = -25;
-          else if (udRate >= 0.25 || mfavRate <= 0.45 || profile.isVolatileSignal) pts = -20;
-          else pts = -10;
-        } else if (mfavRate >= 0.52 && udRate <= 0.20) {
-          if (mfavRate >= 0.80) pts = 25;
-          else if (mfavRate >= 0.70) pts = 20;
-          else if (mfavRate >= 0.60) pts = 15;
-          else pts = 10;
-        } else {
-          pts = profile.historicalAnchor !== 0 ? profile.historicalAnchor : 10;
-        }
+    let pts = 0;
+    if (objective === 'underdog_only') {
+      // Upsets: Pro-underdog/volatile gets natural bonus, pro-Mfav gets natural penalty
+      const udRate = profile.underdogRate;
+      const mfavRate = profile.mfavRate;
+      if (profile.isVolatileSignal || udRate >= 0.22 || udRate > mfavRate) {
+        if (udRate >= 0.45) pts = 25;
+        else if (udRate >= 0.38) pts = 20;
+        else if (udRate >= 0.30 || profile.underdogLift >= 1.40) pts = 15;
+        else if (udRate >= 0.24 || profile.underdogLift >= 1.25) pts = 10;
+        else pts = 5;
+      } else if (mfavRate >= 0.55 || udRate <= 0.12) {
+        if (mfavRate >= 0.70) pts = -30;
+        else if (mfavRate >= 0.65) pts = -25;
+        else if (mfavRate >= 0.58) pts = -20;
+        else pts = -10;
       } else {
-        // mfav_draw (e.g. Top 12 Value): 1X Hedged. Pro-Target gets natural bonus, pro-underdog gets natural penalty
-        const targetAcc = profile.targetAccuracy;
-        const udRate = profile.underdogRate;
-        const netEdge = targetAcc - udRate;
-        if (targetAcc > udRate && udRate <= 0.25) {
-          if (targetAcc >= 0.85 || netEdge >= 0.70) pts = 25;
-          else if (targetAcc >= 0.75 || netEdge >= 0.50) pts = 20;
-          else if (targetAcc >= 0.68 || netEdge >= 0.35) pts = 15;
-          else if (targetAcc >= 0.60 || netEdge >= 0.20) pts = 10;
-          else pts = 5;
-        } else if (udRate > 0.25 || udRate >= targetAcc) {
-          if (udRate >= 0.60) pts = -40;
-          else if (udRate >= 0.55) pts = -35;
-          else if (udRate >= 0.50) pts = -30;
-          else if (udRate >= 0.42) pts = -25;
-          else if (udRate >= 0.35) pts = -20;
-          else if (udRate >= 0.28) pts = -15;
-          else pts = -10;
-        } else {
-          pts = profile.historicalAnchor !== 0 ? profile.historicalAnchor : 10;
-        }
+        pts = profile.historicalAnchor !== 0 ? profile.historicalAnchor : 5;
       }
+    } else if (objective === 'mfav_only') {
+      // Best Bets / Bankers: Mfav must win. Pro-Mfav gets natural bonus, volatile/trap triggers get natural penalty
+      const mfavRate = profile.mfavRate;
+      const udRate = profile.underdogRate;
+      const trapRate = profile.trapFrequency;
+      if (profile.isVolatileSignal || udRate >= 0.25 || trapRate >= 0.52 || mfavRate < 0.48) {
+        if (udRate >= 0.35 || mfavRate <= 0.30) pts = -30;
+        else if (udRate >= 0.30 || mfavRate <= 0.38) pts = -25;
+        else if (udRate >= 0.25 || mfavRate <= 0.45 || profile.isVolatileSignal) pts = -20;
+        else pts = -10;
+      } else if (mfavRate >= 0.52 && udRate <= 0.20) {
+        if (mfavRate >= 0.80) pts = 25;
+        else if (mfavRate >= 0.70) pts = 20;
+        else if (mfavRate >= 0.60) pts = 15;
+        else pts = 10;
+      } else {
+        pts = profile.historicalAnchor !== 0 ? profile.historicalAnchor : 10;
+      }
+    } else {
+      // mfav_draw (e.g. Top 12 Value): 1X Hedged. Pro-Target gets natural bonus, pro-underdog gets natural penalty
+      const targetAcc = profile.targetAccuracy;
+      const udRate = profile.underdogRate;
+      const netEdge = targetAcc - udRate;
+      if (targetAcc > udRate && udRate <= 0.25) {
+        if (targetAcc >= 0.85 || netEdge >= 0.70) pts = 25;
+        else if (targetAcc >= 0.75 || netEdge >= 0.50) pts = 20;
+        else if (targetAcc >= 0.68 || netEdge >= 0.35) pts = 15;
+        else if (targetAcc >= 0.60 || netEdge >= 0.20) pts = 10;
+        else pts = 5;
+      } else if (udRate > 0.25 || udRate >= targetAcc) {
+        if (udRate >= 0.50) pts = -30;
+        else if (udRate >= 0.42) pts = -25;
+        else if (udRate >= 0.35) pts = -20;
+        else if (udRate >= 0.28) pts = -15;
+        else pts = -10;
+      } else {
+        pts = profile.historicalAnchor !== 0 ? profile.historicalAnchor : 10;
+      }
+    }
 
-      // Enforce domain semantic polarity
-      const trigPolarity = getTriggerSemanticPolarity(desc);
+    // Enforce domain semantic polarity (league triggers are neutral and exempted)
+    const trigPolarity = isLeagueTrigger(desc) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, objective);
+    if (!isLeagueTrigger(desc)) {
       if (objective === 'underdog_only') {
-        if (trigPolarity === 'PRO_UNDERDOG' && pts < 10) pts = 15;
+        if (trigPolarity === 'PRO_UNDERDOG' && pts < 5) pts = 15;
         else if (trigPolarity === 'PRO_MFAV' && pts > -10) pts = -15;
       } else {
         if (trigPolarity === 'PRO_UNDERDOG' && pts > -10) pts = -15;
-        else if (trigPolarity === 'PRO_MFAV' && pts < 10) pts = 15;
-      }
-
-      // Small sample guardrail (totalHits < 8): anchor to historical defaults
-      if (totalHits < 8) {
-        pts = profile.historicalAnchor;
-      }
-
-      // Clamp to trigger's empirical allowed band
-      if (!profile.allowedBand.includes(pts)) {
-        pts = profile.allowedBand.reduce((prev, curr) => Math.abs(curr - pts) < Math.abs(prev - pts) ? curr : prev);
-      }
-      optimizedPoints.set(desc, pts);
-      totalComputations++;
-    });
-  } else {
-    for (let pass = 0; pass < OPTIMIZATION_PASSES; pass++) {
-      for (const triggerDesc of sortedTriggers) {
-        const counts = hitStats.get(triggerDesc);
-        const totalHits = counts ? counts.mfav + counts.draw + counts.underdog : 0;
-        const currentVal = currentRulePointsMap.get(triggerDesc);
-        const profile = getTriggerAccuracyProfile(triggerDesc, counts, objective, currentVal);
-
-        // Less than 5 hits: keep at calibrated anchor
-        if (totalHits < 5) {
-          optimizedPoints.set(triggerDesc, profile.historicalAnchor);
-          continue;
-        }
-
-        // Balanced triggers remain at historical anchor; non-balanced triggers explore their empirical point band
-        if (totalHits >= 8 && isTriggerEmpiricallyBalanced(counts)) {
-          optimizedPoints.set(triggerDesc, profile.historicalAnchor);
-          continue;
-        }
-
-        // Search values restricted strictly to trigger's bounded empirical accuracy band (Delta_max = ±10)
-        const searchValues = profile.allowedBand;
-        let bestPoints = optimizedPoints.get(triggerDesc) ?? 0;
-        if (!searchValues.includes(bestPoints)) {
-          bestPoints = searchValues.reduce((prev, curr) => Math.abs(curr - bestPoints) < Math.abs(prev - bestPoints) ? curr : prev);
-          optimizedPoints.set(triggerDesc, bestPoints);
-        }
-        let bestQuality = measurePairwiseSeparation(optimizedPoints);
-
-        for (const testPts of searchValues) {
-          optimizedPoints.set(triggerDesc, testPts);
-          const quality = measurePairwiseSeparation(optimizedPoints);
-          totalComputations++;
-
-          if (quality > bestQuality + 0.0001) {
-            bestQuality = quality;
-            bestPoints = testPts;
-          }
-        }
-        optimizedPoints.set(triggerDesc, bestPoints);
+        else if (trigPolarity === 'PRO_MFAV' && pts < 5) pts = 15;
       }
     }
-  }
+
+    // Small sample guardrail (totalHits < 8): anchor to historical defaults
+    if (totalHits < 8) {
+      pts = profile.historicalAnchor;
+    }
+
+    // Clamp to trigger's empirical allowed band
+    if (!profile.allowedBand.includes(pts)) {
+      pts = profile.allowedBand.reduce((prev, curr) => Math.abs(curr - pts) < Math.abs(prev - pts) ? curr : prev);
+    }
+    optimizedPoints.set(desc, pts);
+    totalComputations++;
+  });
 
   // Pure Algorithmic Optimization: Points derived from empirical outcomes without hardcoded driver labels.
 
@@ -1589,17 +1789,14 @@ export function computeCategoryRecommendations(
     const rawCounts = hitStats.get(desc) || { mfav: 0, draw: 0, underdog: 0 };
     const liveTotalHits = rawCounts.mfav + rawCounts.draw + rawCounts.underdog;
     const rawCurrent = currentRulePointsMap.get(desc);
-    let currentPoints = (rawCurrent !== undefined && rawCurrent !== 0)
-      ? rawCurrent
-      : borrowTriggerPoints(desc, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
-    if (currentPoints === 0) {
-      currentPoints = borrowTriggerPoints(desc, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
-    }
+    let currentPoints = currentRulePointsMap.has(desc)
+      ? (rawCurrent ?? 5)
+      : 5; // Default for all new or uncomputed triggers is +5 points
 
     let effectiveCounts = rawCounts;
     let usedDayHistory = false;
     let usedOverallHistory = false;
-    const dayCounts = dayHistoricalCompletedMatches.length > 0 ? getDayHistStats(desc) : { mfav: 0, draw: 0, underdog: 0 };
+    const dayCounts = getDayHistStats(desc);
     const dayTotalHits = dayCounts.mfav + dayCounts.draw + dayCounts.underdog;
     const overallStats = getOverallHistStats(desc);
     const overallTotalHits = overallStats.total;
@@ -1624,12 +1821,12 @@ export function computeCategoryRecommendations(
     const underdogPct = totalHits > 0 ? (effectiveCounts.underdog / totalHits) * 100 : 0;
     const safePct = mfavPct + drawPct;
 
-    const profile = getTriggerAccuracyProfile(desc, effectiveCounts, objective, currentPoints);
+    const profile = getTriggerAccuracyProfile(desc, effectiveCounts, objective, currentPoints, false, cat.id, recLockDay, overallStats);
     let recommendedPoints: number;
     let ratchetAction: 'increased_bonus' | 'deepened_penalty' | 'preserved' | 'none' = 'none';
-    const basePoints = currentPoints !== 0 ? currentPoints : profile.historicalAnchor;
-    const polarity = getTriggerSemanticPolarity(desc);
     const isUnderdogCat = objective === 'underdog_only';
+    const basePoints = (isUnderdogCat || currentPoints !== 0) ? currentPoints : profile.historicalAnchor;
+    const polarity = isLeagueTrigger(desc) ? 'NEUTRAL' : (isLeagueLockedProUnderdog(desc, cat.id) ? 'PRO_UNDERDOG' : getTriggerSemanticPolarity(desc, cat.id || objective));
 
     if (liveTotalHits < 5 && (usedDayHistory || usedOverallHistory)) {
       // Historical suggestion based on empirical accuracy & risk lift:
@@ -1697,7 +1894,31 @@ export function computeCategoryRecommendations(
 
       // ASYMMETRIC LEEWAY RATCHET:
       // We check historical accuracy, but allow leeway to INCREASE bonus or penalties, NEVER reduce them!
-      if (isUnderdogCat) {
+      // For NEUTRAL league triggers, allow moving between bonus and penalty within their allowed penalty cap and bonus cap (+20 unless manual).
+      if (polarity === 'NEUTRAL') {
+        const minLeaguePen = getLeagueTriggerMaxPenalty(desc);
+        const maxLeagueBonus = getLeagueTriggerMaxBonus(desc, isUnderdogCat);
+        const clampedHist = Math.max(minLeaguePen, Math.min(maxLeagueBonus, histSuggested));
+        if (clampedHist > basePoints && clampedHist > 0) {
+          recommendedPoints = clampedHist;
+          ratchetAction = 'increased_bonus';
+        } else if (clampedHist < basePoints && clampedHist < 0) {
+          recommendedPoints = clampedHist;
+          ratchetAction = 'deepened_penalty';
+        } else if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
+          // Neutral league triggers can freely switch between bonuses and penalties based on empirical evidence
+          if (histSuggested !== basePoints) {
+            recommendedPoints = histSuggested;
+            ratchetAction = histSuggested > basePoints ? 'increased_bonus' : 'deepened_penalty';
+          } else {
+            recommendedPoints = basePoints;
+            ratchetAction = 'preserved';
+          }
+        } else {
+          recommendedPoints = basePoints;
+          ratchetAction = 'preserved';
+        }
+      } else if (isUnderdogCat) {
         if (polarity === 'PRO_UNDERDOG') {
           // Target in Upsets: Leeway to INCREASE bonus, NEVER reduce
           if (histSuggested > basePoints) {
@@ -1712,6 +1933,15 @@ export function computeCategoryRecommendations(
           if (histSuggested < basePoints) {
             recommendedPoints = histSuggested;
             ratchetAction = 'deepened_penalty';
+          } else {
+            recommendedPoints = basePoints;
+            ratchetAction = 'preserved';
+          }
+        } else if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
+          // Neutral league triggers can freely switch between bonuses and penalties based on empirical evidence
+          if (histSuggested !== basePoints) {
+            recommendedPoints = histSuggested;
+            ratchetAction = histSuggested > basePoints ? 'increased_bonus' : 'deepened_penalty';
           } else {
             recommendedPoints = basePoints;
             ratchetAction = 'preserved';
@@ -1739,6 +1969,15 @@ export function computeCategoryRecommendations(
             recommendedPoints = basePoints;
             ratchetAction = 'preserved';
           }
+        } else if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
+          // Neutral league triggers can freely switch between bonuses and penalties based on empirical evidence
+          if (histSuggested !== basePoints) {
+            recommendedPoints = histSuggested;
+            ratchetAction = histSuggested > basePoints ? 'increased_bonus' : 'deepened_penalty';
+          } else {
+            recommendedPoints = basePoints;
+            ratchetAction = 'preserved';
+          }
         } else {
           recommendedPoints = basePoints;
           ratchetAction = 'preserved';
@@ -1760,10 +1999,17 @@ export function computeCategoryRecommendations(
       recommendedPoints = profile.allowedBand.reduce((prev, curr) => Math.abs(curr - recommendedPoints) < Math.abs(prev - recommendedPoints) ? curr : prev);
     }
 
-    // Universal clamp: max bonus +25, max penalty -40 across all categories
-    recommendedPoints = Math.max(-40, Math.min(25, recommendedPoints));
-    if (recommendedPoints === 0) {
-      recommendedPoints = borrowTriggerPoints(desc, cat.id, selectedDay);
+    const isBig5 = desc === "Match belongs to England: Premier League";
+    const maxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUnderdogCat) : (isBig5 ? (isUnderdogCat ? 25 : 40) : 30);
+    const maxPenalty = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
+    if (recommendedPoints > 0) {
+      recommendedPoints = Math.max(5, Math.min(maxBonus, recommendedPoints));
+    } else if (recommendedPoints < 0) {
+      recommendedPoints = Math.min(-5, Math.max(maxPenalty, recommendedPoints));
+    } else if (!isUnderdogCat || !profile.zeroEligible) {
+      recommendedPoints = isUnderdogCat
+        ? (polarity === 'PRO_UNDERDOG' ? 5 : -5)
+        : (polarity === 'PRO_MFAV' ? 5 : -5);
     }
 
     let confidence: TriggerRecommendation['confidence'] = 'Insufficient Data';
@@ -1802,12 +2048,12 @@ export function computeCategoryRecommendations(
       ? (underdogPct - mfavPct)
       : (mfavPct - (underdogPct * 1.5 + drawPct * 0.5));
 
-    const finalCurrentPoints = currentPoints !== 0
-      ? currentPoints
-      : borrowTriggerPoints(desc, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
-    const finalRecommendedPoints = recommendedPoints !== 0
+    const finalCurrentPoints = currentRulePointsMap.has(desc)
+      ? (currentRulePointsMap.get(desc) ?? currentPoints)
+      : ((isUnderdogCat || currentPoints !== 0) ? currentPoints : 5);
+    const finalRecommendedPoints = (isUnderdogCat || recommendedPoints !== 0)
       ? recommendedPoints
-      : borrowTriggerPoints(desc, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
+      : (currentRulePointsMap.has(desc) ? (currentRulePointsMap.get(desc) ?? 5) : 5);
 
     return {
       description: desc,
@@ -1867,7 +2113,236 @@ export function computeCategoryRecommendations(
   };
 }
 
-export const OPWAlgo: React.FC<OPWAlgoProps> = ({
+interface MemoizedTriggerTableRowProps {
+  row: TriggerRecommendation;
+  isLeaguesView: boolean;
+  isUpsetsCat: boolean;
+  isLockedProUd: boolean;
+  categoryLabel: string;
+  onInspectHistory: (desc: string) => void;
+  onSetTriggerPoints: (desc: string, pts: number) => void;
+  onToggleLeaguePolarity: (desc: string) => void;
+}
+
+const MemoizedTriggerTableRow = React.memo<MemoizedTriggerTableRowProps>(({
+  row,
+  isLeaguesView,
+  isUpsetsCat,
+  isLockedProUd,
+  categoryLabel,
+  onInspectHistory,
+  onSetTriggerPoints,
+  onToggleLeaguePolarity
+}) => {
+  const isBonus = row.recommendedPoints > 0;
+  const isPenalty = row.recommendedPoints < 0;
+  const isDiff = row.recommendedPoints !== row.currentPoints;
+
+  return (
+    <tr
+      className="hover:bg-slate-800/40 transition"
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '0 44px' }}
+    >
+      <td className="py-2.5 px-3.5 font-medium text-slate-200">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {isBonus ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+            ) : isPenalty ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+            ) : (
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
+            )}
+            <span className="truncate max-w-xs sm:max-w-sm">{row.description}</span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => onInspectHistory(row.description)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-800/90 hover:bg-indigo-950/90 text-slate-300 hover:text-indigo-300 border border-slate-700/60 hover:border-indigo-500/50 transition shrink-0"
+              title="Inspect trigger across overall historical data (all days)"
+            >
+              <History size={11} className="text-indigo-400" />
+              <span>Hist: {row.overallHits || 0}</span>
+              <span className="text-slate-500">({(row.overallSafePct || 0).toFixed(0)}%)</span>
+            </button>
+          </div>
+        </div>
+      </td>
+
+      {/* Current Points */}
+      <td className="py-2.5 px-2 text-center font-mono font-semibold">
+        <span className={`px-2 py-0.5 rounded text-[11px] ${
+          row.currentPoints > 0
+            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+            : row.currentPoints < 0
+              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+              : 'bg-slate-800 text-slate-400'
+        }`}>
+          {row.currentPoints > 0 ? `+${row.currentPoints}` : row.currentPoints}
+        </span>
+      </td>
+
+      {/* Recommended Points */}
+      <td className="py-2.5 px-2 text-center font-mono font-bold">
+        <span className={`px-2.5 py-0.5 rounded text-[11px] shadow-sm ${
+          isBonus
+            ? 'bg-emerald-500 text-white font-black'
+            : isPenalty
+              ? 'bg-rose-500 text-white font-black'
+              : 'bg-slate-800 text-slate-400 border border-slate-700'
+        } ${isDiff ? 'ring-2 ring-indigo-400 ring-offset-1 ring-offset-slate-900' : ''}`}>
+          {row.recommendedPoints > 0 ? `+${row.recommendedPoints}` : row.recommendedPoints}
+        </span>
+      </td>
+
+      {/* Polarity & Quick Shift (Leagues View Only) */}
+      {isLeaguesView && (
+        <td className="py-2.5 px-2 text-center font-mono">
+          <div className="inline-flex items-center gap-1 bg-slate-950/80 p-0.5 rounded border border-slate-800">
+            <button
+              type="button"
+              onClick={() => onToggleLeaguePolarity(row.description)}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${
+                isLockedProUd
+                  ? 'bg-purple-600 text-white hover:bg-purple-500 shadow-sm ring-1 ring-purple-300'
+                  : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700'
+              }`}
+              title={
+                isLockedProUd
+                  ? `Currently locked as PRO-UNDERDOG in ${categoryLabel} (Strict penalty in Mfav, bonus in Upsets). Click to restore to NEUTRAL.`
+                  : "Currently NEUTRAL league trigger (can move between bonus & penalty). Click to lock as PRO-UNDERDOG trigger."
+              }
+            >
+              {isLockedProUd ? 'PRO-UD' : 'NEUTRAL'}
+            </button>
+
+            {isUpsetsCat && (
+              <button
+                type="button"
+                onClick={() => onSetTriggerPoints(row.description, 0)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                  row.recommendedPoints === 0
+                    ? 'bg-slate-600 text-white shadow-sm ring-1 ring-slate-400'
+                    : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-white'
+                }`}
+                title="Set to 0 Points (Allowed for Upsets only)"
+              >
+                0
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onSetTriggerPoints(row.description, 5)}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                row.recommendedPoints === 5
+                  ? 'bg-emerald-500 text-white shadow-sm'
+                  : 'bg-slate-800/80 text-emerald-400 hover:bg-emerald-950 hover:text-emerald-300'
+              }`}
+              title="Set to +5 Bonus"
+            >
+              +5
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetTriggerPoints(row.description, 20)}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                row.recommendedPoints === 20
+                  ? 'bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-400'
+                  : 'bg-slate-800/80 text-emerald-300 hover:bg-emerald-950 hover:text-emerald-200'
+              }`}
+              title="Set to +20 Bonus (Standard bonus cap)"
+            >
+              +20
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetTriggerPoints(row.description, -15)}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                row.recommendedPoints === -15
+                  ? 'bg-rose-500 text-white shadow-sm'
+                  : 'bg-slate-800/80 text-rose-400 hover:bg-rose-950 hover:text-rose-300'
+              }`}
+              title="Set to -15 Penalty (Volatile league)"
+            >
+              -15
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetTriggerPoints(row.description, -30)}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                row.recommendedPoints === -30
+                  ? 'bg-rose-600 text-white shadow-sm ring-1 ring-rose-400'
+                  : 'bg-slate-800/80 text-rose-300 hover:bg-rose-950 hover:text-rose-200'
+              }`}
+              title="Set to -30 Penalty (Extreme trap / volatile league)"
+            >
+              -30
+            </button>
+          </div>
+        </td>
+      )}
+
+      {/* Hits */}
+      <td className="py-2.5 px-2 text-center font-mono font-bold text-slate-300">
+        {row.totalHits}
+      </td>
+
+      {/* Mfav Hits */}
+      <td className="py-2.5 px-2 text-center font-mono">
+        <span className="text-emerald-400 font-bold">{row.mfavHits}</span>
+        <span className="text-[10px] text-slate-500 ml-1">({row.mfavPct.toFixed(0)}%)</span>
+      </td>
+
+      {/* Draw Hits */}
+      <td className="py-2.5 px-2 text-center font-mono">
+        <span className="text-amber-400 font-bold">{row.drawHits}</span>
+        <span className="text-[10px] text-slate-500 ml-1">({row.drawPct.toFixed(0)}%)</span>
+      </td>
+
+      {/* Underdog Hits */}
+      <td className="py-2.5 px-2 text-center font-mono">
+        <span className="text-rose-400 font-bold">{row.underdogHits}</span>
+        <span className="text-[10px] text-slate-500 ml-1">({row.underdogPct.toFixed(0)}%)</span>
+      </td>
+
+      {/* Safe Conviction */}
+      <td className="py-2.5 px-2 text-center font-mono font-bold">
+        <span className={`px-2 py-0.5 rounded text-[11px] ${
+          row.safePct >= 75
+            ? 'bg-emerald-500/20 text-emerald-300'
+            : row.safePct >= 60
+              ? 'bg-amber-500/20 text-amber-300'
+              : 'bg-rose-500/20 text-rose-300'
+        }`}>
+          {row.totalHits > 0 ? `${row.safePct.toFixed(0)}%` : '0%'}
+        </span>
+      </td>
+
+      {/* Rationale */}
+      <td className="py-2.5 px-3 text-slate-400 text-[11px]">
+        {row.rationale}
+      </td>
+    </tr>
+  );
+}, (prev, next) => (
+  prev.row.description === next.row.description &&
+  prev.row.currentPoints === next.row.currentPoints &&
+  prev.row.recommendedPoints === next.row.recommendedPoints &&
+  prev.row.totalHits === next.row.totalHits &&
+  prev.row.mfavHits === next.row.mfavHits &&
+  prev.row.drawHits === next.row.drawHits &&
+  prev.row.underdogHits === next.row.underdogHits &&
+  prev.row.safePct === next.row.safePct &&
+  prev.row.overallHits === next.row.overallHits &&
+  prev.row.rationale === next.row.rationale &&
+  prev.isLeaguesView === next.isLeaguesView &&
+  prev.isUpsetsCat === next.isUpsetsCat &&
+  prev.isLockedProUd === next.isLockedProUd &&
+  prev.categoryLabel === next.categoryLabel
+));
+
+const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   matches = [],
   allMatches = [],
   phaStatsMap = {},
@@ -1909,14 +2384,35 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
   });
   const [datasetScope, setDatasetScope] = useState<'live' | 'history' | 'all'>('live');
 
-  useEffect(() => {
-    if (datasetScope === 'live' && (!initialDay || initialDay === 'all') && !userPickedDayRef.current) {
-      setSelectedDay(liveMatchDay);
-      setSelectedAdoptDays(new Set([liveMatchDay]));
+  const datasetDay = useMemo<DayOfWeek>(() => {
+    if (selectedDay !== 'all') return selectedDay;
+    const targetDataset = datasetScope === 'history' ? (allMatches && allMatches.length > 0 ? allMatches : matches) : matches;
+    if (targetDataset && targetDataset.length > 0) {
+      const counts: Partial<Record<DayOfWeek, number>> = {};
+      targetDataset.forEach(m => {
+        if (m.date) {
+          const d = getMatchDayOfWeek(m);
+          counts[d] = (counts[d] || 0) + 1;
+        }
+      });
+      const best = (Object.entries(counts) as [DayOfWeek, number][]).sort((a, b) => b[1] - a[1])[0];
+      if (best) return best[0];
     }
-  }, [datasetScope, liveMatchDay, initialDay]);
+    return liveMatchDay || 'sunday';
+  }, [selectedDay, datasetScope, allMatches, matches, liveMatchDay]);
+
+  useEffect(() => {
+    if (datasetScope === 'live' && !userPickedDayRef.current) {
+      const targetDay = (matches && matches.length > 0 && liveMatchDay) ? liveMatchDay : (initialDay && initialDay !== 'all' ? initialDay : liveMatchDay);
+      if (targetDay) {
+        setSelectedDay(targetDay);
+        setSelectedAdoptDays(new Set([targetDay]));
+      }
+    }
+  }, [datasetScope, liveMatchDay, initialDay, matches]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [recommendationFilter, setRecommendationFilter] = useState<'all' | 'bonus' | 'penalty' | 'protected' | 'zero' | 'mismatch'>('all');
+  const [triggersViewTab, setTriggersViewTab] = useState<'core' | 'leagues'>('core');
+  const [recommendationFilter, setRecommendationFilter] = useState<'all' | 'bonus' | 'penalty' | 'zero' | 'mismatch'>('all');
   const [sortField, setSortField] = useState<'recommended' | 'hits' | 'safePct' | 'description'>('hits');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -1945,7 +2441,19 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
   const [deepTargetClean, setDeepTargetClean] = useState(0);
   const [deepTargetCeiling, setDeepTargetCeiling] = useState(0);
   const [deepFirstTrapRank, setDeepFirstTrapRank] = useState(1);
+  const [deepTiedAtBoundary, setDeepTiedAtBoundary] = useState(0);
   const [deepTargetsInTop5000, setDeepTargetsInTop5000] = useState(0);
+  const [deepTrapRanks, setDeepTrapRanks] = useState<number[]>([1]);
+  const [deepTrapScores, setDeepTrapScores] = useState<number[]>([]);
+  const [deepTrapGaps, setDeepTrapGaps] = useState<number[]>([]);
+  const [deepTrapDispersionHealth, setDeepTrapDispersionHealth] = useState<'HEALTHY' | 'MODERATE' | 'CLUSTERED'>('CLUSTERED');
+  const [deepOptimizerPhase, setDeepOptimizerPhase] = useState<OptimizerPhaseState>({
+    currentPhase: 1,
+    phaseComps: 0,
+    phaseBudget: 500000,
+    establishedRanks: [],
+    establishedScores: []
+  });
   const [deepHorizonMetrics, setDeepHorizonMetrics] = useState<MultiHorizonSummary>({
     h500: { horizon: 500, traps: 0, targets: 0, total: 0, winRate: 0 },
     h1000: { horizon: 1000, traps: 0, targets: 0, total: 0, winRate: 0 },
@@ -1968,84 +2476,93 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
   const stopDeepRef = useRef<boolean>(false);
   const isBatchOptimizingRef = useRef<boolean>(false);
 
-  // Protected Penalty Guards & Slip Upset Post-Mortem State
-  const [protectedGuardsList, setProtectedGuardsList] = useState<ProtectedPenaltyGuard[]>(() => loadProtectedPenaltyGuards());
-  const [slipPostMortems, setSlipPostMortems] = useState<SlipUpsetPostMortem[]>([]);
-  const [showPostMortemPanel, setShowPostMortemPanel] = useState<boolean>(true);
-
-  // AI Trigger Discovery & Synergistic Combos State
-  const [discoveredCandidates, setDiscoveredCandidates] = useState<CandidateComboTrigger[]>([]);
-  const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
-  const [showDiscoveryPanel, setShowDiscoveryPanel] = useState<boolean>(false);
-  const [discoveryFilter, setDiscoveryFilter] = useState<'all' | 'combos' | 'continuations' | 'approved'>('all');
-  const [customTriggersVersion, setCustomTriggersVersion] = useState<number>(0);
   const [weightsVersion, setWeightsVersion] = useState<number>(0);
-  const [approvedCustomTriggersList, setApprovedCustomTriggersList] = useState<ApprovedCustomTrigger[]>(() => loadApprovedCustomTriggers());
+
+  // Clean Matches Breakdown Modal State
+  const [isCleanMatchesModalOpen, setIsCleanMatchesModalOpen] = useState<boolean>(false);
+  const [expandedCleanMatchIds, setExpandedCleanMatchIds] = useState<Set<string | number>>(new Set());
+  const [showAllRankedInCleanModal, setShowAllRankedInCleanModal] = useState<boolean>(false);
+
+  // Persistent Optimizer Peak Memory (High-Water Mark)
+  const [savedPeakMemory, setSavedPeakMemory] = useState<OptimizerPeakMemory | null>(() =>
+    loadOptimizerPeakMemory(selectedDay !== 'all' ? selectedDay : datasetDay, activeCategory)
+  );
 
   useEffect(() => {
-    const handleCustomUpdate = () => {
-      setApprovedCustomTriggersList(loadApprovedCustomTriggers());
-      setCustomTriggersVersion(v => v + 1);
-    };
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    setSavedPeakMemory(loadOptimizerPeakMemory(targetDay, activeCategory));
+  }, [selectedDay, datasetDay, activeCategory, weightsVersion]);
+
+  const handleClearPeakMemory = () => {
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    clearOptimizerPeakMemory(targetDay, activeCategory);
+    setSavedPeakMemory(null);
+    showToast(`Peak memory cleared for ${activeCategoryConfig.label}. Optimizer will start from baseline.`);
+  };
+
+  useEffect(() => {
     const handleWeightsUpdate = () => {
       setWeightsVersion(v => v + 1);
     };
-    const handleGuardsUpdate = () => {
-      setProtectedGuardsList(loadProtectedPenaltyGuards());
-    };
-    window.addEventListener('seerCustomTriggersUpdated', handleCustomUpdate);
     window.addEventListener('optimizedWeightsUpdated', handleWeightsUpdate);
-    window.addEventListener('opwProtectedGuardsUpdated', handleGuardsUpdate);
 
-    // Hydrate approved combos from server storage for persistent cross-browser consistency
-    hydrateCustomTriggersFromServer().then(list => {
-      if (list && list.length > 0) {
-        setApprovedCustomTriggersList(list);
-        setCustomTriggersVersion(v => v + 1);
+    // Hydrate server-persisted OPW rules on mount so reloads always reflect saved codebase rules.
+    // Incrementing weightsVersion triggers the reactive sync effect with the live selectedDay/datasetDay/activeCategory (avoiding stale mount closures).
+    loadServerOpwRules(true).then(appliedDays => {
+      if (appliedDays && appliedDays.length > 0) {
+        setWeightsVersion(v => v + 1);
       }
     });
 
     return () => {
-      window.removeEventListener('seerCustomTriggersUpdated', handleCustomUpdate);
       window.removeEventListener('optimizedWeightsUpdated', handleWeightsUpdate);
-      window.removeEventListener('opwProtectedGuardsUpdated', handleGuardsUpdate);
     };
   }, []);
-
-  // Fetch slip post-mortems whenever matches, active category, or protected guards change
-  useEffect(() => {
-    let isMounted = true;
-    const fetchSlipUpsets = async () => {
-      const activeDate = matches && matches.length > 0 && matches[0].date
-        ? getAnalysisDateString(matches[0].date)
-        : getAnalysisDateString();
-      try {
-        const slip = await getLockedSlip(activeDate, activeCategoryConfig.id);
-        if (slip && isMounted) {
-          const pms = analyzeSlipUpsets(slip, completedMatches);
-          setSlipPostMortems(pms);
-        } else if (isMounted) {
-          setSlipPostMortems([]);
-        }
-      } catch (e) {
-        console.warn('Error analyzing slip upsets:', e);
-      }
-    };
-    fetchSlipUpsets();
-    return () => { isMounted = false; };
-  }, [matches, activeCategoryConfig?.id, completedMatches, protectedGuardsList]);
 
   const activeCategoryConfig = useMemo(() => {
     return CATEGORIES.find(c => c.id === activeCategory) || CATEGORIES[0];
   }, [activeCategory]);
 
-  // Synchronize Deep Optimizer whenever activeCategory changes so all metrics are strictly contextual
+  const hasInitializedDeepRef = useRef(false);
+  const prevActiveCategoryRef = useRef(activeCategory);
+  const prevDatasetDayRef = useRef(datasetDay);
+  const prevSelectedDayRef = useRef(selectedDay);
+  const deepPointsCategoryRef = useRef<string>(activeCategory);
+  const deepCategoryPointsMapRef = useRef(deepCategoryPointsMap);
+  const allTimeBestPeakRef = useRef<{
+    category?: string;
+    cleanTopMatches: number;
+    firstTrapRank: number;
+    quality: number;
+    points: Map<string, number>;
+    trapRanks: number[];
+    trapGaps: number[];
+  } | null>(null);
+  const prevWeightsVersionRef = useRef(weightsVersion);
   useEffect(() => {
+    deepCategoryPointsMapRef.current = deepCategoryPointsMap;
+  }, [deepCategoryPointsMap]);
+
+  // Synchronize Deep Optimizer on initial mount and whenever activeCategory / day changes
+  useEffect(() => {
+    const isInitialMount = !hasInitializedDeepRef.current;
+    const catChanged = prevActiveCategoryRef.current !== activeCategory;
+    const dayChanged = prevDatasetDayRef.current !== datasetDay;
+    const selDayChanged = prevSelectedDayRef.current !== selectedDay;
+
+    hasInitializedDeepRef.current = true;
+    prevActiveCategoryRef.current = activeCategory;
+    prevDatasetDayRef.current = datasetDay;
+    prevSelectedDayRef.current = selectedDay;
+
+    if (!isInitialMount && !catChanged && !dayChanged && !selDayChanged) return;
+
     if (isBatchOptimizingRef.current) {
       // During batch optimization, category switching is contextual HUD progression, do not abort!
       return;
     }
     stopDeepRef.current = true;
+    allTimeBestPeakRef.current = null;
     setIsDeepOptimizing(false);
     setDeepStatus('idle');
     setDeepConvergenceMode('none');
@@ -2067,16 +2584,111 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       h2000: { horizon: 2000, traps: 0, targets: 0, total: 0, winRate: 0 },
       h3000: { horizon: 3000, traps: 0, targets: 0, total: 0, winRate: 0 }
     });
-    
-    // Retain and restore calibrated deep continuous optimizer points if already computed for this category!
-    const existingPoints = deepCategoryPointsMap[activeCategory];
+
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const dayCatKey = `${targetDay}_${activeCategory}`;
+    const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
+      : (activeCategory === 'upsets' ? 'upset' 
+      : (activeCategory === 'upset' ? 'upsets' 
+      : (activeCategory === 'bankers_dlive' ? 'banker' 
+      : (activeCategory === 'banker' ? 'bankers_dlive' : undefined))));
+
+    const peakMem = loadOptimizerPeakMemory(targetDay, activeCategory)
+      || (aliasCatId ? loadOptimizerPeakMemory(targetDay, aliasCatId) : null)
+      || (datasetDay !== targetDay ? loadOptimizerPeakMemory(datasetDay, activeCategory) : null);
+
+    if (peakMem && typeof peakMem.cleanTopMatches === 'number' && peakMem.cleanTopMatches > 0) {
+      setDeepCleanMatches(peakMem.cleanTopMatches);
+      if (peakMem.firstTrapRank) setDeepFirstTrapRank(peakMem.firstTrapRank);
+      if (peakMem.quality) setDeepQuality(peakMem.quality);
+      if (peakMem.trapRanks) setDeepTrapRanks(peakMem.trapRanks);
+      if (peakMem.trapGaps) setDeepTrapGaps(peakMem.trapGaps);
+    }
+
+    const existingPoints = deepCategoryPointsMapRef.current[dayCatKey];
     if (existingPoints && existingPoints.size > 0) {
+      deepPointsCategoryRef.current = activeCategory;
       setDeepPointsMap(new Map(existingPoints));
       setDeepStatus('converged');
-    } else {
-      setDeepPointsMap(null);
+      return;
     }
-  }, [activeCategory]);
+
+    const persistedRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory]?.rules
+      || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasCatId]?.rules : undefined);
+    if (persistedRules && persistedRules.length > 0) {
+      const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
+      const sanitizedPersisted = sanitizeRulePolarity(persistedRules, activeCategory, { preserveExact: true, day: targetDay });
+      const restoredMap = new Map<string, number>();
+      sanitizedPersisted.forEach(r => {
+        if (r.description && typeof r.points === 'number' && (isUpsetsCat || r.points !== 0)) {
+          restoredMap.set(r.description, r.points);
+        }
+      });
+      if (restoredMap.size > 0) {
+        deepPointsCategoryRef.current = activeCategory;
+        setDeepPointsMap(restoredMap);
+        setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+        deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+        setDeepStatus('converged');
+        return;
+      }
+    }
+
+    if (peakMem?.points && Object.keys(peakMem.points).length > 0) {
+      const sanitizedPeak = sanitizeRulePolarity(peakMem.points, activeCategory, { preserveExact: true, day: targetDay });
+      const restoredMap = new Map(Object.entries(sanitizedPeak));
+      deepPointsCategoryRef.current = activeCategory;
+      setDeepPointsMap(restoredMap);
+      setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+      deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+      setDeepStatus('converged');
+      return;
+    }
+
+    setDeepPointsMap(null);
+  }, [activeCategory, datasetDay, selectedDay]);
+
+  // Re-sync restored points ONLY when external server rules or runtime weights version actually increments
+  useEffect(() => {
+    if (prevWeightsVersionRef.current === weightsVersion) return;
+    prevWeightsVersionRef.current = weightsVersion;
+    if (isDeepOptimizing || isBatchOptimizingRef.current) return;
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const dayCatKey = `${targetDay}_${activeCategory}`;
+    const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
+      : (activeCategory === 'upsets' ? 'upset' 
+      : (activeCategory === 'upset' ? 'upsets' 
+      : (activeCategory === 'bankers_dlive' ? 'banker' 
+      : (activeCategory === 'banker' ? 'bankers_dlive' : undefined))));
+    const persistedRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory]?.rules
+      || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasCatId]?.rules : undefined);
+    if (persistedRules && persistedRules.length > 0) {
+      const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
+      const sanitizedPersisted = sanitizeRulePolarity(persistedRules, activeCategory, { preserveExact: true, day: targetDay });
+      const restoredMap = new Map<string, number>();
+      sanitizedPersisted.forEach(r => {
+        if (r.description && typeof r.points === 'number' && (isUpsetsCat || r.points !== 0)) {
+          restoredMap.set(r.description, r.points);
+        }
+      });
+      if (restoredMap.size > 0) {
+        setDeepPointsMap(restoredMap);
+        setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+        setDeepStatus('converged');
+        return;
+      }
+    }
+    const peakMem = loadOptimizerPeakMemory(targetDay, activeCategory)
+      || (aliasCatId ? loadOptimizerPeakMemory(targetDay, aliasCatId) : null)
+      || (datasetDay !== targetDay ? loadOptimizerPeakMemory(datasetDay, activeCategory) : null);
+    if (peakMem?.points && Object.keys(peakMem.points).length > 0) {
+      const sanitizedPeak = sanitizeRulePolarity(peakMem.points, activeCategory, { preserveExact: true, day: targetDay });
+      const restoredMap = new Map(Object.entries(sanitizedPeak));
+      setDeepPointsMap(restoredMap);
+      setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+      setDeepStatus('converged');
+    }
+  }, [weightsVersion, selectedDay, datasetDay, activeCategory, isDeepOptimizing]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -2097,6 +2709,10 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
         if (!combined.has(m.id)) combined.set(m.id, m);
       });
       base = Array.from(combined.values());
+    }
+
+    if (datasetScope === 'live' && !userPickedDayRef.current) {
+      return base;
     }
 
     if (selectedDay !== 'all') {
@@ -2131,23 +2747,254 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     });
   }, [categoryMatches]);
 
+  // Precomputed match profiles for the active category/day (eliminates 3x duplicate odds/trigger evaluation)
+  const evaluatedCategoryProfiles = useMemo(() => {
+    const objective = activeCategoryConfig.targetObjective;
+    const evalCat = activeCategory === 'safety' ? 'best_bet' : activeCategory;
+    const out: {
+      match: Match;
+      teams: string;
+      date: string;
+      league: string;
+      odds: string;
+      result: string;
+      actual: '1' | 'X' | '2';
+      mFav: '1' | '2';
+      outcome: 'mfav' | 'draw' | 'underdog';
+      isTarget: boolean;
+      baseScore: number;
+      triggersHit: Set<string>;
+      triggersList: string[];
+    }[] = [];
+
+    for (let i = 0; i < completedMatches.length; i++) {
+      const m = completedMatches[i];
+      const actual = getActualResult(m.result || '');
+      if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
+
+      const moStr = m.mo || (m as any).odds || (m as any).data?.mo || (m as any).data?.odds || '';
+      const moParts = String(moStr).split(/[- ,]+/).map(s => parseFloat(s.replace(/[^0-9.]/g, '').trim())).filter(p => !isNaN(p));
+      const homeOdds = moParts[0] || (m.homeOdds ? parseFloat(String(m.homeOdds).replace(/[^0-9.]/g, '')) : 0) || 0;
+      const awayOdds = moParts.length >= 3 ? (moParts[2] || 0) : (moParts.length === 2 ? (moParts[1] || 0) : ((m.awayOdds ? parseFloat(String(m.awayOdds).replace(/[^0-9.]/g, '')) : 0)));
+      if (homeOdds <= 0 || awayOdds <= 0) continue;
+
+      const mFav = getMarketFavorite(m);
+      const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
+      const isTarget = objective === 'underdog_only'
+        ? outcome === 'underdog'
+        : objective === 'mfav_only'
+        ? outcome === 'mfav'
+        : (outcome === 'mfav' || outcome === 'draw');
+
+      const matchDay = selectedDay !== 'all' ? selectedDay : getMatchDayOfWeek(m);
+      const baseInfo = getOptimizedBaseWeight(m, phaStatsMap, evalCat, matchDay);
+      const baseScore = baseInfo?.points ?? 0;
+
+      let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
+      if (!allTriggers) {
+        const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
+        allTriggers = evaluateAllCatalogTriggers(stats, m);
+        (m as any)._opwCatalogTriggers = allTriggers;
+      }
+      const triggersHit = new Set<string>(allTriggers);
+      const lInfo = getMatchCountryAndLeague(m);
+      if (lInfo?.display && lInfo.display !== 'Unknown') {
+        const lTrig = `Match belongs to ${lInfo.display}`;
+        registerDiscoveredLeagueTrigger(lTrig);
+        triggersHit.add(lTrig);
+      }
+
+      out.push({
+        match: m,
+        teams: m.teams || 'Unknown',
+        date: m.date || '',
+        league: (m as any).league || (m as any).country || '',
+        odds: String(moStr),
+        result: m.result || '',
+        actual,
+        mFav,
+        outcome,
+        isTarget,
+        baseScore,
+        triggersHit,
+        triggersList: Array.from(triggersHit)
+      });
+    }
+    return out;
+  }, [completedMatches, activeCategory, activeCategoryConfig.targetObjective, selectedDay, phaStatsMap]);
+
+  const allMatchesRef = useRef(allMatches);
+  allMatchesRef.current = allMatches;
+
   // Active category settings for points comparison
   const activeSettings = useMemo(() => {
-    if (selectedDay !== 'all') {
-      return DAILY_OPTIMIZED_SETTINGS[selectedDay]?.[activeCategory] ||
-        DAILY_DEFAULT_CATEGORY_SETTINGS[selectedDay]?.[activeCategory] ||
-        OPTIMIZED_CATEGORY_SETTINGS[activeCategory];
-    }
-    return OPTIMIZED_CATEGORY_SETTINGS[activeCategory] ||
-      DAILY_DEFAULT_CATEGORY_SETTINGS.saturday?.[activeCategory];
-  }, [activeCategory, selectedDay, weightsVersion]);
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    return DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory] ||
+      DAILY_DEFAULT_CATEGORY_SETTINGS[targetDay]?.[activeCategory] ||
+      OPTIMIZED_CATEGORY_SETTINGS[activeCategory];
+  }, [activeCategory, selectedDay, datasetDay, weightsVersion]);
 
   // Current rule points map
   const currentRulePointsMap = useMemo(() => {
     const map = new Map<string, number>();
-    (activeSettings?.rules || []).forEach(r => map.set(r.description, r.points));
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const sanitized = sanitizeRulePolarity(activeSettings?.rules || [], activeCategory, { preserveExact: true, day: targetDay });
+    sanitized.forEach(r => map.set(r.description, r.points));
     return map;
-  }, [activeSettings]);
+  }, [activeSettings, activeCategory, selectedDay, datasetDay]);
+
+    // Auto-discover and register all leagues present in the loaded dataset
+  useEffect(() => {
+    if (Array.isArray(rawDataset) && rawDataset.length > 0) {
+      let registeredCount = 0;
+      rawDataset.forEach(m => {
+        const info = getMatchCountryAndLeague(m);
+        if (info?.display && info.display !== 'Unknown') {
+          const trig = `Match belongs to ${info.display}`;
+          if (registerDiscoveredLeagueTrigger(trig)) {
+            registeredCount++;
+          }
+        }
+      });
+      if (registeredCount > 0 && !isDeepOptimizing) {
+        setWeightsVersion(v => v + 1);
+      }
+    }
+  }, [rawDataset, isDeepOptimizing]);
+
+  const handleSetTriggerPoints = useCallback((triggerDescription: string, newPoints: number) => {
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const dayCatKey = `${targetDay}_${activeCategory}`;
+    const datasetDayCatKey = `${datasetDay}_${activeCategory}`;
+    const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
+
+    const nextMap = new Map(currentRulePointsMap);
+    const activeBase = (allTimeBestPeakRef.current?.category === activeCategory && allTimeBestPeakRef.current.points.size > 0)
+      ? allTimeBestPeakRef.current.points
+      : (deepPointsMap || deepCategoryPointsMap[dayCatKey]);
+    if (activeBase) {
+      activeBase.forEach((pts, desc) => {
+        if (desc && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
+          nextMap.set(desc, pts);
+        }
+      });
+    }
+    nextMap.set(triggerDescription, newPoints);
+    if (allTimeBestPeakRef.current?.category === activeCategory) {
+      allTimeBestPeakRef.current.points.set(triggerDescription, newPoints);
+    }
+
+    setDeepPointsMap(nextMap);
+    setDeepCategoryPointsMap(prev => ({
+      ...prev,
+      [dayCatKey]: nextMap,
+      [datasetDayCatKey]: nextMap,
+      [activeCategory]: nextMap,
+    }));
+
+    // Keep DAILY_OPTIMIZED_SETTINGS, PeakMemory & Server Storage synchronized with manual edits so they are never overwritten
+    const existingSettings = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory]
+      || DAILY_DEFAULT_CATEGORY_SETTINGS[targetDay]?.[activeCategory]
+      || OPTIMIZED_CATEGORY_SETTINGS[activeCategory];
+    if (existingSettings) {
+      const updatedRules = populateCategoryWithMasterRules(
+        Array.from(nextMap.entries()).map(([description, points]) => ({ description, points })),
+        activeCategoryConfig.targetObjective,
+        activeCategory,
+        targetDay,
+        { preserveExact: true }
+      );
+      updateDailyOptimizedCategorySettings(
+        targetDay,
+        activeCategory,
+        { ...existingSettings, rules: updatedRules },
+        true,
+        { silent: true, source: 'codebase' }
+      );
+      saveOptimizerPeakMemory(targetDay, activeCategory, {
+        cleanTopMatches: deepCleanMatches || 0,
+        firstTrapRank: deepFirstTrapRank || 0,
+        quality: deepQuality || 0,
+        trapRanks: [],
+        trapGaps: [],
+        points: Object.fromEntries(updatedRules.map(r => [r.description, r.points]))
+      });
+      if (typeof fetch !== 'undefined') {
+        const completeRulesPayload = updatedRules.map(r => ({
+          description: r.description,
+          points: r.points,
+          note: `Calibrated Rules (${activeCategoryConfig.label}): ${r.points > 0 ? '+' : ''}${r.points} pts`
+        }));
+        const categoriesPayload: Record<string, { rules: typeof completeRulesPayload; targetObjective: string }> = {
+          [activeCategory]: { rules: completeRulesPayload, targetObjective: activeCategoryConfig.targetObjective }
+        };
+        const aliasKey = activeCategory === 'top_12_value' ? 'top_10_value'
+          : (activeCategory === 'top_10_value' ? 'top_12_value'
+          : (activeCategory === 'upsets' ? 'upset'
+          : (activeCategory === 'upset' ? 'upsets'
+          : (activeCategory === 'bankers_dlive' ? 'banker' : undefined))));
+        if (aliasKey) {
+          categoriesPayload[aliasKey] = { rules: completeRulesPayload, targetObjective: activeCategoryConfig.targetObjective };
+        }
+        fetch('/api/opw/save-to-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            day: targetDay,
+            days: [targetDay],
+            categories: categoriesPayload,
+            customTriggers: []
+          })
+        }).catch(() => {});
+      }
+    }
+
+    setWeightsVersion(v => {
+      prevWeightsVersionRef.current = v + 1;
+      return v + 1;
+    });
+    showToast(`Updated "${triggerDescription}" to ${newPoints > 0 ? '+' : ''}${newPoints} pts.`);
+  }, [activeCategory, activeCategoryConfig.label, activeCategoryConfig.targetObjective, selectedDay, datasetDay, deepPointsMap, deepCategoryPointsMap, currentRulePointsMap, deepCleanMatches, deepFirstTrapRank, deepQuality]);
+
+  const handleToggleLeaguePolarity = useCallback((triggerDescription: string) => {
+    if (!isLeagueTrigger(triggerDescription)) return;
+    const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const dayCatKey = `${targetDay}_${activeCategory}`;
+    const datasetDayCatKey = `${datasetDay}_${activeCategory}`;
+    const currentlyProUnderdog = isLeagueLockedProUnderdog(triggerDescription, activeCategory, targetDay);
+    if (currentlyProUnderdog) {
+      unlockLeagueProUnderdog(triggerDescription, activeCategory, targetDay);
+      markLeagueAsNeutral(triggerDescription);
+      showToast(`League trigger "${triggerDescription}" restored to NEUTRAL for ${activeCategoryConfig.label}.`);
+    } else {
+      lockLeagueAsProUnderdog(triggerDescription, activeCategory, targetDay);
+      const isUpsets = activeCategoryConfig.targetObjective === 'underdog_only';
+      const baseMap = deepPointsMap || deepCategoryPointsMap[dayCatKey] || currentRulePointsMap;
+      const curPts = baseMap.get(triggerDescription) ?? 0;
+      let newPts = curPts;
+      if (!isUpsets && curPts > 0) {
+        newPts = -15;
+      } else if (isUpsets && curPts < 0) {
+        newPts = 15;
+      }
+      if (newPts !== curPts) {
+        const nextMap = new Map(baseMap);
+        nextMap.set(triggerDescription, newPts);
+        setDeepPointsMap(nextMap);
+        setDeepCategoryPointsMap(prev => ({
+          ...prev,
+          [dayCatKey]: nextMap,
+          [datasetDayCatKey]: nextMap,
+          [activeCategory]: nextMap,
+        }));
+      }
+      showToast(`League trigger "${triggerDescription}" locked as PRO-UNDERDOG for ${activeCategoryConfig.label}.`);
+    }
+    setWeightsVersion(v => {
+      prevWeightsVersionRef.current = v + 1;
+      return v + 1;
+    });
+  }, [activeCategory, activeCategoryConfig.label, activeCategoryConfig.targetObjective, selectedDay, datasetDay, deepPointsMap, deepCategoryPointsMap, currentRulePointsMap]);
 
   // Compute trigger statistics & recommendations via multi-pass statistical optimizer
   const { recommendations, baselineStats, optimizerMeta } = useMemo(() => {
@@ -2158,9 +3005,9 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       matchStars,
       liveViewType,
       selectedDay,
-      allMatches
+      allMatchesRef.current
     );
-  }, [activeCategoryConfig, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay, allMatches, customTriggersVersion, weightsVersion]);
+  }, [activeCategoryConfig, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay]);
 
   // Derived contextual horizons for active category and dataset scope
   const categoryHorizons = useMemo(() => {
@@ -2182,389 +3029,410 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
 
   // Seamlessly merge recommendations with deep continuous optimizer state (if active or converged)
   const effectiveRecommendations = useMemo(() => {
+    const isUpsetsCat = activeCategoryConfig.targetObjective === 'underdog_only';
     if (!deepPointsMap) {
-      return recommendations.map(r => ({
-        ...r,
-        currentPoints: r.currentPoints !== 0 ? r.currentPoints : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined),
-        recommendedPoints: r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined)
-      }));
-    }
-    return recommendations.map(r => {
-      const deepPts = deepPointsMap.get(r.description);
-      const curPts = r.currentPoints !== 0 ? r.currentPoints : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined);
-      if (deepPts !== undefined) {
-        const finalDeepPts = deepPts !== 0 ? deepPts : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined);
+      return recommendations.map(r => {
+        const curPts = currentRulePointsMap.has(r.description)
+          ? (currentRulePointsMap.get(r.description) ?? r.currentPoints)
+          : ((isUpsetsCat || r.currentPoints !== 0) ? r.currentPoints : 5);
         return {
           ...r,
           currentPoints: curPts,
-          recommendedPoints: finalDeepPts,
+          recommendedPoints: curPts
+        };
+      });
+    }
+    return recommendations.map(r => {
+      const deepPts = deepPointsMap.get(r.description);
+      const hasSavedCur = currentRulePointsMap.has(r.description);
+      const curPts = hasSavedCur
+        ? (currentRulePointsMap.get(r.description) ?? r.currentPoints)
+        : ((isUpsetsCat || r.currentPoints !== 0) ? r.currentPoints : 5);
+      if (deepPts !== undefined) {
+        return {
+          ...r,
+          currentPoints: curPts,
+          recommendedPoints: deepPts,
           rationale: deepPts !== r.recommendedPoints
-            ? `Deep Optimizer: ${finalDeepPts > 0 ? '+' : ''}${finalDeepPts} pts (${deepComputations.toLocaleString()} iterations, ${deepPurityPct.toFixed(0)}% purity, ${deepInversions} inversions).`
+            ? `Deep Optimizer: ${deepPts > 0 ? '+' : ''}${deepPts} pts.`
             : r.rationale
+        };
+      }
+      if (hasSavedCur) {
+        return {
+          ...r,
+          currentPoints: curPts,
+          recommendedPoints: curPts
         };
       }
       return {
         ...r,
         currentPoints: curPts,
-        recommendedPoints: r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined)
+        recommendedPoints: (isUpsetsCat || r.recommendedPoints !== 0) ? r.recommendedPoints : (hasSavedCur ? curPts : 5)
       };
     });
-  }, [recommendations, deepPointsMap, deepComputations, deepPurityPct, deepInversions, activeCategoryConfig, selectedDay]);
+  }, [recommendations, deepPointsMap, activeCategoryConfig, selectedDay, currentRulePointsMap]);
 
-  // Live Verification: Ranking verification with real database outcome metrics
-  const liveSelectionImpact = useMemo(() => {
-    if (completedMatches.length === 0) return null;
+  const sanitizePointMap = useCallback((ptsMap: Map<string, number>): Map<string, number> => {
+    const clean = new Map<string, number>();
+    const isUpsets = activeCategoryConfig.targetObjective === 'underdog_only';
+    ptsMap.forEach((v, k) => {
+      const minFloor = isLeagueTrigger(k) ? getLeagueTriggerMaxPenalty(k) : -30;
+      const maxBonus = isLeagueTrigger(k) ? getLeagueTriggerMaxBonus(k, isUpsets) : 40;
+      clean.set(k, Math.max(minFloor, Math.min(maxBonus, v)));
+    });
+    return clean;
+  }, [activeCategoryConfig.targetObjective]);
 
-    const recommendedMap = new Map<string, number>();
-    effectiveRecommendations.forEach(r => recommendedMap.set(r.description, r.recommendedPoints));
+  // Factual Clean Matches & First Trap Breakdown (100% transparent, non-simulated verification)
+  const cleanMatchesBreakdown = useMemo(() => {
+    const effectiveTargetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const dayCatKey = `${effectiveTargetDay}_${activeCategory}`;
+    const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
+      : (activeCategory === 'upsets' ? 'upset' 
+      : (activeCategory === 'upset' ? 'upsets' 
+      : (activeCategory === 'bankers_dlive' ? 'banker' 
+      : (activeCategory === 'banker' ? 'bankers_dlive' : undefined))));
 
-    const scoredCurrent: { match: Match; score: number; outcome: 'mfav' | 'draw' | 'underdog'; teams: string }[] = [];
-    const scoredRecommended: { match: Match; score: number; outcome: 'mfav' | 'draw' | 'underdog'; teams: string }[] = [];
+    // Category Isolation Guard: strictly verify deepPointsMap belongs to activeCategory to prevent cross-category bleed & flicker
+    const isDeepForCurrentCat = deepPointsCategoryRef.current === activeCategory;
+    let deepMap = (isDeepForCurrentCat && deepPointsMap && deepPointsMap.size > 0)
+      ? deepPointsMap
+      : (deepCategoryPointsMap[dayCatKey] || deepCategoryPointsMapRef.current[dayCatKey] || (aliasCatId ? (deepCategoryPointsMap[`${effectiveTargetDay}_${aliasCatId}`] || deepCategoryPointsMapRef.current[`${effectiveTargetDay}_${aliasCatId}`]) : undefined));
+    if (!deepMap || deepMap.size === 0) {
+      const persisted = DAILY_OPTIMIZED_SETTINGS[effectiveTargetDay]?.[activeCategory]?.rules
+        || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[effectiveTargetDay]?.[aliasCatId]?.rules : undefined);
+      if (persisted && persisted.length > 0) {
+        deepMap = new Map(persisted.map(r => [r.description, r.points]));
+      }
+    }
+    if (!deepMap || deepMap.size === 0) {
+      const peakMem = loadOptimizerPeakMemory(effectiveTargetDay, activeCategory)
+        || (aliasCatId ? loadOptimizerPeakMemory(effectiveTargetDay, aliasCatId) : null)
+        || (datasetDay !== effectiveTargetDay ? loadOptimizerPeakMemory(datasetDay, activeCategory) : null);
+      if (peakMem?.points) {
+        deepMap = new Map(Object.entries(peakMem.points));
+      }
+    }
 
-    const sampleMatches = completedMatches.length > 200 ? completedMatches.slice(-200) : completedMatches;
+    const peakMemPoints = (allTimeBestPeakRef.current && allTimeBestPeakRef.current.category === activeCategory)
+      ? allTimeBestPeakRef.current.points
+      : undefined;
+    const activeCalibratedMap = (peakMemPoints && peakMemPoints.size > 0)
+      ? peakMemPoints
+      : ((isDeepForCurrentCat && deepPointsMap && deepPointsMap.size > 0) ? deepPointsMap : deepMap);
 
-    sampleMatches.forEach(m => {
-      const actual = getActualResult(m.result || '');
-      const mFav = getMarketFavorite(m);
-      const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
+    const isCalibratedDeep = Boolean(activeCalibratedMap && activeCalibratedMap.size > 0);
+    const pointsLookup = new Map<string, number>();
+    const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
 
-      const matchDay = selectedDay !== 'all' ? selectedDay : getMatchDayOfWeek(m);
-      const baseInfo = getOptimizedBaseWeight(m, phaStatsMap, activeCategory, matchDay);
-      const baseScore = baseInfo?.points ?? 0;
-
-      const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
-      const allTriggers = evaluateAllCatalogTriggers(stats, m);
-
-      // Current score using active rule points
-      let currentScore = baseScore;
-      allTriggers.forEach(t => {
-        if (t === "Odds for underdog >= 3.0" && activeCategoryConfig.targetObjective !== 'underdog_only') return;
-        currentScore += currentRulePointsMap.get(t) ?? 0;
-      });
-      scoredCurrent.push({ match: m, score: currentScore, outcome, teams: m.teams });
-
-      // Recalculate score using recommended points across all triggered catalog rules
-      let recScore = baseScore;
-      allTriggers.forEach(t => {
-        if (t === "Odds for underdog >= 3.0" && activeCategoryConfig.targetObjective !== 'underdog_only') return;
-        const recPts = recommendedMap.get(t) ?? 0;
-        recScore += recPts;
-      });
-      scoredRecommended.push({ match: m, score: recScore, outcome, teams: m.teams });
+    // 1. Seed with existing saved points so untuned triggers retain their exact trigger points (never muted or zeroed except Upsets where 0 is allowed)
+    currentRulePointsMap.forEach((pts, description) => {
+      if (description && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
+        const minP = isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30;
+        const maxP = isLeagueTrigger(description) ? getLeagueTriggerMaxBonus(description, isUpsetsCat) : 40;
+        pointsLookup.set(description, Math.max(minP, Math.min(maxP, Number(pts))));
+      }
     });
 
-    scoredCurrent.sort((a, b) => b.score - a.score);
-    scoredRecommended.sort((a, b) => b.score - a.score);
-
-    const objective = activeCategoryConfig.targetObjective;
-    const defaultCategoryCap = activeCategoryConfig.targetCapacity;
-    const topN = Math.min(defaultCategoryCap, scoredCurrent.length);
-
-    // Current weights analysis
-    const topCurrent = scoredCurrent.slice(0, topN);
-    const currentMfav = topCurrent.filter(x => x.outcome === 'mfav').length;
-    const currentDraw = topCurrent.filter(x => x.outcome === 'draw').length;
-    const currentUd = topCurrent.filter(x => x.outcome === 'underdog').length;
-
-    // Recommended weights analysis
-    const topRec = scoredRecommended.slice(0, topN);
-    const recMfav = topRec.filter(x => x.outcome === 'mfav').length;
-    const recDraw = topRec.filter(x => x.outcome === 'draw').length;
-    const recUd = topRec.filter(x => x.outcome === 'underdog').length;
-
-    // Objective-aware target success count
-    let currentSafe = currentMfav + currentDraw;
-    let recSafe = recMfav + recDraw;
-    let metricLabel = 'Safe Rate';
-
-    if (objective === 'underdog_only') {
-      currentSafe = currentUd;
-      recSafe = recUd;
-      metricLabel = 'Underdog Win Rate';
-    } else if (objective === 'mfav_only') {
-      currentSafe = currentMfav;
-      recSafe = recMfav;
-      metricLabel = 'Mfav Win Rate';
+    if (isCalibratedDeep) {
+      // 2. Overlay calibrated points from the optimizer (tuned triggers replace old trigger points)
+      activeCalibratedMap!.forEach((pts, description) => {
+        if (description && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
+          const minP = isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30;
+          const maxP = isLeagueTrigger(description) ? getLeagueTriggerMaxBonus(description, isUpsetsCat) : 40;
+          pointsLookup.set(description, Math.max(minP, Math.min(maxP, Number(pts))));
+        }
+      });
+    } else if (effectiveRecommendations.length > 0) {
+      effectiveRecommendations.forEach(r => {
+        if (r.description && typeof r.recommendedPoints === 'number' && (isUpsetsCat || r.recommendedPoints !== 0) && !pointsLookup.has(r.description)) {
+          const minP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxPenalty(r.description) : -30;
+          const maxP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxBonus(r.description, isUpsetsCat) : 40;
+          pointsLookup.set(r.description, Math.max(minP, Math.min(maxP, r.recommendedPoints)));
+        }
+      });
     }
 
-    const isTarget = (outcome: 'mfav' | 'draw' | 'underdog') => {
-      if (objective === 'underdog_only') return outcome === 'underdog';
-      if (objective === 'mfav_only') return outcome === 'mfav';
-      return outcome !== 'underdog';
-    };
+    // 3. Any catalog or league trigger with no existing valid saved points is awarded its new default points
+    getFullActiveCatalogTriggers().forEach(desc => {
+      if (desc && !pointsLookup.has(desc)) {
+        pointsLookup.set(desc, getNewTriggerDefaultPoints(desc));
+      }
+    });
 
-    // Purity at cut-offs
-    const purityAtN = (scored: typeof scoredCurrent, n: number) => {
-      const top = scored.slice(0, Math.min(n, scored.length));
-      const targetCount = top.filter(x => isTarget(x.outcome)).length;
-      return top.length > 0 ? (targetCount / top.length) * 100 : 0;
-    };
-
-    // Find worst target rank and best trap rank
-    let lastMfavRank = -1;
-    let firstNonMfavRank = -1;
-    for (let i = 0; i < scoredRecommended.length; i++) {
-      if (isTarget(scoredRecommended[i].outcome)) lastMfavRank = i + 1;
-      if (firstNonMfavRank < 0 && !isTarget(scoredRecommended[i].outcome)) firstNonMfavRank = i + 1;
+    interface BreakdownRow {
+      rank: number;
+      match: Match;
+      teams: string;
+      date: string;
+      league: string;
+      odds: string;
+      result: string;
+      actual: string;
+      mFav: '1' | '2';
+      outcome: 'mfav' | 'draw' | 'underdog';
+      isTarget: boolean;
+      baseScore: number;
+      triggerScore: number;
+      totalScore: number;
+      rulesHit: { description: string; points: number }[];
     }
 
-    // Top 20 ranking breakdown for recommended
-    const top20Rec = scoredRecommended.slice(0, Math.min(20, scoredRecommended.length)).map((x, i) => ({
-      rank: i + 1,
-      teams: x.teams,
-      score: x.score,
-      outcome: x.outcome
-    }));
+    const rows: BreakdownRow[] = new Array(evaluatedCategoryProfiles.length);
 
-    // Calculate Pairwise Inversions in O(N) linear time over sorted arrays
-    let currentInversions = 0;
-    let currentTrapsSeen = 0;
-    for (const m of scoredCurrent) {
-      if (isTarget(m.outcome)) {
-        currentInversions += currentTrapsSeen;
+    for (let i = 0; i < evaluatedCategoryProfiles.length; i++) {
+      const p = evaluatedCategoryProfiles[i];
+      const tList = p.triggersList;
+      let triggerScore = 0;
+      const rulesHit: { description: string; points: number }[] = [];
+
+      if (isCleanMatchesModalOpen) {
+        for (let k = 0; k < tList.length; k++) {
+          const desc = tList[k];
+          if (!desc) continue;
+          const pts = pointsLookup.get(desc) ?? getNewTriggerDefaultPoints(desc);
+          if (pts !== 0) {
+            rulesHit.push({ description: desc, points: pts });
+            triggerScore += pts;
+          }
+        }
+        rulesHit.sort((a, b) => b.points - a.points);
       } else {
-        currentTrapsSeen++;
+        for (let k = 0; k < tList.length; k++) {
+          const desc = tList[k];
+          if (!desc) continue;
+          const pts = pointsLookup.get(desc) ?? getNewTriggerDefaultPoints(desc);
+          triggerScore += pts;
+        }
+      }
+
+      rows[i] = {
+        rank: 0,
+        match: p.match,
+        teams: p.teams,
+        date: p.date,
+        league: p.league,
+        odds: p.odds,
+        result: p.result,
+        actual: p.actual,
+        mFav: p.mFav,
+        outcome: p.outcome,
+        isTarget: p.isTarget,
+        baseScore: p.baseScore,
+        triggerScore,
+        totalScore: p.baseScore + triggerScore,
+        rulesHit
+      };
+    }
+
+    // Sort descending by totalScore; on exact score ties, traps sort before targets so cleanMatches strictly equals score > maxTrapScore
+    rows.sort((a, b) => (b.totalScore - a.totalScore) || ((a.isTarget ? 1 : 0) - (b.isTarget ? 1 : 0)));
+    for (let idx = 0; idx < rows.length; idx++) {
+      rows[idx].rank = idx + 1;
+    }
+
+    const firstTrapIdx = rows.findIndex(r => !r.isTarget);
+    const cleanMatches = firstTrapIdx === -1 ? rows : rows.slice(0, firstTrapIdx);
+    const firstTrap = firstTrapIdx === -1 ? null : rows[firstTrapIdx];
+    const firstTrapRank = firstTrap ? firstTrap.rank : (rows.length + 1);
+    let totalTargets = 0;
+    let tiedAtBoundary = 0;
+    const firstTrapScore = firstTrap ? firstTrap.totalScore : -999999;
+    for (let idx = 0; idx < rows.length; idx++) {
+      if (rows[idx].isTarget) {
+        totalTargets++;
+        if (firstTrap && rows[idx].totalScore === firstTrapScore) {
+          tiedAtBoundary++;
+        }
       }
     }
-
-    let recInversions = 0;
-    let recTrapsSeen = 0;
-    for (const m of scoredRecommended) {
-      if (isTarget(m.outcome)) {
-        recInversions += recTrapsSeen;
-      } else {
-        recTrapsSeen++;
-      }
-    }
+    const marginToFirstTrap = (cleanMatches.length > 0 && firstTrap)
+      ? (cleanMatches[cleanMatches.length - 1].totalScore - firstTrap.totalScore)
+      : 0;
 
     return {
-      topN,
-      metricLabel,
-      current: { mfav: currentMfav, draw: currentDraw, ud: currentUd, safe: currentSafe, safePct: topN > 0 ? (currentSafe / topN) * 100 : 0, inversions: currentInversions },
-      recommended: { mfav: recMfav, draw: recDraw, ud: recUd, safe: recSafe, safePct: topN > 0 ? (recSafe / topN) * 100 : 0, inversions: recInversions },
-      improvement: topN > 0 ? ((recSafe - currentSafe) / topN) * 100 : 0,
-      mfavImprovement: topN > 0 ? ((recMfav - currentMfav) / topN) * 100 : 0,
-      purity: {
-        currentTop5: purityAtN(scoredCurrent, 5),
-        currentTop10: purityAtN(scoredCurrent, 10),
-        currentTop12: purityAtN(scoredCurrent, 12),
-        currentTop20: purityAtN(scoredCurrent, 20),
-        recTop5: purityAtN(scoredRecommended, 5),
-        recTop10: purityAtN(scoredRecommended, 10),
-        recTop12: purityAtN(scoredRecommended, 12),
-        recTop20: purityAtN(scoredRecommended, 20)
-      },
-      lastMfavRank,
-      firstNonMfavRank,
-      top20Ranking: top20Rec
+      allRows: rows,
+      cleanMatches,
+      cleanCount: cleanMatches.length,
+      firstTrap,
+      firstTrapRank,
+      totalTargets,
+      tiedAtBoundary,
+      marginToFirstTrap
     };
-  }, [completedMatches, effectiveRecommendations, selectedDay, activeCategory, phaStatsMap, activeCategoryConfig]);
+  }, [evaluatedCategoryProfiles, isCleanMatchesModalOpen, currentRulePointsMap, deepPointsMap, deepCategoryPointsMap, datasetDay, effectiveRecommendations, activeCategoryConfig, selectedDay, activeCategory]);
+
+  // Stage candidate rules in OPW P RECOM component state when optimization pauses or converges.
+  // IMPORTANT: Never write to /api/opw/save-to-code, localStorage, or DAILY_OPTIMIZED_SETTINGS here;
+  // permanent persistence happens ONLY when the user explicitly clicks "Save to Codebase".
+  const adoptCalibratedRulesPermanently = useCallback(async (
+    pointsMap: Map<string, number>,
+    peakClean: number,
+    peakTrapRank: number,
+    peakQuality: number,
+    trapRanks?: number[],
+    trapGaps?: number[]
+  ) => {
+    if (!pointsMap || pointsMap.size === 0) return;
+    const effectiveTargetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+
+    const tunedRules = Array.from(pointsMap.entries()).map(([description, points]) => ({
+      description,
+      points: Math.max(isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30, Math.min(40, points))
+    }));
+
+    const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
+      : (activeCategory === 'upsets' ? 'upset' 
+      : (activeCategory === 'upset' ? 'upsets' 
+      : (activeCategory === 'bankers_dlive' ? 'banker' 
+      : (activeCategory === 'banker' ? 'bankers_dlive' : undefined))));
+    const categoriesToUpdate = [activeCategory];
+    if (aliasCatId) categoriesToUpdate.push(aliasCatId);
+
+    // Category-based locking: If computation turned a league trigger from Pro-Mfav (>= 0) to Pro-Underdog (< 0),
+    // lock it permanently for this day & category so it never reverts to Pro-Mfav.
+    tunedRules.forEach(r => {
+      if (isLeagueTrigger(r.description) && r.points < 0) {
+        const prevPts = currentRulePointsMap.get(r.description) ?? 0;
+        if (prevPts >= 0) {
+          lockLeagueAsProUnderdog(r.description, activeCategory, effectiveTargetDay);
+          if (aliasCatId) lockLeagueAsProUnderdog(r.description, aliasCatId, effectiveTargetDay);
+        }
+      }
+    });
+
+    const finalPointsMap = new Map(tunedRules.map(r => [r.description, r.points]));
+    deepPointsCategoryRef.current = activeCategory;
+    setDeepPointsMap(finalPointsMap);
+    setDeepCleanMatches(peakClean);
+    if (peakTrapRank) setDeepFirstTrapRank(peakTrapRank);
+    if (peakQuality) setDeepQuality(peakQuality);
+    if (trapRanks && trapRanks.length > 0) setDeepTrapRanks(trapRanks);
+    if (trapGaps && trapGaps.length > 0) setDeepTrapGaps(trapGaps);
+
+    const matchDaysInPool = new Set<DayOfWeek>();
+    if (selectedDay === 'all') {
+      (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as DayOfWeek[]).forEach(d => matchDaysInPool.add(d));
+    } else {
+      matchDaysInPool.add(effectiveTargetDay);
+    }
+    const updatedCategoryMap = { ...deepCategoryPointsMapRef.current };
+    matchDaysInPool.forEach(d => {
+      for (const cat of categoriesToUpdate) {
+        updatedCategoryMap[`${d}_${cat}`] = finalPointsMap;
+      }
+    });
+    deepCategoryPointsMapRef.current = updatedCategoryMap;
+    setDeepCategoryPointsMap(updatedCategoryMap);
+  }, [selectedDay, datasetDay, activeCategoryConfig, activeCategory, matches]);
 
   // Start Continuous Deep Optimization for active category
   const startDeepOptimization = useCallback(() => {
-    if (completedMatches.length === 0) {
-      showToast('No completed matches available in this category/timeframe to optimize.');
-      return;
-    }
-
-    setIsDeepOptimizing(true);
-    setDeepStatus('running');
-    stopDeepRef.current = false;
-    const isHistoryMode = datasetScope === 'history';
-
-    // Build match profiles for fast non-blocking evaluation
-    interface MatchProfile {
-      teams: string;
-      outcome: 'mfav' | 'draw' | 'underdog';
-      triggersHit: Set<string>;
-      baseScore: number;
-    }
-    const profiles: MatchProfile[] = [];
-
-    completedMatches.forEach(m => {
-      const actual = getActualResult(m.result || '');
-      if (actual !== '1' && actual !== 'X' && actual !== '2') return;
-
-      // Data integrity: Ensure valid market odds exist to prevent hallucinated market favorites
-      const moParts = (m.mo || '').split(/[- ,]+/).map(s => parseFloat(s.trim())).filter(p => !isNaN(p));
-      const homeOdds = moParts[0] || 0;
-      const awayOdds = moParts[2] || 0;
-      if (homeOdds <= 0 || awayOdds <= 0) return;
-
-      const mFav = getMarketFavorite(m);
-      const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
-
-      let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
-      if (!allTriggers) {
-        const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
-        allTriggers = evaluateAllCatalogTriggers(stats, m);
-        (m as any)._opwCatalogTriggers = allTriggers;
+    try {
+      if (completedMatches.length === 0) {
+        showToast('No completed matches available in this category/timeframe to optimize.');
+        return;
       }
-      const triggersHit = new Set<string>();
-      allTriggers.forEach(t => {
-        if (t === "Odds for underdog >= 3.0" && activeCategoryConfig.targetObjective !== 'underdog_only') return;
-        triggersHit.add(t);
+
+      setIsDeepOptimizing(true);
+      setDeepStatus('running');
+      stopDeepRef.current = false;
+      const isHistoryMode = datasetScope === 'history';
+
+      const profiles = evaluatedCategoryProfiles;
+
+      if (profiles.length === 0) {
+        setIsDeepOptimizing(false);
+        setDeepStatus('idle');
+        showToast('Could not evaluate match profiles.');
+        return;
+      }
+
+      // Active triggers that fired in at least one completed match
+      const activeTriggersSet = new Set<string>();
+      profiles.forEach(p => p.triggersHit.forEach(t => activeTriggersSet.add(t)));
+      const activeTriggers = Array.from(activeTriggersSet);
+
+      // Compute empirical trigger statistics across all completed match profiles
+      const catalogTriggers = getFullActiveCatalogTriggers();
+      const hitStatsMap = new Map<string, { mfav: number; draw: number; underdog: number }>();
+      catalogTriggers.forEach(desc => {
+        hitStatsMap.set(desc, { mfav: 0, draw: 0, underdog: 0 });
       });
-      const matchDay = selectedDay !== 'all' ? selectedDay : getMatchDayOfWeek(m);
-      const evalCat = activeCategory === 'safety' ? 'best_bet' : activeCategory;
-      const baseInfo = getOptimizedBaseWeight(m, phaStatsMap, evalCat, matchDay);
-      profiles.push({
-        teams: m.teams || 'Unknown',
-        outcome,
-        triggersHit,
-        baseScore: baseInfo?.points ?? 0
-      });
-    });
-
-    if (profiles.length === 0) {
-      setIsDeepOptimizing(false);
-      setDeepStatus('idle');
-      showToast('Could not evaluate match profiles.');
-      return;
-    }
-
-    // Active triggers that fired in at least one completed match
-    const activeTriggersSet = new Set<string>();
-    profiles.forEach(p => p.triggersHit.forEach(t => activeTriggersSet.add(t)));
-    const activeTriggers = Array.from(activeTriggersSet);
-
-    // Compute empirical trigger statistics across all completed match profiles
-    const catalogTriggers = getFullActiveCatalogTriggers();
-    const hitStatsMap = new Map<string, { mfav: number; draw: number; underdog: number }>();
-    catalogTriggers.forEach(desc => {
-      hitStatsMap.set(desc, { mfav: 0, draw: 0, underdog: 0 });
-    });
-    profiles.forEach(p => {
-      p.triggersHit.forEach(t => {
-        let stat = hitStatsMap.get(t);
-        if (!stat) {
-          stat = { mfav: 0, draw: 0, underdog: 0 };
-          hitStatsMap.set(t, stat);
-        }
-        if (p.outcome === 'mfav') stat.mfav++;
-        else if (p.outcome === 'draw') stat.draw++;
-        else stat.underdog++;
-      });
-    });
-
-    // Historical universe hits map across allMatches (for triggers with matches in history)
-    const histHitsMap = new Map<string, { mfav: number; draw: number; underdog: number; total: number }>();
-    if (allMatches && allMatches.length > 0) {
-      allMatches.forEach(m => {
-        const actual = getActualResult(m.result || '');
-        if (actual !== '1' && actual !== 'X' && actual !== '2') return;
-        const moParts = (m.mo || '').split(/[- ,]+/).map(s => parseFloat(s.trim())).filter(p => !isNaN(p));
-        if ((moParts[0] || 0) <= 0 || (moParts[2] || 0) <= 0) return;
-        const mFav = getMarketFavorite(m);
-        const out: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
-        let trigs: Set<string> = (m as any)._opwCatalogTriggers;
-        if (!trigs) {
-          const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
-          trigs = evaluateAllCatalogTriggers(stats, m);
-          (m as any)._opwCatalogTriggers = trigs;
-        }
-        trigs.forEach(t => {
-          let h = histHitsMap.get(t);
-          if (!h) {
-            h = { mfav: 0, draw: 0, underdog: 0, total: 0 };
-            histHitsMap.set(t, h);
+      profiles.forEach(p => {
+        p.triggersHit.forEach(t => {
+          let stat = hitStatsMap.get(t);
+          if (!stat) {
+            stat = { mfav: 0, draw: 0, underdog: 0 };
+            hitStatsMap.set(t, stat);
           }
-          if (out === 'mfav') h.mfav++;
-          else if (out === 'draw') h.draw++;
-          else h.underdog++;
-          h.total++;
+          if (p.outcome === 'mfav') stat.mfav++;
+          else if (p.outcome === 'draw') stat.draw++;
+          else stat.underdog++;
         });
       });
+
+      // Historical universe hits map across allMatches (for triggers with matches in history)
+      const histHitsMap = new Map<string, { mfav: number; draw: number; underdog: number; total: number }>();
+
+      const launchCoreOptimizer = () => {
+    // Initial points map:
+    // Every trigger with existing valid saved points (>= +5 or <= -5, or 0 for Upsets) strictly starts at its saved points
+    // so untuned triggers retain their exact points and the optimizer never drops below the existing clean streak.
+    // If a trigger has no existing valid saved points, we award it +5 points and allow it to go through computation
+    // so that we can figure out the best points for it.
+    const isUpsetsCat = activeCategoryConfig.targetObjective === 'underdog_only';
+    const allCatalogTriggers = [...catalogTriggers];
+    const triggerIdByName = new Map<string, number>();
+    allCatalogTriggers.forEach((desc, idx) => triggerIdByName.set(desc, idx));
+    activeTriggers.forEach(desc => {
+      if (!triggerIdByName.has(desc)) {
+        triggerIdByName.set(desc, allCatalogTriggers.length);
+        allCatalogTriggers.push(desc);
+      }
+    });
+    const numTriggers = allCatalogTriggers.length;
+    const bestPointsArr = new Int16Array(numTriggers);
+
+    for (let tId = 0; tId < numTriggers; tId++) {
+      const desc = allCatalogTriggers[tId];
+      const existingSaved = (deepPointsCategoryRef.current === activeCategory ? deepPointsMap?.get(desc) : undefined)
+        ?? currentRulePointsMap.get(desc);
+      const minP = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
+      const maxP = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUpsetsCat) : 40;
+
+      if (existingSaved !== undefined && ((isUpsetsCat && existingSaved === 0) || (existingSaved !== 0 && (existingSaved >= 5 || existingSaved <= -5)))) {
+        bestPointsArr[tId] = Math.max(minP, Math.min(maxP, existingSaved));
+      } else {
+        bestPointsArr[tId] = Math.max(minP, Math.min(maxP, getNewTriggerDefaultPoints(desc)));
+      }
     }
 
-    // Initial points map: resume from deepPointsMap or initialize from current calibrated rules
-    // FIRST GOAL: For all triggers that have historical/live matches (totalHits > 0) whose OPW points are zero (or undefined),
-    // seed them immediately to +5 or -5 based on category objective, empirical win rate, and semantic polarity!
-    // Triggers with zero matches (totalHits === 0) are strictly kept as they are (preserving existing points like +20, etc.).
-    const protectedGuards = loadProtectedPenaltyGuards();
-    const protectedGuardsMap = new Map<string, number>(protectedGuards.map(g => [g.trigger, g.floorPoints]));
-
-    const currentPoints = new Map<string, number>();
-    catalogTriggers.forEach(desc => {
-      const counts = hitStatsMap.get(desc);
-      const sliceHits = counts ? (counts.mfav + counts.draw + counts.underdog) : 0;
-      const histCounts = histHitsMap.get(desc);
-      const histHits = histCounts ? histCounts.total : 0;
-      const totalHits = sliceHits + histHits;
-      const existing = deepPointsMap?.get(desc) ?? currentRulePointsMap.get(desc);
-      const profile = getTriggerAccuracyProfile(desc, counts, activeCategoryConfig.targetObjective, existing, isHistoryMode);
-      const guardFloor = protectedGuardsMap.get(desc);
-
-      let initVal: number;
-
-      if (totalHits > 0) {
-        // Trigger fired on real matches in the dataset (live slice or historical universe):
-        if (existing !== undefined && existing !== 0 && ALLOWED_POINT_VALUES.includes(existing)) {
-          // Already had calibrated non-zero points: strictly keep as is
-          initVal = existing;
-        } else {
-          // OPW points are zero (or undefined): FIRST GOAL -> Seed to +5 or -5
-          const polarity = getTriggerSemanticPolarity(desc);
-          const isUnderdogCat = activeCategoryConfig.targetObjective === 'underdog_only';
-          const isMfavOnly = activeCategoryConfig.targetObjective === 'mfav_only';
-
-          if (isUnderdogCat) {
-            if (polarity === 'PRO_UNDERDOG') initVal = 5;
-            else if (polarity === 'PRO_MFAV') initVal = -5;
-            else {
-              const udRate = counts && sliceHits > 0 ? (counts.underdog / sliceHits) : (histCounts && histHits > 0 ? (histCounts.underdog / histHits) : 0);
-              initVal = udRate >= 0.25 ? 5 : -5;
-            }
-          } else if (isMfavOnly) {
-            if (polarity === 'PRO_MFAV') initVal = 5;
-            else if (polarity === 'PRO_UNDERDOG') initVal = -5;
-            else {
-              const mfavRate = counts && sliceHits > 0 ? (counts.mfav / sliceHits) : (histCounts && histHits > 0 ? (histCounts.mfav / histHits) : 0);
-              initVal = mfavRate >= 0.50 ? 5 : -5;
-            }
-          } else {
-            // mfav_draw (Top 12, Bankers, Value Picks, etc.)
-            if (polarity === 'PRO_MFAV') initVal = 5;
-            else if (polarity === 'PRO_UNDERDOG') initVal = -5;
-            else {
-              const safeRate = counts && sliceHits > 0 ? ((counts.mfav + counts.draw) / sliceHits) : (histCounts && histHits > 0 ? ((histCounts.mfav + histCounts.draw) / histHits) : 0);
-              initVal = safeRate >= 0.60 ? 5 : -5;
-            }
-          }
-        }
-      } else {
-        // Triggers with ZERO matches: keep them as they are!
-        // If they had +20, -15, etc., stay as such, not being pushed to zero.
-        // If uncalibrated/0, borrow default points so they are never 0.
-        initVal = (existing !== undefined && existing !== 0)
-          ? existing
-          : borrowTriggerPoints(desc, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined);
+    const buildPointsMapFromArr = (arr: Int16Array): Map<string, number> => {
+      const m = new Map<string, number>();
+      for (let tId = 0; tId < numTriggers; tId++) {
+        m.set(allCatalogTriggers[tId], arr[tId]);
       }
-
-      if (initVal === 0) {
-        initVal = borrowTriggerPoints(desc, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined);
-      }
-
-      if (guardFloor !== undefined && guardFloor <= -5) {
-        if (initVal > guardFloor) initVal = guardFloor;
-      }
-
-      if (initVal !== 0 && profile.allowedBand.length > 0 && !profile.allowedBand.includes(initVal)) {
-        initVal = profile.allowedBand.reduce((prev, curr) => Math.abs(curr - initVal) < Math.abs(prev - initVal) ? curr : prev);
-      }
-
-      if (guardFloor !== undefined && guardFloor <= -5 && initVal > guardFloor) {
-        initVal = guardFloor;
-      }
-
-      currentPoints.set(desc, initVal);
-    });
+      return m;
+    };
 
     const numMatches = profiles.length;
     // Flat typed arrays for maximum cache locality and zero GC overhead
     const isTarget = new Uint8Array(numMatches);
     const matchScores = new Int16Array(numMatches);
+    const matchBaseScores = new Int16Array(numMatches);
+    const matchTriggerIds: Int32Array[] = new Array(numMatches);
     let totalCorrectMatches = 0;
+
+    // Inverted index builders
+    const triggerIndicesLists: number[][] = Array.from({ length: numTriggers }, () => []);
+    const triggerTargetCountsArr = new Int32Array(numTriggers);
+    const triggerTrapCountsArr = new Int32Array(numTriggers);
+    const histTotalCountsArr = new Int32Array(numTriggers);
+    for (let tId = 0; tId < numTriggers; tId++) {
+      histTotalCountsArr[tId] = histHitsMap.get(allCatalogTriggers[tId])?.total || 0;
+    }
 
     for (let i = 0; i < numMatches; i++) {
       const p = profiles[i];
@@ -2580,326 +3448,501 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       if (isT) totalCorrectMatches++;
 
       let s = p.baseScore;
+      let baseS = p.baseScore;
+      const mTrigIds: number[] = [];
       p.triggersHit.forEach(t => {
-        s += currentPoints.get(t) ?? 0;
-      });
-      matchScores[i] = Math.max(-299, Math.min(299, s));
-    }
-
-    // Inverted index: single-pass mapping of triggers to Int32Array of match indices (instant < 5ms)
-    const triggerIndicesMap = new Map<string, number[]>();
-    const triggerTargetCounts = new Map<string, number>();
-    const triggerTrapCounts = new Map<string, number>();
-
-    catalogTriggers.forEach(desc => {
-      triggerIndicesMap.set(desc, []);
-      triggerTargetCounts.set(desc, 0);
-      triggerTrapCounts.set(desc, 0);
-    });
-
-    for (let i = 0; i < numMatches; i++) {
-      const isTg = isTarget[i] === 1;
-      profiles[i].triggersHit.forEach(desc => {
-        const list = triggerIndicesMap.get(desc);
-        if (list) {
-          list.push(i);
-          if (isTg) {
-            triggerTargetCounts.set(desc, (triggerTargetCounts.get(desc) || 0) + 1);
-          } else {
-            triggerTrapCounts.set(desc, (triggerTrapCounts.get(desc) || 0) + 1);
-          }
+        const tId = triggerIdByName.get(t);
+        if (tId !== undefined) {
+          s += bestPointsArr[tId];
+          mTrigIds.push(tId);
+          triggerIndicesLists[tId].push(i);
+          if (isT) triggerTargetCountsArr[tId]++;
+          else triggerTrapCountsArr[tId]++;
+        } else {
+          const defPts = getNewTriggerDefaultPoints(t);
+          s += defPts;
+          baseS += defPts;
         }
       });
+      matchBaseScores[i] = baseS;
+      matchTriggerIds[i] = new Int32Array(mTrigIds);
+      matchScores[i] = Math.max(-1499, Math.min(1499, s));
     }
 
-    const triggerToIndices = new Map<string, Int32Array>();
-    catalogTriggers.forEach(desc => {
-      triggerToIndices.set(desc, new Int32Array(triggerIndicesMap.get(desc) || []));
-    });
+    const triggerIndicesArr: Int32Array[] = new Array(numTriggers);
+    for (let tId = 0; tId < numTriggers; tId++) {
+      triggerIndicesArr[tId] = new Int32Array(triggerIndicesLists[tId]);
+    }
 
-    // In live mode, triggers with >= 2 hits in the active match profiles (or >= 1 live hit and >= 20 historical hits) participate in mutations.
-    // Triggers with insufficient hits strictly retain their calibrated points to build upon previous accuracy.
-    const eligibleTriggers = isHistoryMode
-      ? catalogTriggers
-      : activeTriggers.filter(t => {
-          const liveHits = triggerToIndices.get(t)?.length || 0;
-          const histHits = histHitsMap.get(t)?.total || 0;
-          return liveHits >= 2 || (liveHits >= 1 && histHits >= 20);
-        });
+    // In live mode, triggers that hit at least 1 match in the active match profiles participate in mutations.
+    const eligibleTriggerIds: number[] = [];
+    const broadDriverTriggerIds: number[] = [];
+    const activeTriggerIds: number[] = [];
+    const allTriggerIds: number[] = [];
 
-    // Broad high-volume drivers (triggers with >= 20 hits in history or >= 4 hits in live, or >= 2 live + >= 20 history)
-    // Ensures macro indicators (odds thresholds, predictor consensus, PAA, TS, rating, etc.)
-    // actively participate in mutations and are never starved of compute cycles.
-    const broadDriverTriggers = eligibleTriggers.filter(t => {
-      const liveHits = triggerToIndices.get(t)?.length || 0;
-      const histHits = histHitsMap.get(t)?.total || 0;
-      return isHistoryMode ? histHits >= 20 : (liveHits >= 4 || (liveHits >= 2 && histHits >= 20));
-    });
+    for (let tId = 0; tId < numTriggers; tId++) {
+      allTriggerIds.push(tId);
+      const liveHits = triggerIndicesArr[tId].length;
+      const histHits = histTotalCountsArr[tId];
+      if (liveHits > 0) activeTriggerIds.push(tId);
+      if (isHistoryMode || liveHits >= 1 || histHits >= 20) {
+        eligibleTriggerIds.push(tId);
+        if (isHistoryMode ? histHits >= 20 : (liveHits >= 2 || (liveHits >= 1 && histHits >= 20))) {
+          broadDriverTriggerIds.push(tId);
+        }
+      }
+    }
 
     const horizons = calculateTargetHorizons(profiles.length, totalCorrectMatches, activeCategoryConfig.targetCapacity, activeCategoryConfig.targetObjective);
 
-    // 601 Buckets for scores from -300 to +300 (offset = 300)
-    const SCORE_OFFSET = 300;
-    const BUCKET_COUNT = 601;
+    // 3001 Buckets for scores from -1499 to +1499 (offset = 1500) so match scores never clamp-drift
+    const SCORE_OFFSET = 1500;
+    const BUCKET_COUNT = 3001;
     const targetBuckets = new Int32Array(BUCKET_COUNT);
     const trapBuckets = new Int32Array(BUCKET_COUNT);
+    let maxActiveBucket = 0;
+    let minActiveBucket = BUCKET_COUNT - 1;
 
     for (let i = 0; i < numMatches; i++) {
       const b = matchScores[i] + SCORE_OFFSET;
+      if (b > maxActiveBucket) maxActiveBucket = b;
+      if (b < minActiveBucket) minActiveBucket = b;
       if (isTarget[i] === 1) targetBuckets[b]++;
       else trapBuckets[b]++;
     }
+    if (minActiveBucket > maxActiveBucket) minActiveBucket = 0;
+
+    // Preallocated static buffers for zero-allocation fastEvaluateBuckets
+    const horizonLimitsBuf = new Int32Array([500, 1000, 1500, 2000, 3000]);
+    const hTrapsBuf = new Int32Array(5);
+    const hTargetsBuf = new Int32Array(5);
+    const trapRanksBuf = new Int32Array(5);
+    const trapScoresBuf = new Int32Array(5);
+    const trapGapsBuf = new Int32Array(5);
+    let trapRanksCount = 0;
+    let lastRunMatches = 0;
+
+    interface FastEvalSnapshot {
+      quality: number;
+      cleanTopMatches: number;
+      firstTrapRank: number;
+      tiedAtBoundary: number;
+      trapInTopN: number;
+      targetInTopN: number;
+      purityPct: number;
+      bufferMargin: number;
+      targetsInTop5000: number;
+      targetOverTrapPairs: number;
+      positiveTargets: number;
+      positiveTraps: number;
+      floorMet: boolean;
+      ceilingMet: boolean;
+      horizonMetrics?: MultiHorizonSummary;
+      trapRanks: number[];
+      trapScores: number[];
+      trapGaps: number[];
+      trapDispersionHealth: 'HEALTHY' | 'MODERATE' | 'CLUSTERED';
+    }
+
+    const trialEval: FastEvalSnapshot = {
+      quality: 0,
+      cleanTopMatches: 0,
+      firstTrapRank: 1,
+      tiedAtBoundary: 0,
+      trapInTopN: 0,
+      targetInTopN: 0,
+      purityPct: 0,
+      bufferMargin: 0,
+      targetsInTop5000: 0,
+      targetOverTrapPairs: 0,
+      positiveTargets: 0,
+      positiveTraps: 0,
+      floorMet: false,
+      ceilingMet: false,
+      trapRanks: [],
+      trapScores: [],
+      trapGaps: [],
+      trapDispersionHealth: 'CLUSTERED'
+    };
+
+    const cloneEvalSnapshot = (src: FastEvalSnapshot): FastEvalSnapshot => {
+      const ranks: number[] = new Array(trapRanksCount);
+      const scores: number[] = new Array(trapRanksCount);
+      const gaps: number[] = new Array(trapRanksCount);
+      for (let i = 0; i < trapRanksCount; i++) {
+        ranks[i] = trapRanksBuf[i];
+        scores[i] = trapScoresBuf[i];
+        gaps[i] = trapGapsBuf[i];
+      }
+      const horizonMetrics: MultiHorizonSummary = {
+        h500: { horizon: 500, traps: hTrapsBuf[0], targets: hTargetsBuf[0], total: Math.min(500, lastRunMatches), winRate: (hTargetsBuf[0] + hTrapsBuf[0]) > 0 ? (hTargetsBuf[0] / (hTargetsBuf[0] + hTrapsBuf[0])) * 100 : 0 },
+        h1000: { horizon: 1000, traps: hTrapsBuf[1], targets: hTargetsBuf[1], total: Math.min(1000, lastRunMatches), winRate: (hTargetsBuf[1] + hTrapsBuf[1]) > 0 ? (hTargetsBuf[1] / (hTargetsBuf[1] + hTrapsBuf[1])) * 100 : 0 },
+        h1500: { horizon: 1500, traps: hTrapsBuf[2], targets: hTargetsBuf[2], total: Math.min(1500, lastRunMatches), winRate: (hTargetsBuf[2] + hTrapsBuf[2]) > 0 ? (hTargetsBuf[2] / (hTargetsBuf[2] + hTrapsBuf[2])) * 100 : 0 },
+        h2000: { horizon: 2000, traps: hTrapsBuf[3], targets: hTargetsBuf[3], total: Math.min(2000, lastRunMatches), winRate: (hTargetsBuf[3] + hTrapsBuf[3]) > 0 ? (hTargetsBuf[3] / (hTargetsBuf[3] + hTrapsBuf[3])) * 100 : 0 },
+        h3000: { horizon: 3000, traps: hTrapsBuf[4], targets: hTargetsBuf[4], total: Math.min(3000, lastRunMatches), winRate: (hTargetsBuf[4] + hTrapsBuf[4]) > 0 ? (hTargetsBuf[4] / (hTargetsBuf[4] + hTrapsBuf[4])) * 100 : 0 },
+      };
+      return {
+        quality: src.quality,
+        cleanTopMatches: src.cleanTopMatches,
+        firstTrapRank: src.firstTrapRank,
+        tiedAtBoundary: src.tiedAtBoundary,
+        trapInTopN: src.trapInTopN,
+        targetInTopN: src.targetInTopN,
+        purityPct: src.purityPct,
+        bufferMargin: src.bufferMargin,
+        targetsInTop5000: src.targetsInTop5000,
+        targetOverTrapPairs: src.targetOverTrapPairs,
+        positiveTargets: src.positiveTargets,
+        positiveTraps: src.positiveTraps,
+        floorMet: src.floorMet,
+        ceilingMet: src.ceilingMet,
+        horizonMetrics,
+        trapRanks: ranks,
+        trapScores: scores,
+        trapGaps: gaps,
+        trapDispersionHealth: src.trapDispersionHealth
+      };
+    };
+
+    const topNCapacity = activeCategoryConfig.targetCapacity;
+    const boundaryTargetGoal = Math.min(horizons.floor, Math.max(topNCapacity, 100));
+    const liveGoalN = Math.min(totalCorrectMatches, Math.max(topNCapacity, horizons.floor));
+    const isMfavDraw = activeCategoryConfig.targetObjective === 'mfav_draw';
+    const maxTrapsAllowed500 = isMfavDraw ? 25 : 50;
+    const maxTrapsAllowed1000 = isMfavDraw ? 60 : 100;
+    const isUnderdog = activeCategoryConfig.targetObjective === 'underdog_only';
+    const elevatedMultiplier = isUnderdog ? 3 : (isHistoryMode ? 4 : 5);
+    const targetWeight = isUnderdog ? 35 : 40;
+    const trapWeight = 15;
+    const liftWeight = 0.25;
+    const pairMultiplier = isHistoryMode ? 5 : 120;
+    const topTrapAdvMult = isHistoryMode ? 8 : 6;
+
+    const LAYER_1_INCREMENTAL_COMPS = 1_000_000;
+    let totalComps = deepComputations;
+    let layer2Announced = deepComputations >= LAYER_1_INCREMENTAL_COMPS;
 
     const fastEvaluateBuckets = (
       tBuckets: Int32Array,
       trBuckets: Int32Array,
-      points: Map<string, number>
-    ) => {
-      // 1. Find highest trap bucket
+      regSum: number
+    ): FastEvalSnapshot => {
       let maxTrapB = -1;
-      for (let b = BUCKET_COUNT - 1; b >= 0; b--) {
-        if (trBuckets[b] > 0) {
-          maxTrapB = b;
-          break;
-        }
-      }
-
-      // 2. Clean streak: count of targets strictly higher than highest trap
       let cleanTop = 0;
-      if (maxTrapB >= 0) {
-        for (let b = BUCKET_COUNT - 1; b > maxTrapB; b--) {
-          cleanTop += tBuckets[b];
-        }
-      } else {
-        cleanTop = totalCorrectMatches;
-      }
-
-      // 3. Top N purity
       let targetInTopN = 0;
       let trapInTopN = 0;
       let counted = 0;
-      const topNCapacity = activeCategoryConfig.targetCapacity;
-      for (let b = BUCKET_COUNT - 1; b >= 0 && counted < topNCapacity; b--) {
-        const inB = tBuckets[b] + trBuckets[b];
-        if (inB === 0) continue;
-        const rem = topNCapacity - counted;
-        if (inB <= rem) {
-          targetInTopN += tBuckets[b];
-          trapInTopN += trBuckets[b];
-          counted += inB;
-        } else {
-          const takeT = Math.min(tBuckets[b], rem);
-          targetInTopN += takeT;
-          trapInTopN += (rem - takeT);
-          counted = topNCapacity;
-        }
-      }
 
-      // 3b. Multi-Horizon Cumulative Trap & Target Density calculation (500, 1000, 1500, 2000, 3000)
-      const horizonLimits = [500, 1000, 1500, 2000, 3000];
-      const hTraps = [0, 0, 0, 0, 0];
-      const hTargets = [0, 0, 0, 0, 0];
       let hIdx = 0;
       let runMatches = 0;
       let runT = 0;
       let runTr = 0;
 
-      for (let b = BUCKET_COUNT - 1; b >= 0 && hIdx < horizonLimits.length; b--) {
-        const inB = tBuckets[b] + trBuckets[b];
-        if (inB === 0) continue;
-
-        while (hIdx < horizonLimits.length && runMatches + inB >= horizonLimits[hIdx]) {
-          const rem = horizonLimits[hIdx] - runMatches;
-          const addT = Math.min(tBuckets[b], rem);
-          const addTr = rem - addT;
-          hTargets[hIdx] = runT + addT;
-          hTraps[hIdx] = runTr + addTr;
-          hIdx++;
-        }
-
-        runMatches += inB;
-        runT += tBuckets[b];
-        runTr += trBuckets[b];
-      }
-      while (hIdx < horizonLimits.length) {
-        hTargets[hIdx] = runT;
-        hTraps[hIdx] = runTr;
-        hIdx++;
-      }
-
-      const horizonMetrics: MultiHorizonSummary = {
-        h500: { horizon: 500, traps: hTraps[0], targets: hTargets[0], total: Math.min(500, runMatches), winRate: (hTargets[0] + hTraps[0]) > 0 ? (hTargets[0] / (hTargets[0] + hTraps[0])) * 100 : 0 },
-        h1000: { horizon: 1000, traps: hTraps[1], targets: hTargets[1], total: Math.min(1000, runMatches), winRate: (hTargets[1] + hTraps[1]) > 0 ? (hTargets[1] / (hTargets[1] + hTraps[1])) * 100 : 0 },
-        h1500: { horizon: 1500, traps: hTraps[2], targets: hTargets[2], total: Math.min(1500, runMatches), winRate: (hTargets[2] + hTraps[2]) > 0 ? (hTargets[2] / (hTargets[2] + hTraps[2])) * 100 : 0 },
-        h2000: { horizon: 2000, traps: hTraps[3], targets: hTargets[3], total: Math.min(2000, runMatches), winRate: (hTargets[3] + hTraps[3]) > 0 ? (hTargets[3] / (hTargets[3] + hTraps[3])) * 100 : 0 },
-        h3000: { horizon: 3000, traps: hTraps[4], targets: hTargets[4], total: Math.min(3000, runMatches), winRate: (hTargets[4] + hTraps[4]) > 0 ? (hTargets[4] / (hTargets[4] + hTraps[4])) * 100 : 0 },
-      };
-
-      const isMfavDraw = activeCategoryConfig.targetObjective === 'mfav_draw';
-      const maxTrapsAllowed500 = isMfavDraw ? 25 : 50;
-      const maxTrapsAllowed1000 = isMfavDraw ? 60 : 100;
-      const excessTraps500 = Math.max(0, hTraps[0] - maxTrapsAllowed500);
-      const excessTraps1000 = Math.max(0, hTraps[1] - maxTrapsAllowed1000);
-
-      const horizonFitness = (numMatches > 50) ? (
-        (hTargets[0] * 25 - hTraps[0] * 150 - excessTraps500 * 300) +
-        (hTargets[1] * 20 - hTraps[1] * 100 - excessTraps1000 * 200) +
-        (hTargets[2] * 15 - hTraps[2] * 50) +
-        (hTargets[3] * 10 - hTraps[3] * 30) +
-        (hTargets[4] * 5  - hTraps[4] * 15)
-      ) : 0;
-
-      // 4. Soft-margin boundary penalty on elevated traps
-      // Find the score bucket of the frontier target (e.g. 100th to 500th target)
       let tCounted = 0;
       let boundaryB = 0;
-      const boundaryTargetGoal = Math.min(horizons.floor, Math.max(topNCapacity, 100));
-      for (let b = BUCKET_COUNT - 1; b >= 0; b--) {
-        tCounted += tBuckets[b];
-        if (tCounted >= boundaryTargetGoal) {
-          boundaryB = b;
-          break;
-        }
-      }
 
-      const isUnderdog = activeCategoryConfig.targetObjective === 'underdog_only';
-
-      let elevatedTrapPenalty = 0;
-      // In underdog mode or history mode, soften the trap multiplier so good macro triggers with high win rate aren't penalized out of existence by outlier traps
-      const trapThresholdB = isUnderdog ? Math.max(0, boundaryB - 5) : Math.max(0, boundaryB - 10);
-      const elevatedMultiplier = isUnderdog ? 3 : (isHistoryMode ? 4 : 5);
-      for (let b = BUCKET_COUNT - 1; b >= trapThresholdB; b--) {
-        if (trBuckets[b] > 0) {
-          elevatedTrapPenalty += trBuckets[b] * (b - trapThresholdB + 1) * elevatedMultiplier;
-        }
-      }
-
-      // 5. Positive Targets Reward & Trap Positive Penalty & Upper Lift
+      let targetOverTrapPairs = 0;
+      let runningTargetsSeen = 0;
       let positiveTargets = 0;
       let upperTargetLift = 0;
-      let targetsOver100 = 0;
-      let targetsOver150 = 0;
-      let targetsOver200 = 0;
-      for (let b = SCORE_OFFSET + 1; b < BUCKET_COUNT; b++) {
-        positiveTargets += tBuckets[b];
-        const sVal = b - SCORE_OFFSET;
-        upperTargetLift += tBuckets[b] * sVal;
-        if (sVal >= 100) targetsOver100 += tBuckets[b];
-        if (sVal >= 150) targetsOver150 += tBuckets[b];
-        if (sVal >= 200) targetsOver200 += tBuckets[b];
-      }
       let positiveTraps = 0;
-      for (let b = SCORE_OFFSET; b < BUCKET_COUNT; b++) {
-        positiveTraps += trBuckets[b];
+
+      let nthTargetB = -1;
+      let topTargetB = -1;
+      let tc = 0;
+
+      trapRanksCount = 0;
+
+      let targetsInTop5000 = 0;
+      let counted5k = 0;
+
+      let minTargetB = -1;
+      let matchesSeen = 0;
+
+      const startB = Math.min(BUCKET_COUNT - 1, maxActiveBucket);
+      const endB = Math.max(0, minActiveBucket);
+
+      // SINGLE UNIFIED ZERO-ALLOCATION DOWNWARD PASS WITH EARLY EXIT
+      for (let b = startB; b >= endB; b--) {
+        const tCount = tBuckets[b];
+        const trCount = trBuckets[b];
+        const inB = tCount + trCount;
+        if (inB === 0) continue;
+
+        matchesSeen += inB;
+
+        // 1 & 2. Trap detection & clean top
+        if (trCount > 0 && maxTrapB === -1) {
+          maxTrapB = b;
+          cleanTop = runningTargetsSeen;
+        }
+
+        // 3. Top N purity
+        if (counted < topNCapacity) {
+          const rem = topNCapacity - counted;
+          if (inB <= rem) {
+            targetInTopN += tCount;
+            trapInTopN += trCount;
+            counted += inB;
+          } else {
+            const takeT = tCount < rem ? tCount : rem;
+            targetInTopN += takeT;
+            trapInTopN += (rem - takeT);
+            counted = topNCapacity;
+          }
+        }
+
+        // 3b. Multi-horizon
+        if (numMatches > 50 && hIdx < 5) {
+          while (hIdx < 5 && runMatches + inB >= horizonLimitsBuf[hIdx]) {
+            const rem = horizonLimitsBuf[hIdx] - runMatches;
+            const addT = tCount < rem ? tCount : rem;
+            const addTr = rem - addT;
+            hTargetsBuf[hIdx] = runT + addT;
+            hTrapsBuf[hIdx] = runTr + addTr;
+            hIdx++;
+          }
+          runMatches += inB;
+          runT += tCount;
+          runTr += trCount;
+        }
+
+        // 4. Boundary target
+        if (tCount > 0 && tCounted < boundaryTargetGoal) {
+          tCounted += tCount;
+          if (tCounted >= boundaryTargetGoal) {
+            boundaryB = b;
+          }
+        }
+
+        // 5. Concordance
+        if (trCount > 0) {
+          targetOverTrapPairs += trCount * runningTargetsSeen;
+        }
+        runningTargetsSeen += tCount;
+
+        // 5b. Bounded lift & positive scores (cap sVal tightly so already-winning scores cannot inflate endlessly)
+        const sVal = b - SCORE_OFFSET;
+        const clampedLiftS = sVal < -15 ? -15 : (sVal > 15 ? 15 : sVal);
+        if (sVal > 0) {
+          if (tCount > 0) {
+            positiveTargets += tCount;
+            upperTargetLift += tCount * clampedLiftS;
+          }
+          if (trCount > 0) {
+            positiveTraps += trCount;
+          }
+        } else if (tCount > 0) {
+          upperTargetLift += tCount * clampedLiftS;
+        }
+
+        // Live separation target tracking
+        if (tCount > 0) {
+          if (topTargetB === -1) topTargetB = b;
+          if (tc < liveGoalN) {
+            tc += tCount;
+            if (tc >= liveGoalN && nthTargetB === -1) nthTargetB = b;
+          }
+          minTargetB = b;
+        }
+
+        // Top 5 trap ranks and scores
+        if (trCount > 0 && trapRanksCount < 5) {
+          for (let k = 0; k < trCount && trapRanksCount < 5; k++) {
+            const r = runningTargetsSeen + trapRanksCount + 1;
+            trapRanksBuf[trapRanksCount] = r;
+            trapScoresBuf[trapRanksCount] = sVal;
+            trapGapsBuf[trapRanksCount] = trapRanksCount === 0 ? (r - 1) : (r - trapRanksBuf[trapRanksCount - 1]);
+            trapRanksCount++;
+          }
+        }
+
+        // Top 5000
+        if (counted5k < 5000) {
+          const rem = 5000 - counted5k;
+          if (inB <= rem) {
+            targetsInTop5000 += tCount;
+            counted5k += inB;
+          } else {
+            targetsInTop5000 += tCount < rem ? tCount : rem;
+            counted5k = 5000;
+          }
+        }
+
+        // EARLY EXIT: when all matches in dataset have been processed
+        if (matchesSeen >= numMatches) break;
       }
 
-      // Top Trap sinking bonus: reward sinking highest trap lower down
-      // Balanced weight (15 in live, 25 in history) so target lift can balance against minor trap drift
+      if (maxTrapB === -1) {
+        cleanTop = totalCorrectMatches;
+      }
+
+      while (hIdx < 5) {
+        hTargetsBuf[hIdx] = runT;
+        hTrapsBuf[hIdx] = runTr;
+        hIdx++;
+      }
+      lastRunMatches = runMatches;
+
+      let horizonFitness = 0;
+      if (numMatches > 50) {
+        const excessTraps500 = hTrapsBuf[0] > maxTrapsAllowed500 ? hTrapsBuf[0] - maxTrapsAllowed500 : 0;
+        const excessTraps1000 = hTrapsBuf[1] > maxTrapsAllowed1000 ? hTrapsBuf[1] - maxTrapsAllowed1000 : 0;
+        horizonFitness =
+          (hTargetsBuf[0] * 25 - hTrapsBuf[0] * 150 - excessTraps500 * 300) +
+          (hTargetsBuf[1] * 20 - hTrapsBuf[1] * 100 - excessTraps1000 * 200) +
+          (hTargetsBuf[2] * 15 - hTrapsBuf[2] * 50) +
+          (hTargetsBuf[3] * 10 - hTrapsBuf[3] * 30) +
+          (hTargetsBuf[4] * 5  - hTrapsBuf[4] * 15);
+      }
+
+      let elevatedTrapPenalty = 0;
+      const trapThresholdB = isUnderdog ? Math.max(0, boundaryB - 5) : Math.max(0, boundaryB - 10);
+      if (maxTrapB >= trapThresholdB) {
+        for (let b = maxTrapB; b >= trapThresholdB; b--) {
+          const trC = trBuckets[b];
+          if (trC > 0) {
+            elevatedTrapPenalty += trC * (b - trapThresholdB + 1) * elevatedMultiplier;
+          }
+        }
+      }
+
+      // Bound trap advantage tightly so lowering traps below -10 does not reward extreme penalty slapping
+      const TRAP_ADV_FLOOR_B = SCORE_OFFSET - 10;
+      const effectiveMaxTrapB = maxTrapB < TRAP_ADV_FLOOR_B ? TRAP_ADV_FLOOR_B : maxTrapB;
       const topTrapAdvantage = maxTrapB >= 0
-        ? (BUCKET_COUNT - 1 - maxTrapB) * (isHistoryMode ? 25 : 15)
+        ? (BUCKET_COUNT - 1 - effectiveMaxTrapB) * topTrapAdvMult
         : 500;
 
-      // 6. Regularization (normalized by 40 for penalties, 25 for bonuses)
-      // Scaled by 0.05 so regularization acts as a gentle tie-breaker rather than stripping target points
-      let regSum = 0;
-      points.forEach(pts => {
-        const norm = pts < 0 ? Math.abs(pts) / 40 : pts / 25;
-        regSum += norm * norm;
-      });
-
-      const targetWeight = isUnderdog ? 30 : 15;
-      const trapWeight = isUnderdog ? 20 : (isHistoryMode ? 20 : 35);
-      const liftWeight = 0.8;
-
-      const liveGoalN = Math.min(totalCorrectMatches, Math.max(topNCapacity, horizons.floor));
       const cleanStreakBonus = (cleanTop >= liveGoalN && totalCorrectMatches > 0) ? 3000 : 0;
 
-      // Separation terms:
-      // - strong penalty per trap tied in the top trap bucket (rewards sinking one of several tied traps)
-      // - margin between the Nth-best target (N = goal) and the top trap
-      // - breakout gradient when cleanTop === 0: reward closing distance between top target and top trap
       let liveSeparationTerm = 0;
       if (maxTrapB >= 0) {
         const tiedTopTrapPenalty = trBuckets[maxTrapB] * 300;
-        const goalN = liveGoalN;
-        let nthTargetB = -1;
-        let topTargetB = -1;
-        let tc = 0;
-        for (let b = BUCKET_COUNT - 1; b >= 0 && goalN > 0; b--) {
-          if (tBuckets[b] > 0 && topTargetB === -1) {
-            topTargetB = b;
-          }
-          tc += tBuckets[b];
-          if (tc >= goalN && nthTargetB === -1) { nthTargetB = b; break; }
-        }
         const margin = nthTargetB >= 0 ? (nthTargetB - maxTrapB) : 0;
-        const breakoutLead = (topTargetB >= 0 && cleanTop === 0) ? Math.max(-100, Math.min(20, topTargetB - maxTrapB)) * 50 : 0;
-        liveSeparationTerm = Math.max(-60, Math.min(60, margin)) * 40 - tiedTopTrapPenalty + breakoutLead;
+        const clampedMargin = margin < -30 ? -30 : (margin > 10 ? 10 : margin);
+        let breakoutLead = 0;
+        if (topTargetB >= 0 && cleanTop === 0) {
+          const diff = topTargetB - maxTrapB;
+          const clampedDiff = diff < -30 ? -30 : (diff > 10 ? 10 : diff);
+          breakoutLead = clampedDiff * 60;
+        }
+        liveSeparationTerm = clampedMargin * 25 - tiedTopTrapPenalty + breakoutLead;
       }
-      const inflationBonus = 0;
 
+      let avgTrapGap = 0;
+      let trapDispersionScore = 0;
+      if (trapRanksCount > 1) {
+        let sumGaps = 0;
+        let totalTrapDepth = 0;
+        for (let k = 1; k < trapRanksCount; k++) {
+          const gap = trapGapsBuf[k];
+          sumGaps += gap;
+          totalTrapDepth += trapRanksBuf[k];
+          if (gap >= 15) trapDispersionScore += 450;
+          else if (gap >= 10) trapDispersionScore += 300;
+          else if (gap >= 5) trapDispersionScore += 180;
+          else if (gap >= 3) trapDispersionScore += 90;
+          else if (gap >= 2) trapDispersionScore += 30;
+          else if (gap <= 1) trapDispersionScore -= 120;
+        }
+        avgTrapGap = sumGaps / (trapRanksCount - 1);
+        const depthBonus = totalTrapDepth * 3;
+        trapDispersionScore += depthBonus < 800 ? depthBonus : 800;
+      } else if (trapRanksCount === 1) {
+        avgTrapGap = trapGapsBuf[0];
+      }
+
+      const trapDispersionHealth: 'HEALTHY' | 'MODERATE' | 'CLUSTERED' =
+        avgTrapGap >= 10 ? 'HEALTHY' : avgTrapGap >= 5 ? 'MODERATE' : 'CLUSTERED';
+
+      const activeRegMult = totalComps >= LAYER_1_INCREMENTAL_COMPS ? 1.5 : 6.0;
       const quality = (cleanTop * 500) +
         cleanStreakBonus +
+        (targetOverTrapPairs * pairMultiplier) +
         horizonFitness -
         (trapInTopN * 500) -
         elevatedTrapPenalty +
-        (positiveTargets * targetWeight) +
-        inflationBonus -
+        (positiveTargets * targetWeight) -
         (positiveTraps * trapWeight) +
         (upperTargetLift * liftWeight) +
         topTrapAdvantage +
-        liveSeparationTerm -
-        (regSum * 0.05);
+        liveSeparationTerm +
+        trapDispersionScore -
+        (regSum * activeRegMult);
 
-      // Count targets in top 5,000 for secondary historical horizon
-      let targetsInTop5000 = 0;
-      let counted5k = 0;
-      for (let b = BUCKET_COUNT - 1; b >= 0 && counted5k < 5000; b--) {
-        const inB = tBuckets[b] + trBuckets[b];
-        if (inB === 0) continue;
-        const rem = 5000 - counted5k;
-        if (inB <= rem) {
-          targetsInTop5000 += tBuckets[b];
-          counted5k += inB;
-        } else {
-          const takeT = Math.min(tBuckets[b], rem);
-          targetsInTop5000 += takeT;
-          counted5k = 5000;
-        }
-      }
+      trialEval.quality = quality;
+      trialEval.cleanTopMatches = cleanTop;
+      trialEval.firstTrapRank = trapRanksCount > 0 ? trapRanksBuf[0] : (cleanTop + 1);
+      trialEval.tiedAtBoundary = maxTrapB >= 0 ? tBuckets[maxTrapB] : 0;
+      trialEval.trapInTopN = trapInTopN;
+      trialEval.targetInTopN = targetInTopN;
+      trialEval.purityPct = topNCapacity > 0 ? (targetInTopN / topNCapacity) * 100 : 0;
+      trialEval.bufferMargin = (minTargetB >= 0 && maxTrapB >= 0) ? (minTargetB - maxTrapB) : 0;
+      trialEval.targetsInTop5000 = targetsInTop5000;
+      trialEval.targetOverTrapPairs = targetOverTrapPairs;
+      trialEval.positiveTargets = positiveTargets;
+      trialEval.positiveTraps = positiveTraps;
+      trialEval.floorMet = horizons.floor > 0 && cleanTop >= horizons.floor;
+      trialEval.ceilingMet = horizons.ceiling > 0 && cleanTop >= horizons.ceiling;
+      trialEval.trapDispersionHealth = trapDispersionHealth;
 
-      const maxTrapScore = maxTrapB >= 0 ? maxTrapB - SCORE_OFFSET : -SCORE_OFFSET;
-      let lowestCleanTargetScore = maxTrapScore;
-      for (let b = maxTrapB + 1; b < BUCKET_COUNT; b++) {
-        if (tBuckets[b] > 0) {
-          lowestCleanTargetScore = b - SCORE_OFFSET;
-          break;
-        }
-      }
-      const bufferMargin = maxTrapB >= 0 ? (lowestCleanTargetScore - maxTrapScore) : 25;
-
-      return {
-        quality,
-        cleanTopMatches: cleanTop,
-        firstTrapRank: cleanTop + 1,
-        trapInTopN,
-        targetInTopN,
-        purityPct: topNCapacity > 0 ? (targetInTopN / topNCapacity) * 100 : 0,
-        bufferMargin,
-        targetsInTop5000,
-        floorMet: horizons.floor > 0 && cleanTop >= horizons.floor,
-        ceilingMet: horizons.ceiling > 0 && cleanTop >= horizons.ceiling,
-        horizonMetrics
-      };
+      return trialEval;
     };
 
-    let bestPoints = new Map(currentPoints);
-    let bestFastEval = fastEvaluateBuckets(targetBuckets, trapBuckets, bestPoints);
-    let totalComps = deepComputations;
+    const PTS_OFFSET = 40;
+    const PTS_SPAN = 81; // -40 .. +40
+    const normRegTable = new Float64Array(PTS_SPAN);
+    for (let p = -40; p <= 40; p++) {
+      if (p === 0) {
+        normRegTable[p + PTS_OFFSET] = 0;
+      } else {
+        const steps = Math.abs(p) / 5;
+        normRegTable[p + PTS_OFFSET] = steps * steps;
+      }
+    }
+    const getNormReg = (pts: number) => {
+      if (pts >= -40 && pts <= 40) return normRegTable[pts + PTS_OFFSET];
+      const steps = Math.abs(pts) / 5;
+      return steps * steps;
+    };
+
+    let runningRegSum = 0;
+    for (let tId = 0; tId < numTriggers; tId++) {
+      runningRegSum += getNormReg(bestPointsArr[tId]);
+    }
+    let bestFastEval = cloneEvalSnapshot(fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum));
     let compsSinceMilestone = 0;
     let bestCleanStreak = bestFastEval.cleanTopMatches;
     const initiallyCeilingMet = bestFastEval.ceilingMet;
 
+    // Adaptive Discovery Memory Bank / Breakthrough Advisor (integer-indexed):
+    interface BreakthroughRecord {
+      triggerIds: Int32Array;
+      deltaClean: number;
+      deltaQuality: number;
+    }
+    const recentBreakthroughs: BreakthroughRecord[] = [];
+    const triggerImpactMomentum = new Float32Array(numTriggers);
+
+    const recordBreakthroughMemoryIds = (mutIds: Int32Array, count: number, deltaClean: number, deltaQuality: number) => {
+      const saved = new Int32Array(count);
+      const weight = deltaClean > 0 ? (deltaClean * 10) : (deltaQuality > 0 ? 2 : 1);
+      for (let i = 0; i < count; i++) {
+        const tId = mutIds[i];
+        saved[i] = tId;
+        const cur = triggerImpactMomentum[tId];
+        triggerImpactMomentum[tId] = cur + weight > 100 ? 100 : cur + weight;
+      }
+      recentBreakthroughs.push({
+        triggerIds: saved,
+        deltaClean,
+        deltaQuality
+      });
+      if (recentBreakthroughs.length > 30) recentBreakthroughs.shift();
+    };
+
+    const initialPointsMap = buildPointsMapFromArr(bestPointsArr);
     setDeepPurityPct(bestFastEval.purityPct);
     setDeepInversions(Math.max(0, (numMatches - totalCorrectMatches) - bestFastEval.cleanTopMatches));
     setDeepBufferMargin(bestFastEval.bufferMargin);
@@ -2911,41 +3954,54 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     setDeepTargetsInTop5000(bestFastEval.targetsInTop5000);
     if (bestFastEval.horizonMetrics) setDeepHorizonMetrics(bestFastEval.horizonMetrics);
     setDeepConvergenceMode(bestFastEval.ceilingMet ? 'perfect_100' : bestFastEval.floorMet ? 'sweet_spot' : 'none');
-    setDeepPointsMap(new Map(bestPoints));
-    setDeepCategoryPointsMap(prev => ({ ...prev, [activeCategory]: new Map(bestPoints) }));
+    setDeepPointsMap(new Map(initialPointsMap));
+    setDeepCategoryPointsMap(prev => ({ ...prev, [`${datasetDay}_${activeCategory}`]: new Map(initialPointsMap) }));
 
-    // --- Systematic Trigger Grouping & Round-Robin Rotation ---
-    // Partitions the trigger universe into cohesive cohorts of 8-10 triggers.
-    // Exhaustively tests each group, ratchets findings, then systematically rotates to the next group.
+    // --- Systematic Trigger Grouping & Round-Robin Rotation (Integer IDs) ---
+    // Focus strictly on triggers that actually fired in the evaluated match set so zero-hit triggers never waste budget
     const GROUP_SIZE = 8;
-    let allWorkingTriggers = isHistoryMode
-      ? [...catalogTriggers]
-      : (eligibleTriggers.length > 0 ? [...eligibleTriggers] : [...catalogTriggers]);
-    let triggerGroups: string[][] = [];
+    const firedWorkingSeed = activeTriggerIds.length > 0 ? activeTriggerIds : (eligibleTriggerIds.length > 0 ? eligibleTriggerIds : allTriggerIds);
+    const allWorkingTriggerIds = [...firedWorkingSeed];
+    let triggerGroupsIds: Int32Array[] = [];
     const rebuildGroups = () => {
-      triggerGroups = [];
-      for (let g = 0; g < allWorkingTriggers.length; g += GROUP_SIZE) {
-        triggerGroups.push(allWorkingTriggers.slice(g, g + GROUP_SIZE));
+      triggerGroupsIds = [];
+      for (let g = 0; g < allWorkingTriggerIds.length; g += GROUP_SIZE) {
+        triggerGroupsIds.push(new Int32Array(allWorkingTriggerIds.slice(g, g + GROUP_SIZE)));
       }
-      if (triggerGroups.length === 0) triggerGroups.push(allWorkingTriggers.slice(0, 10));
+      if (triggerGroupsIds.length === 0) triggerGroupsIds.push(new Int32Array(allWorkingTriggerIds.slice(0, 10)));
     };
     rebuildGroups();
 
-    // --- Exact undo log (fixes clamp drift: rollback restores stored pre-mutation scores, not curS - d) ---
-    const undoIdx: number[] = [];
-    const undoOld: number[] = [];
+    // --- Exact undo log with dynamic growth (prevents silent TypedArray overflow and score drift) ---
+    let undoIdx = new Int32Array(Math.max(4096, numMatches * 16));
+    let undoOld = new Int16Array(Math.max(4096, numMatches * 16));
+    let undoLen = 0;
     const applyDelta = (indices: Int32Array | undefined, d: number) => {
-      if (!indices) return;
-      for (let j = 0; j < indices.length; j++) {
+      if (!indices || d === 0) return;
+      const needed = undoLen + indices.length;
+      if (needed >= undoIdx.length) {
+        const nextCap = Math.max(needed * 2, undoIdx.length * 2);
+        const nextIdx = new Int32Array(nextCap);
+        const nextOld = new Int16Array(nextCap);
+        nextIdx.set(undoIdx);
+        nextOld.set(undoOld);
+        undoIdx = nextIdx;
+        undoOld = nextOld;
+      }
+      for (let j = 0, len = indices.length; j < len; j++) {
         const idx = indices[j];
         const oldS = matchScores[idx];
-        const newS = Math.max(-299, Math.min(299, oldS + d));
+        const rawS = oldS + d;
+        const newS = rawS < -1499 ? -1499 : (rawS > 1499 ? 1499 : rawS);
         if (newS === oldS) continue;
-        undoIdx.push(idx);
-        undoOld.push(oldS);
+        undoIdx[undoLen] = idx;
+        undoOld[undoLen] = oldS;
+        undoLen++;
         matchScores[idx] = newS;
         const oldB = oldS + SCORE_OFFSET;
         const newB = newS + SCORE_OFFSET;
+        if (newB > maxActiveBucket) maxActiveBucket = newB;
+        if (newB < minActiveBucket) minActiveBucket = newB;
         if (isTarget[idx] === 1) {
           targetBuckets[oldB]--;
           targetBuckets[newB]++;
@@ -2956,7 +4012,7 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       }
     };
     const rollbackTo = (mark: number) => {
-      for (let u = undoIdx.length - 1; u >= mark; u--) {
+      for (let u = undoLen - 1; u >= mark; u--) {
         const idx = undoIdx[u];
         const origS = undoOld[u];
         const curS = matchScores[idx];
@@ -2971,180 +4027,379 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
           trapBuckets[origB]++;
         }
       }
-      undoIdx.length = mark;
-      undoOld.length = mark;
+      undoLen = mark;
+    };
+    const recomputeScoresAndBucketsFrom = (ptsArr: Int16Array) => {
+      undoLen = 0;
+      targetBuckets.fill(0);
+      trapBuckets.fill(0);
+      maxActiveBucket = 0;
+      minActiveBucket = BUCKET_COUNT - 1;
+      for (let i = 0; i < numMatches; i++) {
+        let s = matchBaseScores[i];
+        const mTrigs = matchTriggerIds[i];
+        for (let k = 0, len = mTrigs.length; k < len; k++) {
+          s += ptsArr[mTrigs[k]];
+        }
+        const clampedS = s < -1499 ? -1499 : (s > 1499 ? 1499 : s);
+        matchScores[i] = clampedS;
+        const b = clampedS + SCORE_OFFSET;
+        if (b > maxActiveBucket) maxActiveBucket = b;
+        if (b < minActiveBucket) minActiveBucket = b;
+        if (isTarget[i] === 1) targetBuckets[b]++;
+        else trapBuckets[b]++;
+      }
+      if (minActiveBucket > maxActiveBucket) minActiveBucket = 0;
+      runningRegSum = 0;
+      for (let tId = 0; tId < numTriggers; tId++) {
+        runningRegSum += getNormReg(ptsArr[tId]);
+      }
     };
 
     // Dominant triggers (live slice: >=4 hits and >=80% targets/traps; or historical universe: >=30 hits with strong polarity)
-    const dominantTriggers = new Map<string, 'up' | 'down'>();
-    catalogTriggers.forEach(desc => {
-      const tH = triggerTargetCounts.get(desc) || 0;
-      const trH = triggerTrapCounts.get(desc) || 0;
+    // 0 = none, 1 = up, -1 = down
+    const dominantDirArr = new Int8Array(numTriggers);
+    for (let tId = 0; tId < numTriggers; tId++) {
+      const desc = allCatalogTriggers[tId];
+      const tH = triggerTargetCountsArr[tId];
+      const trH = triggerTrapCountsArr[tId];
       const tot = tH + trH;
       if (tot >= 4) {
-        if (tH / tot >= 0.80) dominantTriggers.set(desc, 'up');
-        else if (trH / tot >= 0.80) dominantTriggers.set(desc, 'down');
+        if (tH / tot >= 0.80) dominantDirArr[tId] = 1;
+        else if (trH / tot >= 0.80) dominantDirArr[tId] = -1;
       } else {
         const hCounts = histHitsMap.get(desc);
         if (hCounts && hCounts.total >= 30) {
           const polarity = getTriggerSemanticPolarity(desc);
           const isUnderdogCat = activeCategoryConfig.targetObjective === 'underdog_only';
           if (isUnderdogCat) {
-            if (polarity === 'PRO_UNDERDOG' && hCounts.underdog / hCounts.total >= 0.35) dominantTriggers.set(desc, 'up');
-            else if (polarity === 'PRO_MFAV' && (hCounts.mfav + hCounts.draw) / hCounts.total >= 0.75) dominantTriggers.set(desc, 'down');
+            if (polarity === 'PRO_UNDERDOG' && hCounts.underdog / hCounts.total >= 0.35) dominantDirArr[tId] = 1;
+            else if (polarity === 'PRO_MFAV' && (hCounts.mfav + hCounts.draw) / hCounts.total >= 0.75) dominantDirArr[tId] = -1;
           } else if (activeCategoryConfig.targetObjective === 'mfav_only') {
-            if (polarity === 'PRO_MFAV' && hCounts.mfav / hCounts.total >= 0.65) dominantTriggers.set(desc, 'up');
-            else if (polarity === 'PRO_UNDERDOG' && (hCounts.underdog + hCounts.draw) / hCounts.total >= 0.50) dominantTriggers.set(desc, 'down');
+            if (polarity === 'PRO_MFAV' && hCounts.mfav / hCounts.total >= 0.65) dominantDirArr[tId] = 1;
+            else if (polarity === 'PRO_UNDERDOG' && (hCounts.underdog + hCounts.draw) / hCounts.total >= 0.50) dominantDirArr[tId] = -1;
           } else {
-            if (polarity === 'PRO_MFAV' && (hCounts.mfav + hCounts.draw) / hCounts.total >= 0.75) dominantTriggers.set(desc, 'up');
-            else if (polarity === 'PRO_UNDERDOG' && hCounts.underdog / hCounts.total >= 0.30) dominantTriggers.set(desc, 'down');
+            if (polarity === 'PRO_MFAV' && (hCounts.mfav + hCounts.draw) / hCounts.total >= 0.75) dominantDirArr[tId] = 1;
+            else if (polarity === 'PRO_UNDERDOG' && hCounts.underdog / hCounts.total >= 0.30) dominantDirArr[tId] = -1;
           }
         }
       }
-    });
+    }
 
-    // Cached per-trigger accuracy profile for the optimizer loop (counts & anchors are constant during a run)
-    const liveProfileCache = new Map<string, ReturnType<typeof getTriggerAccuracyProfile>>();
-    const getLiveProfile = (t: string) => {
-      let p = liveProfileCache.get(t);
-      if (!p) {
-        p = getTriggerAccuracyProfile(t, hitStatsMap.get(t), activeCategoryConfig.targetObjective, currentRulePointsMap.get(t), isHistoryMode);
-        const guardFloor = protectedGuardsMap.get(t);
-        if (guardFloor !== undefined && guardFloor <= -5) {
-          const restrictedBand = p.allowedBand.filter(v => v <= guardFloor);
-          p.allowedBand = restrictedBand.length > 0 ? restrictedBand : [guardFloor];
-        }
-        liveProfileCache.set(t, p);
-      }
-      return p;
+    // Precompute per-trigger accuracy profiles, strict polarity band min/max, and O(1) candidate lookup tables
+    // Indexed by: tId * PTS_SPAN + (currentVal + PTS_OFFSET)
+    const profilesByTrigId: ReturnType<typeof getTriggerAccuracyProfile>[] = new Array(numTriggers);
+    const bandMaxArr = new Int16Array(numTriggers);
+    const bandMinArr = new Int16Array(numTriggers);
+    const totalTableSlots = numTriggers * PTS_SPAN;
+    const stepUpTable: Int16Array[] = new Array(totalTableSlots);
+    const stepDownTable: Int16Array[] = new Array(totalTableSlots);
+    const stepAnyTable: Int16Array[] = new Array(totalTableSlots);
+    const stretchUpTable: Int16Array[] = new Array(totalTableSlots);
+    const stretchDownTable: Int16Array[] = new Array(totalTableSlots);
+    const stretchAnyTable: Int16Array[] = new Array(totalTableSlots);
+    const escalateUpTable: Int16Array[] = new Array(totalTableSlots);
+    const escalateDownTable: Int16Array[] = new Array(totalTableSlots);
+    const escalateAnyTable: Int16Array[] = new Array(totalTableSlots);
+    const emptyInt16 = new Int16Array(0);
+
+    const buildEscalationCandidatesFor = (
+      band: number[],
+      currentVal: number,
+      dir: 'up' | 'down' | 'any',
+      minFloor: number,
+      maxBonus: number,
+      isUniversalBonus: boolean,
+      zeroEligible: boolean
+    ): Int16Array => {
+      if (band.length === 0) return emptyInt16;
+      const canUseZeroNow = isUpsetsCat && zeroEligible;
+      const valid = band
+        .filter(v => {
+          if (v === currentVal) return false;
+          if (dir === 'up' && v <= currentVal) return false;
+          if (dir === 'down' && v >= currentVal) return false;
+          if (v === 0 && !canUseZeroNow) return false;
+          if (v !== 0 && v > -5 && v < 5) return false;
+          if (v < minFloor || v > maxBonus) return false;
+          if (isUniversalBonus && v < (canUseZeroNow ? 0 : 5)) return false;
+          return true;
+        })
+        .sort((a, b) => Math.abs(a - currentVal) - Math.abs(b - currentVal));
+      return valid.length > 0 ? new Int16Array(valid) : emptyInt16;
     };
 
-    // Step rules: normal triggers move a single 5-pt step; dominant triggers may jump within their band.
-    const liveStepCandidates = (trigger: string, currentVal: number, band: number[], dir: 'up' | 'down' | 'any'): number[] => {
-      const guardFloor = protectedGuardsMap.get(trigger);
-      const effectiveBand = (guardFloor !== undefined && guardFloor <= -5)
-        ? band.filter(v => v <= guardFloor)
-        : band;
-      const nonZeroBand = effectiveBand.filter(v => v !== 0);
-      if (nonZeroBand.length === 0) return [];
-      if (!nonZeroBand.includes(currentVal)) {
-        // Off-band value: only allowed move is back to the nearest in-band value (respecting direction)
-        const nearest = nonZeroBand.reduce((prev, curr) => Math.abs(curr - currentVal) < Math.abs(prev - currentVal) ? curr : prev);
-        if (dir === 'up' && nearest <= currentVal) return [];
-        if (dir === 'down' && nearest >= currentVal) return [];
-        return nearest !== currentVal && nearest !== 0 ? [nearest] : [];
+    const buildCandidatesFor = (
+      tId: number,
+      trigger: string,
+      currentVal: number,
+      band: number[],
+      dir: 'up' | 'down' | 'any',
+      allowStretch: boolean,
+      isNeutralLeague: boolean,
+      minFloor: number,
+      maxBonus: number,
+      isUniversalBonus: boolean,
+      zeroEligible: boolean
+    ): Int16Array => {
+      if (band.length === 0) return emptyInt16;
+      const canUseZeroNow = isUpsetsCat && allowStretch && zeroEligible;
+      if (!band.includes(currentVal)) {
+        const filtered = band
+          .filter(v => {
+            if (v === currentVal) return false;
+            if (v === 0 && !canUseZeroNow) return false;
+            return v === 0 || v >= 5 || v <= -5;
+          })
+          .sort((a, b) => Math.abs(a - currentVal) - Math.abs(b - currentVal));
+        const nearest = allowStretch ? filtered.slice(0, 3) : filtered.slice(0, 2);
+        return nearest.length > 0 ? new Int16Array(nearest) : emptyInt16;
       }
-      const dom = dominantTriggers.get(trigger);
+      // Strictly incremental candidate generation:
+      // - step*Table: single ±5 step only (or -5 <-> +5 for neutral league triggers)
+      // - stretch*Table: nearest-first ±5, then ±10 (never full-band jumps straight to ±30/±35/±40)
       const out: number[] = [];
+      const pushIfBand = (v: number) => {
+        if (band.includes(v) && !out.includes(v)) out.push(v);
+      };
+
       if (dir !== 'down') {
-        if (guardFloor !== undefined && guardFloor <= -5 && currentVal >= guardFloor) {
-          // Protected penalty: NEVER allow stepping upward towards 0!
-        } else if (dom === 'up') {
-          for (const v of nonZeroBand) if (v > currentVal) out.push(v);
-        } else if (currentVal === -5 && nonZeroBand.includes(5)) {
-          out.push(5);
-        } else if (nonZeroBand.includes(currentVal + 5)) {
-          out.push(currentVal + 5);
+        pushIfBand(currentVal + 5);
+        if (isNeutralLeague && currentVal === -5) pushIfBand(5);
+        if (allowStretch) {
+          pushIfBand(currentVal + 10);
+          if (isNeutralLeague && currentVal === -10) pushIfBand(5);
         }
       }
       if (dir !== 'up') {
-        if (dom === 'down') {
-          for (const v of nonZeroBand) if (v < currentVal) out.push(v);
-        } else if (currentVal === 5 && nonZeroBand.includes(-5)) {
-          out.push(-5);
-        } else if (nonZeroBand.includes(currentVal - 5)) {
-          out.push(currentVal - 5);
+        pushIfBand(currentVal - 5);
+        if (isNeutralLeague && currentVal === 5) pushIfBand(-5);
+        if (allowStretch) {
+          pushIfBand(currentVal - 10);
+          if (isNeutralLeague && currentVal === 10) pushIfBand(-5);
         }
       }
-      return out.filter(v => v !== 0 && v >= -40 && (guardFloor !== undefined && guardFloor <= -5 ? v <= guardFloor : v <= 25));
+      if (canUseZeroNow && currentVal !== 0 && Math.abs(currentVal) <= 10) {
+        pushIfBand(0);
+      }
+
+      const valid = out
+        .filter(v => {
+          if (v === 0 && !canUseZeroNow) return false;
+          if (v !== 0 && v > -5 && v < 5) return false;
+          if (v < minFloor) return false;
+          if (v > maxBonus) return false;
+          if (isUniversalBonus && v < (canUseZeroNow ? 0 : 5)) return false;
+          return band.includes(v);
+        })
+        .sort((a, b) => Math.abs(a - currentVal) - Math.abs(b - currentVal));
+      return valid.length > 0 ? new Int16Array(valid) : emptyInt16;
     };
 
-    // Trap-targeted separation analysis (recomputed lazily after accepted changes)
-    let targetingDirty = true;
-    let targetDownList: string[] = [];
-    let targetUpList: string[] = [];
-    const recomputeTargeting = () => {
-      targetingDirty = false;
-      targetDownList = [];
-      targetUpList = [];
-      let maxTrapS = -Infinity;
-      for (let i = 0; i < numMatches; i++) {
-        if (isTarget[i] === 0 && matchScores[i] > maxTrapS) maxTrapS = matchScores[i];
+    for (let tId = 0; tId < numTriggers; tId++) {
+      const desc = allCatalogTriggers[tId];
+      const prof = getTriggerAccuracyProfile(
+        desc,
+        hitStatsMap.get(desc),
+        activeCategoryConfig.targetObjective,
+        currentRulePointsMap.get(desc),
+        isHistoryMode,
+        activeCategory,
+        undefined,
+        histHitsMap.get(desc)
+      );
+      profilesByTrigId[tId] = prof;
+      const band = prof.allowedBand;
+      if (band.length > 0) {
+        bandMaxArr[tId] = Math.max(...band);
+        bandMinArr[tId] = Math.min(...band);
+      } else {
+        bandMaxArr[tId] = 30;
+        bandMinArr[tId] = -30;
       }
-      if (maxTrapS === -Infinity) return;
-      const topTraps: number[] = [];
-      const below: number[] = [];
+      const isLeague = isLeagueTrigger(desc);
+      const isNeutralLeague = isLeague && !isLeagueLockedProUnderdog(desc, activeCategory) && getTriggerSemanticPolarity(desc, activeCategory) === 'NEUTRAL';
+      const minFloor = isLeague ? getLeagueTriggerMaxPenalty(desc) : -30;
+      const maxBonus = isLeague ? getLeagueTriggerMaxBonus(desc, isUpsetsCat) : 40;
+      const isUniversalBonus = DUAL_BONUS_TRIGGERS.has(desc);
+      const baseSlot = tId * PTS_SPAN;
+      for (let val = -40; val <= 40; val++) {
+        const slot = baseSlot + (val + PTS_OFFSET);
+        stepUpTable[slot] = buildCandidatesFor(tId, desc, val, band, 'up', false, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stepDownTable[slot] = buildCandidatesFor(tId, desc, val, band, 'down', false, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stepAnyTable[slot] = buildCandidatesFor(tId, desc, val, band, 'any', false, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stretchUpTable[slot] = buildCandidatesFor(tId, desc, val, band, 'up', true, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stretchDownTable[slot] = buildCandidatesFor(tId, desc, val, band, 'down', true, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stretchAnyTable[slot] = buildCandidatesFor(tId, desc, val, band, 'any', true, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        escalateUpTable[slot] = buildEscalationCandidatesFor(band, val, 'up', minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        escalateDownTable[slot] = buildEscalationCandidatesFor(band, val, 'down', minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        escalateAnyTable[slot] = buildEscalationCandidatesFor(band, val, 'any', minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+      }
+    }
+
+    // Winner-Promotion & Trap-Targeted Separation Analysis (recomputed lazily after accepted changes)
+    let targetingDirty = true;
+    let targetDownIds = new Int32Array(0);
+    let targetUpIds = new Int32Array(0);
+    const targetDownFlags = new Uint8Array(numTriggers);
+    const targetUpFlags = new Uint8Array(numTriggers);
+    let cachedBoundaryCandidateIds = new Int32Array(0);
+    const freqBuf = new Int32Array(numTriggers);
+    const allBelowFreqBuf = new Int32Array(numTriggers);
+    const topTrapFreqBuf = new Int32Array(numTriggers);
+    const prevTrapFlagsBuf = new Uint8Array(numTriggers);
+    const focusTrapFlagsBuf = new Uint8Array(numTriggers);
+
+    const recomputeTargeting = (targetTrapIdx: number = 0) => {
+      targetingDirty = false;
+      const trapList: { idx: number; score: number }[] = [];
       for (let i = 0; i < numMatches; i++) {
         if (isTarget[i] === 0) {
-          if (matchScores[i] === maxTrapS) topTraps.push(i);
-        } else if (matchScores[i] <= maxTrapS) {
+          trapList.push({ idx: i, score: matchScores[i] });
+        }
+      }
+      if (trapList.length === 0) {
+        targetDownIds = emptyInt16 as unknown as Int32Array;
+        targetUpIds = emptyInt16 as unknown as Int32Array;
+        return;
+      }
+      trapList.sort((a, b) => b.score - a.score);
+
+      const focusIdx = Math.min(trapList.length - 1, Math.max(0, targetTrapIdx));
+      const focusTrap = trapList[focusIdx];
+      const focusScore = focusTrap.score;
+      const topTraps = trapList.slice(0, Math.min(5, trapList.length));
+
+      const below: number[] = [];
+      for (let i = 0; i < numMatches; i++) {
+        if (isTarget[i] === 1 && matchScores[i] <= focusScore) {
           below.push(i);
         }
       }
-      if (topTraps.length === 0 || below.length === 0) return;
-      below.sort((a, b) => matchScores[b] - matchScores[a]);
-      // Boundary targets: at / just below the top trap (ties count as blocked)
-      let boundary = below.filter(i => matchScores[i] >= maxTrapS - 20);
-      if (boundary.length < 3) boundary = below.slice(0, Math.min(6, below.length));
-      const trapIdx = topTraps[Math.floor(Math.random() * topTraps.length)];
-      const trapTrigs = profiles[trapIdx].triggersHit;
-      const freq = new Map<string, number>();
-      boundary.forEach(i => profiles[i].triggersHit.forEach(t => freq.set(t, (freq.get(t) || 0) + 1)));
-      const bLen = boundary.length;
-      // Present in top trap but rare among boundary targets -> step down
-      trapTrigs.forEach(t => {
-        if (!triggerToIndices.has(t)) return;
-        const liveHits = triggerToIndices.get(t)?.length || 0;
-        const histHits = histHitsMap.get(t)?.total || 0;
-        if (!isHistoryMode && liveHits < 2 && histHits < 20) return;
-        if ((freq.get(t) || 0) / bLen <= 0.40) targetDownList.push(t);
-      });
-      // Present in boundary targets -> step up
-      // Enhanced: also include broad target-dominant triggers (even if present in that single top trap,
-      // provided they heavily favor boundary targets over traps across the dataset)
-      freq.forEach((c, t) => {
-        if (!triggerToIndices.has(t)) return;
-        const liveHits = triggerToIndices.get(t)?.length || 0;
-        const histHits = histHitsMap.get(t)?.total || 0;
-        if (!isHistoryMode && liveHits < 2 && histHits < 20) return;
-        const inTrap = trapTrigs.has(t);
-        const tHits = triggerTargetCounts.get(t) || 0;
-        const trHits = triggerTrapCounts.get(t) || 0;
-        const tot = tHits + trHits;
-        const hCounts = histHitsMap.get(t);
-        const hTot = hCounts ? hCounts.total : 0;
-        const polarity = getTriggerSemanticPolarity(t);
-        const isTargetPolarity = activeCategoryConfig.targetObjective === 'underdog_only'
-          ? polarity === 'PRO_UNDERDOG'
-          : polarity === 'PRO_MFAV';
-        const isBroadTargetDriver = (tot >= 4 && tHits > trHits) || (hTot >= 20 && isTargetPolarity);
-
-        if (!inTrap && c / bLen >= 0.30) {
-          targetUpList.push(t);
-        } else if (inTrap && isBroadTargetDriver && c / bLen >= 0.40) {
-          // Broad trigger that hits majority of boundary targets and has strong global target accuracy
-          targetUpList.push(t);
+      if (below.length === 0) {
+        for (let i = 0; i < numMatches; i++) {
+          if (isTarget[i] === 1) below.push(i);
         }
-      });
-      // Lenient fallbacks (still trap-distinguishing)
-      if (targetDownList.length === 0) {
-        trapTrigs.forEach(t => {
-          if (!triggerToIndices.has(t)) return;
-          const liveHits = triggerToIndices.get(t)?.length || 0;
-          const histHits = histHitsMap.get(t)?.total || 0;
-          if (!isHistoryMode && liveHits < 2 && histHits < 20) return;
-          if ((freq.get(t) || 0) < bLen) targetDownList.push(t);
-        });
       }
-      if (targetUpList.length === 0) {
-        freq.forEach((_c, t) => {
-          if (!triggerToIndices.has(t)) return;
-          const liveHits = triggerToIndices.get(t)?.length || 0;
-          const histHits = histHitsMap.get(t)?.total || 0;
-          if (!isHistoryMode && liveHits < 2 && histHits < 20) return;
-          targetUpList.push(t);
-        });
+      if (below.length === 0) return;
+
+      below.sort((a, b) => matchScores[b] - matchScores[a]);
+      let boundary = below.filter(i => matchScores[i] >= focusScore - 25);
+      if (boundary.length < 12) boundary = below.slice(0, Math.min(20, below.length));
+      const bLen = Math.max(1, boundary.length);
+      const trapIdx = focusTrap.idx;
+
+      freqBuf.fill(0);
+      allBelowFreqBuf.fill(0);
+      topTrapFreqBuf.fill(0);
+      prevTrapFlagsBuf.fill(0);
+      focusTrapFlagsBuf.fill(0);
+
+      const focusTrigs = matchTriggerIds[trapIdx];
+      for (let i = 0; i < focusTrigs.length; i++) focusTrapFlagsBuf[focusTrigs[i]] = 1;
+
+      for (let i = 0; i < boundary.length; i++) {
+        const mTrigs = matchTriggerIds[boundary[i]];
+        for (let j = 0; j < mTrigs.length; j++) freqBuf[mTrigs[j]]++;
       }
+
+      for (let i = 0; i < below.length; i++) {
+        const mTrigs = matchTriggerIds[below[i]];
+        for (let j = 0; j < mTrigs.length; j++) allBelowFreqBuf[mTrigs[j]]++;
+      }
+
+      for (let i = 0; i < topTraps.length; i++) {
+        const mTrigs = matchTriggerIds[topTraps[i].idx];
+        for (let j = 0; j < mTrigs.length; j++) topTrapFreqBuf[mTrigs[j]]++;
+      }
+
+      if (focusIdx > 0) {
+        for (let p = 0; p < focusIdx; p++) {
+          const mTrigs = matchTriggerIds[trapList[p].idx];
+          for (let j = 0; j < mTrigs.length; j++) prevTrapFlagsBuf[mTrigs[j]] = 1;
+        }
+      }
+
+      const upScored: { tId: number; gain: number }[] = [];
+      const downScored: { tId: number; gain: number }[] = [];
+
+      for (let tId = 0; tId < numTriggers; tId++) {
+        const liveHits = triggerIndicesArr[tId].length;
+        const histHits = histTotalCountsArr[tId];
+        if (!isHistoryMode && liveHits < 1 && histHits < 20) continue;
+
+        const curVal = bestPointsArr[tId];
+        const maxAllowed = bandMaxArr[tId];
+        const minAllowed = bandMinArr[tId];
+        const canStepUp = curVal < maxAllowed;
+        const canStepDown = curVal > minAllowed;
+
+        const bHits = freqBuf[tId];
+        const allBelowHits = allBelowFreqBuf[tId];
+        const inFocusTrap = focusTrapFlagsBuf[tId] === 1;
+        const topTrapHits = topTrapFreqBuf[tId];
+        const tHits = triggerTargetCountsArr[tId];
+        const trHits = triggerTrapCountsArr[tId];
+
+        if (canStepUp) {
+          const upGain = (bHits * 3) + (allBelowHits * 2) - (inFocusTrap ? 12 : 0) - (topTrapHits * 3) + (tHits - trHits);
+          if ((bHits > 0 || allBelowHits >= 2) && (!inFocusTrap || (bHits / bLen >= 0.40 && tHits > trHits)) && upGain > 0) {
+            upScored.push({ tId, gain: upGain });
+          }
+        }
+
+        if (canStepDown && inFocusTrap && !(focusIdx > 0 && prevTrapFlagsBuf[tId] === 1)) {
+          const collateralRatio = bHits / bLen;
+          const globalWinnerProtected = allBelowHits > topTrapHits * 1.5;
+          const downGain = 10 + (topTrapHits * 3) - (bHits * 4) - (allBelowHits * 2) + (trHits - tHits);
+          if (collateralRatio <= 0.35 && !globalWinnerProtected && downGain > 0) {
+            downScored.push({ tId, gain: downGain });
+          }
+        }
+      }
+
+      upScored.sort((a, b) => b.gain - a.gain);
+      downScored.sort((a, b) => b.gain - a.gain);
+      const upArr = upScored.map(x => x.tId);
+      const downArr = downScored.map(x => x.tId);
+
+      if (downArr.length === 0) {
+        for (let i = 0; i < focusTrigs.length; i++) {
+          const tId = focusTrigs[i];
+          if (bestPointsArr[tId] <= bandMinArr[tId]) continue;
+          const liveHits = triggerIndicesArr[tId].length;
+          const histHits = histTotalCountsArr[tId];
+          if (!isHistoryMode && liveHits < 1 && histHits < 20) continue;
+          if (freqBuf[tId] < bLen) downArr.push(tId);
+        }
+      }
+      if (upArr.length === 0) {
+        for (let tId = 0; tId < numTriggers; tId++) {
+          if (allBelowFreqBuf[tId] <= 0) continue;
+          if (bestPointsArr[tId] >= bandMaxArr[tId]) continue;
+          const liveHits = triggerIndicesArr[tId].length;
+          const histHits = histTotalCountsArr[tId];
+          if (!isHistoryMode && liveHits < 1 && histHits < 20) continue;
+          if (focusTrapFlagsBuf[tId] === 0) upArr.push(tId);
+        }
+      }
+
+      targetUpIds = new Int32Array(upArr);
+      targetDownIds = new Int32Array(downArr);
+      targetUpFlags.fill(0);
+      targetDownFlags.fill(0);
+      for (let i = 0; i < targetUpIds.length; i++) targetUpFlags[targetUpIds[i]] = 1;
+      for (let i = 0; i < targetDownIds.length; i++) targetDownFlags[targetDownIds[i]] = 1;
+
+      const bCand: number[] = [];
+      for (let i = 0; i < allWorkingTriggerIds.length; i++) {
+        const tId = allWorkingTriggerIds[i];
+        const val = bestPointsArr[tId];
+        if (val === 5 || val === -5 || (val > -15 && val < 15 && val !== 0)) {
+          bCand.push(tId);
+        }
+      }
+      cachedBoundaryCandidateIds = new Int32Array(bCand);
     };
 
     // Plateau escape & elite (best-ever) state with restart
@@ -3152,31 +4407,34 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     const LIVE_RESTART_AFTER = 4000;
     let liveStallCount = 0;
     let eliteEval = bestFastEval;
-    let elitePoints = new Map(bestPoints);
+    const elitePointsArr = new Int16Array(bestPointsArr);
     const eliteScores = new Int16Array(matchScores);
     const snapshotElite = () => {
       eliteEval = bestFastEval;
-      elitePoints = new Map(bestPoints);
+      elitePointsArr.set(bestPointsArr);
       eliteScores.set(matchScores);
     };
     const restoreElite = () => {
       matchScores.set(eliteScores);
       targetBuckets.fill(0);
       trapBuckets.fill(0);
+      maxActiveBucket = 0;
+      minActiveBucket = BUCKET_COUNT - 1;
       for (let i = 0; i < numMatches; i++) {
         const b = matchScores[i] + SCORE_OFFSET;
+        if (b > maxActiveBucket) maxActiveBucket = b;
+        if (b < minActiveBucket) minActiveBucket = b;
         if (isTarget[i] === 1) targetBuckets[b]++;
         else trapBuckets[b]++;
       }
-      bestPoints = new Map(elitePoints);
+      if (minActiveBucket > maxActiveBucket) minActiveBucket = 0;
+      bestPointsArr.set(elitePointsArr);
+      runningRegSum = 0;
+      for (let tId = 0; tId < numTriggers; tId++) {
+        runningRegSum += getNormReg(bestPointsArr[tId]);
+      }
       bestFastEval = eliteEval;
       targetingDirty = true;
-    };
-    const finalizeLive = () => {
-      if (eliteEval.cleanTopMatches > bestFastEval.cleanTopMatches ||
-        (eliteEval.cleanTopMatches === bestFastEval.cleanTopMatches && eliteEval.quality > bestFastEval.quality)) {
-        restoreElite();
-      }
     };
 
     // Diagnostics: coverage + simple pairwise infeasibility check within reachable bands
@@ -3184,58 +4442,163 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     const targetIdxs: number[] = [];
     const trapIdxs: number[] = [];
     for (let i = 0; i < numMatches; i++) (isTarget[i] === 1 ? targetIdxs : trapIdxs).push(i);
-    const bandMaxMap = new Map<string, number>();
-    const bandMinMap = new Map<string, number>();
-    triggerToIndices.forEach((_v, t) => {
-      const band = getLiveProfile(t).allowedBand;
-      if (band.length > 0) {
-        bandMaxMap.set(t, Math.max(...band));
-        bandMinMap.set(t, Math.min(...band));
-      }
-    });
-    const infeasible: { teams: string; separable: number; triggers: string[] }[] = [];
-    if (totalCorrectMatches > 0 && trapIdxs.length * targetIdxs.length <= 400000) {
-      for (const tr of trapIdxs) {
-        const trSet = profiles[tr].triggersHit;
-        let separable = 0;
-        for (const tg of targetIdxs) {
-          const tgSet = profiles[tg].triggersHit;
-          let maxDiff = profiles[tg].baseScore - profiles[tr].baseScore;
-          tgSet.forEach(t => { if (!trSet.has(t)) maxDiff += bandMaxMap.get(t) ?? 0; });
-          trSet.forEach(t => { if (!tgSet.has(t)) maxDiff -= bandMinMap.get(t) ?? 0; });
-          if (maxDiff > 0) separable++; // ties rank trap-first, so strict separation required
-        }
-        if (separable < goalN) {
-          const distinguishing = Array.from(trSet)
-            .filter(t => triggerToIndices.has(t))
-            .map(t => ({ t, f: targetIdxs.length > 0 ? (triggerTargetCounts.get(t) || 0) / targetIdxs.length : 0 }))
-            .sort((a, b) => a.f - b.f)
-            .slice(0, 4)
-            .map(x => `${x.t} (${Math.round(x.f * 100)}% of targets)`);
-          infeasible.push({ teams: profiles[tr].teams, separable, triggers: distinguishing });
-        }
-      }
-      infeasible.sort((a, b) => a.separable - b.separable);
-    }
     const droppedNoOdds = Math.max(0, completedMatches.length - profiles.length);
+
     setDeepDiagnostics({
       seen: profiles.length,
       expected: completedMatches.length,
       targetsSeen: totalCorrectMatches,
       droppedNoOdds,
       goalN,
-      infeasible
+      infeasible: []
     });
+
+    if (totalCorrectMatches > 0 && trapIdxs.length * targetIdxs.length <= 60000) {
+      setTimeout(() => {
+        try {
+          const deferredInfeasible: { teams: string; separable: number; triggers: string[] }[] = [];
+          for (const tr of trapIdxs) {
+            const trSet = profiles[tr].triggersHit;
+            let separable = 0;
+            for (const tg of targetIdxs) {
+              const tgSet = profiles[tg].triggersHit;
+              let maxDiff = profiles[tg].baseScore - profiles[tr].baseScore;
+              tgSet.forEach(t => {
+                const tId = triggerIdByName.get(t);
+                if (!trSet.has(t) && tId !== undefined) maxDiff += bandMaxArr[tId];
+              });
+              trSet.forEach(t => {
+                const tId = triggerIdByName.get(t);
+                if (!tgSet.has(t) && tId !== undefined) maxDiff -= bandMinArr[tId];
+              });
+              if (maxDiff > 0) separable++;
+            }
+            if (separable < goalN) {
+              const distinguishing = Array.from(trSet)
+                .filter(t => triggerIdByName.has(t))
+                .map(t => {
+                  const tId = triggerIdByName.get(t)!;
+                  return { t, f: targetIdxs.length > 0 ? triggerTargetCountsArr[tId] / targetIdxs.length : 0 };
+                })
+                .sort((a, b) => a.f - b.f)
+                .slice(0, 4)
+                .map(x => `${x.t} (${Math.round(x.f * 100)}% of targets)`);
+              deferredInfeasible.push({ teams: profiles[tr].teams, separable, triggers: distinguishing });
+            }
+          }
+          deferredInfeasible.sort((a, b) => a.separable - b.separable);
+          setDeepDiagnostics(prev => prev ? { ...prev, infeasible: deferredInfeasible } : null);
+        } catch (e) {}
+      }, 100);
+    }
 
     let currentGroupIndex = 0;
     let compsInCurrentGroup = 0;
-    const COMPS_PER_GROUP = 3000; // 3,000 evaluations per group to thoroughly exhaust permutations
+    const COMPS_PER_GROUP = 3000;
+
+    // Multi-Phase Sequential Trap Dispersion Optimizer State
+    let currentPhase: 1 | 2 | 3 | 4 | 5 = 1;
+    let phaseComps = 0;
+    const PHASE_1_STALEMATE_BUDGET = 250000;
+    const SUBSEQUENT_PHASE_BUDGET = 300000;
+    const GAP_PHASE_PATIENCE = 100000;
+    let staleCleanComps = 0;
+    let compsSinceCleanClimb = 0;
+    let compsSinceGapImprovement = 0;
+    let bestGapInPhase = 0;
+    let bestTrapRankInPhase = 0;
+    let inIlsKick = false;
+    let ilsKickComps = 0;
+    let lastSweepComp = 0;
+    let lastTargetingComp = 0;
+    let cleanStreakClimbedSinceLastMapUpdate = false;
+    const establishedRanks: number[] = [];
+    const establishedScores: number[] = [];
+    let bestTrapRanks: number[] = bestFastEval.trapRanks ? [...bestFastEval.trapRanks] : [bestFastEval.cleanTopMatches + 1];
+    let bestTrapGaps: number[] = bestFastEval.trapGaps ? [...bestFastEval.trapGaps] : [bestFastEval.cleanTopMatches];
+    let compsInPhaseMilestone = 0;
+    let lastDetailUpdate = 0;
+
+    // Strict All-Time Best Peak Ratchet: First trap rank must NEVER regress from peak
+    const peakPointsArr = new Int16Array(bestPointsArr);
+    let allTimeBestPeak = {
+      cleanTopMatches: bestFastEval.cleanTopMatches,
+      firstTrapRank: bestFastEval.firstTrapRank ?? (bestFastEval.cleanTopMatches + 1),
+      quality: bestFastEval.quality,
+      scores: new Int16Array(matchScores),
+      trapRanks: bestFastEval.trapRanks ? [...bestFastEval.trapRanks] : [bestFastEval.cleanTopMatches + 1],
+      trapScores: bestFastEval.trapScores ? [...bestFastEval.trapScores] : [],
+      trapGaps: bestFastEval.trapGaps ? [...bestFastEval.trapGaps] : [bestFastEval.cleanTopMatches],
+      fastEval: bestFastEval,
+      establishedRanks: [...establishedRanks]
+    };
+    allTimeBestPeakRef.current = {
+      category: activeCategory,
+      cleanTopMatches: allTimeBestPeak.cleanTopMatches,
+      firstTrapRank: allTimeBestPeak.firstTrapRank,
+      quality: allTimeBestPeak.quality,
+      points: buildPointsMapFromArr(peakPointsArr),
+      trapRanks: [...allTimeBestPeak.trapRanks],
+      trapGaps: [...allTimeBestPeak.trapGaps]
+    };
+
+    const snapshotAllTimeBest = (_evalResult: FastEvalSnapshot) => {
+      recomputeScoresAndBucketsFrom(bestPointsArr);
+      const verifiedEval = cloneEvalSnapshot(fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum));
+      bestFastEval = verifiedEval;
+      const vR1 = verifiedEval.firstTrapRank ?? (verifiedEval.cleanTopMatches + 1);
+      if (verifiedEval.cleanTopMatches < allTimeBestPeak.cleanTopMatches ||
+          (verifiedEval.cleanTopMatches === allTimeBestPeak.cleanTopMatches && vR1 < allTimeBestPeak.firstTrapRank)) {
+        return;
+      }
+      peakPointsArr.set(bestPointsArr);
+      allTimeBestPeak.cleanTopMatches = verifiedEval.cleanTopMatches;
+      allTimeBestPeak.firstTrapRank = vR1;
+      allTimeBestPeak.quality = verifiedEval.quality;
+      allTimeBestPeak.scores.set(matchScores);
+      allTimeBestPeak.trapRanks = verifiedEval.trapRanks ? [...verifiedEval.trapRanks] : [verifiedEval.cleanTopMatches + 1];
+      allTimeBestPeak.trapScores = verifiedEval.trapScores ? [...verifiedEval.trapScores] : [];
+      allTimeBestPeak.trapGaps = verifiedEval.trapGaps ? [...verifiedEval.trapGaps] : [verifiedEval.cleanTopMatches];
+      allTimeBestPeak.fastEval = verifiedEval;
+      allTimeBestPeak.establishedRanks = [...establishedRanks];
+    };
+
+    const syncPeakRefPoints = () => {
+      const ptsMap = buildPointsMapFromArr(peakPointsArr);
+      allTimeBestPeakRef.current = {
+        category: activeCategory,
+        cleanTopMatches: allTimeBestPeak.cleanTopMatches,
+        firstTrapRank: allTimeBestPeak.firstTrapRank,
+        quality: allTimeBestPeak.quality,
+        points: ptsMap,
+        trapRanks: [...allTimeBestPeak.trapRanks],
+        trapGaps: [...allTimeBestPeak.trapGaps]
+      };
+      return ptsMap;
+    };
+
+    const restoreAllTimeBest = () => {
+      bestPointsArr.set(peakPointsArr);
+      recomputeScoresAndBucketsFrom(bestPointsArr);
+      bestFastEval = cloneEvalSnapshot(fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum));
+      allTimeBestPeak.scores.set(matchScores);
+      allTimeBestPeak.fastEval = bestFastEval;
+      bestCleanStreak = allTimeBestPeak.cleanTopMatches;
+      if (allTimeBestPeak.trapRanks) bestTrapRanks = [...allTimeBestPeak.trapRanks];
+      if (allTimeBestPeak.trapGaps) bestTrapGaps = [...allTimeBestPeak.trapGaps];
+      if (allTimeBestPeak.establishedRanks && allTimeBestPeak.establishedRanks.length > 0) {
+        for (let i = 0; i < allTimeBestPeak.establishedRanks.length; i++) {
+          establishedRanks[i] = allTimeBestPeak.establishedRanks[i];
+        }
+      }
+      targetingDirty = true;
+    };
 
     const optStartTime = Date.now();
     let lastUiUpdate = Date.now();
     const updateUiState = (force: boolean = false) => {
       const now = Date.now();
-      if (!force && now - lastUiUpdate < 30) return;
+      if (!force && now - lastUiUpdate < 250) return;
       lastUiUpdate = now;
 
       const elapsed = Math.max(1, now - optStartTime);
@@ -3252,404 +4615,1084 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       setDeepTargetClean(horizons.floor);
       setDeepTargetCeiling(horizons.ceiling);
       setDeepFirstTrapRank(bestFastEval.firstTrapRank);
+      setDeepTiedAtBoundary(bestFastEval.tiedAtBoundary ?? 0);
       setDeepTargetsInTop5000(bestFastEval.targetsInTop5000);
       if (bestFastEval.horizonMetrics) setDeepHorizonMetrics(bestFastEval.horizonMetrics);
       setDeepConvergenceMode(bestFastEval.ceilingMet ? 'perfect_100' : bestFastEval.floorMet ? 'sweet_spot' : 'none');
-      setDeepPointsMap(new Map(bestPoints));
-      setDeepCategoryPointsMap(prev => ({ ...prev, [activeCategory]: new Map(bestPoints) }));
-    };
 
-    // Run in high-throughput sliced asynchronous chunks to reach millions/min
-    // Run in high-throughput sliced asynchronous chunks with adaptive time-budgeting (~25ms/frame)
-    const runChunk = () => {
-      if (stopDeepRef.current) {
-        finalizeLive();
-        setIsDeepOptimizing(false);
-        setDeepStatus('paused');
-        updateUiState(true);
-        return;
+      // Keep allTimeBestPeakRef synchronized on 250ms UI ticks so Pause/Apply always has the latest peak Map
+      const ptsCopy = syncPeakRefPoints();
+
+      let shouldUpdateMaps = force;
+      if (!shouldUpdateMaps && cleanStreakClimbedSinceLastMapUpdate && (now - lastDetailUpdate > 500)) {
+        shouldUpdateMaps = true;
+      }
+      if (shouldUpdateMaps) {
+        lastDetailUpdate = now;
+        cleanStreakClimbedSinceLastMapUpdate = false;
+        const effectiveDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+        deepPointsCategoryRef.current = activeCategory;
+        setDeepPointsMap(ptsCopy);
+        deepCategoryPointsMapRef.current[`${effectiveDay}_${activeCategory}`] = ptsCopy;
+        deepCategoryPointsMapRef.current[`${datasetDay}_${activeCategory}`] = ptsCopy;
+        setDeepCategoryPointsMap(prev => ({
+          ...prev,
+          [`${effectiveDay}_${activeCategory}`]: ptsCopy,
+          [`${datasetDay}_${activeCategory}`]: ptsCopy
+        }));
       }
 
-      const PATIENCE_BUDGET = 50000;
-      const MAX_FRAME_MS = 25; // 25ms slice per frame for non-blocking 40fps responsiveness
-      const frameStart = performance.now();
-      const BATCH_INNER = 40;
+      if (bestFastEval.trapRanks && bestFastEval.trapRanks.length > 0) {
+        setDeepTrapRanks(bestFastEval.trapRanks);
+        setDeepTrapScores(bestFastEval.trapScores || []);
+        setDeepTrapGaps(bestFastEval.trapGaps || []);
+        if (bestFastEval.trapDispersionHealth) {
+          setDeepTrapDispersionHealth(bestFastEval.trapDispersionHealth);
+        }
+      }
 
-      frameLoop: while (performance.now() - frameStart < MAX_FRAME_MS) {
-        for (let sub = 0; sub < BATCH_INNER; sub++) {
-          // Group Rotation: once a group has been exhaustively tested, rotate to the next!
-          compsInCurrentGroup++;
-          if (compsInCurrentGroup >= COMPS_PER_GROUP) {
-            compsInCurrentGroup = 0;
-            currentGroupIndex = (currentGroupIndex + 1) % triggerGroups.length;
-            // When all groups in a cycle are exhausted, shuffle triggers to create fresh orthogonal groups
-            if (currentGroupIndex === 0) {
-              allWorkingTriggers.sort(() => Math.random() - 0.5);
-              rebuildGroups();
-            }
+      setDeepOptimizerPhase({
+        currentPhase,
+        phaseComps,
+        phaseBudget: currentPhase === 1 ? PHASE_1_STALEMATE_BUDGET : SUBSEQUENT_PHASE_BUDGET,
+        establishedRanks: [...establishedRanks],
+        establishedScores: [...establishedScores]
+      });
+    };
+
+    const finalizeLive = () => {
+      restoreAllTimeBest();
+      try {
+        undoLen = 0;
+        const activeAuditIds = allWorkingTriggerIds.filter(tId => triggerIndicesArr[tId].length > 0);
+        runContributionAudit(activeAuditIds, performance.now() - MAX_FRAME_MS + 12);
+      } catch (e) {}
+      updateUiState(true);
+
+      try {
+        const peakPts = syncPeakRefPoints();
+
+        adoptCalibratedRulesPermanently(
+          peakPts,
+          allTimeBestPeak.cleanTopMatches,
+          allTimeBestPeak.firstTrapRank,
+          allTimeBestPeak.quality,
+          allTimeBestPeak.trapRanks,
+          allTimeBestPeak.trapGaps
+        );
+      } catch (e) {
+        console.warn('[finalizeLive] Auto-adopt error:', e);
+      }
+    };
+
+    const MAX_FRAME_MS = 8; // 8ms slice per frame guarantees >8ms browser headroom for 60fps scrolling
+
+    // Deterministic Incremental Breakthrough Sweep (nearest-first ±5 / ±10 across all boundary winners & triggers)
+    const sweepFlagsBuf = new Uint8Array(numTriggers);
+    const wFlagsBuf = new Uint8Array(numTriggers);
+    const runBreakthroughSweep = (topTrapMatchIdx: number, frameStart: number) => {
+      if (topTrapMatchIdx < 0 || performance.now() - frameStart >= MAX_FRAME_MS) return;
+      const trapScore = matchScores[topTrapMatchIdx];
+      const strandedWinners: { idx: number; score: number }[] = [];
+      for (let i = 0; i < numMatches; i++) {
+        if (isTarget[i] === 1 && matchScores[i] <= trapScore) {
+          strandedWinners.push({ idx: i, score: matchScores[i] });
+        }
+      }
+      if (strandedWinners.length === 0) return;
+      strandedWinners.sort((a, b) => b.score - a.score);
+      const topWinners = strandedWinners.slice(0, Math.min(12, strandedWinners.length));
+
+      focusTrapFlagsBuf.fill(0);
+      sweepFlagsBuf.fill(0);
+      const trapTrigs = matchTriggerIds[topTrapMatchIdx];
+      for (let i = 0; i < trapTrigs.length; i++) focusTrapFlagsBuf[trapTrigs[i]] = 1;
+
+      const sweepTriggerIds: number[] = [];
+      for (let wIdx = 0; wIdx < topWinners.length; wIdx++) {
+        const wTrigs = matchTriggerIds[topWinners[wIdx].idx];
+        wFlagsBuf.fill(0);
+        for (let i = 0; i < wTrigs.length; i++) {
+          const tId = wTrigs[i];
+          wFlagsBuf[tId] = 1;
+          if (focusTrapFlagsBuf[tId] === 0 && sweepFlagsBuf[tId] === 0) {
+            sweepFlagsBuf[tId] = 1;
+            sweepTriggerIds.push(tId);
           }
+        }
+        for (let i = 0; i < trapTrigs.length; i++) {
+          const tId = trapTrigs[i];
+          if (wFlagsBuf[tId] === 0 && sweepFlagsBuf[tId] === 0) {
+            sweepFlagsBuf[tId] = 1;
+            sweepTriggerIds.push(tId);
+          }
+        }
+      }
 
-          const activeGroup = triggerGroups[currentGroupIndex] || allWorkingTriggers;
+      // Rotate/shuffle sweepTriggerIds so all fired triggers across stranded winners get equal evaluation priority
+      for (let i = sweepTriggerIds.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        const tmp = sweepTriggerIds[i];
+        sweepTriggerIds[i] = sweepTriggerIds[j];
+        sweepTriggerIds[j] = tmp;
+      }
 
-          // Mutation Cluster Selection:
-          // Single-trigger mutations for 75% of iterations allow surgical separation of top traps
-          // and elevation of targets without multi-trigger collateral damage.
-          let clusterSize: number = Math.random() < 0.75 ? 1 : 2;
+      const sweepLimit = sweepTriggerIds.length;
+      for (let sIdx = 0; sIdx < sweepLimit; sIdx++) {
+        if (performance.now() - frameStart >= MAX_FRAME_MS) break;
+        const tId = sweepTriggerIds[sIdx];
+        const indices = triggerIndicesArr[tId];
+        if (!indices || indices.length === 0) continue;
+        const currentVal = bestPointsArr[tId];
+        const slot = tId * PTS_SPAN + Math.max(0, Math.min(80, currentVal + PTS_OFFSET));
+        const isLayer2Sweep = totalComps >= LAYER_1_INCREMENTAL_COMPS;
+        const bandValues = isLayer2Sweep
+          ? (escalateAnyTable[slot].length > 0 ? escalateAnyTable[slot] : stretchAnyTable[slot])
+          : ((staleCleanComps >= 15000 || inIlsKick) ? stretchAnyTable[slot] : stepAnyTable[slot]);
 
-          // Select up to clusterSize distinct triggers with balanced bonuses & penalties
-          const selectedTriggersSet = new Set<string>();
-          const batchMutations: {
-            trigger: string;
-            oldVal: number;
-            newVal: number;
-            delta: number;
-            indices: Int32Array | undefined;
-          }[] = [];
+        let bestStepVal = currentVal;
+        let bestStepClimbed = false;
+        let bestStepQuality = bestFastEval.quality;
+        let bestStepSnap: FastEvalSnapshot | null = null;
+        let bestStepRegSum = runningRegSum;
 
-          // ~50% of iterations are trap-targeted separation moves
-          // (lower triggers unique to the top trap / raise triggers shared by boundary targets but absent in the trap)
-          let targetedMove = false;
-          let pairwiseCompensating = false;
-          let pairUpTrigger: string | null = null;
-          let pairDownTrigger: string | null = null;
+        for (let bIdx = 0; bIdx < bandValues.length; bIdx++) {
+          if (performance.now() - frameStart >= MAX_FRAME_MS) break;
+          const testVal = bandValues[bIdx];
+          const delta = testVal - currentVal;
+          bestPointsArr[tId] = testVal;
+          const testRegSum = runningRegSum + (getNormReg(testVal) - getNormReg(currentVal));
+          const sweepMark = undoLen;
+          applyDelta(indices, delta);
+          totalComps++;
+          phaseComps++;
 
-          if (Math.random() < 0.50) {
-            if (targetingDirty || totalComps % 150 === 0) recomputeTargeting();
-            if (targetDownList.length > 0 || targetUpList.length > 0) {
-              targetedMove = true;
-              // Compensating pairwise co-mutation: 40% chance when both up and down lists exist
-              if (targetUpList.length > 0 && targetDownList.length > 0 && Math.random() < 0.40) {
-                pairwiseCompensating = true;
-                clusterSize = 2;
-                pairUpTrigger = targetUpList[Math.floor(Math.random() * targetUpList.length)];
-                pairDownTrigger = targetDownList[Math.floor(Math.random() * targetDownList.length)];
-              } else {
-                clusterSize = Math.random() < 0.75 ? 1 : 2;
+          const evalRes = fastEvaluateBuckets(targetBuckets, trapBuckets, testRegSum);
+          let violated = false;
+          const r1 = evalRes.firstTrapRank;
+          if (r1 < allTimeBestPeak.firstTrapRank || evalRes.cleanTopMatches < allTimeBestPeak.cleanTopMatches) {
+            violated = true;
+          } else if (currentPhase >= 2 && establishedRanks.length > 0) {
+            for (let k = 0; k < establishedRanks.length; k++) {
+              const curR = k < trapRanksCount ? trapRanksBuf[k] : (evalRes.cleanTopMatches + 1);
+              if (curR < establishedRanks[k]) {
+                violated = true;
+                break;
               }
             }
           }
 
-          for (let k = 0; k < clusterSize; k++) {
-            let trigger: string;
-            let targetedDir: 'up' | 'down' | null = null;
-            let forceNegative = false;
-            let forcePositive = false;
+          const climbed = !violated && evalRes.cleanTopMatches > bestCleanStreak;
+          const maintainedAndBetter = !violated && evalRes.cleanTopMatches >= bestCleanStreak && evalRes.quality > bestStepQuality;
 
-            if (pairwiseCompensating) {
-              if (k === 0) {
-                trigger = pairUpTrigger!;
+          if ((climbed && (!bestStepClimbed || evalRes.quality > bestStepQuality)) || (!bestStepClimbed && maintainedAndBetter)) {
+            bestStepVal = testVal;
+            bestStepClimbed = climbed;
+            bestStepQuality = evalRes.quality;
+            bestStepSnap = cloneEvalSnapshot(evalRes);
+            bestStepRegSum = testRegSum;
+          }
+          bestPointsArr[tId] = currentVal;
+          rollbackTo(sweepMark);
+        }
+
+        if (bestStepSnap && bestStepVal !== currentVal) {
+          const delta = bestStepVal - currentVal;
+          bestPointsArr[tId] = bestStepVal;
+          applyDelta(indices, delta);
+          undoLen = 0;
+          runningRegSum = bestStepRegSum;
+          targetingDirty = true;
+          frontierDirty = true;
+          bestFastEval = bestStepSnap;
+          bestTrapRanks = [...bestStepSnap.trapRanks];
+          bestTrapGaps = [...bestStepSnap.trapGaps];
+          if (bestStepClimbed) {
+            bestCleanStreak = bestStepSnap.cleanTopMatches;
+            compsSinceCleanClimb = 0;
+            staleCleanComps = 0;
+            cleanStreakClimbedSinceLastMapUpdate = true;
+            if (currentPhase > 1) {
+              currentPhase = 1;
+              phaseComps = 0;
+              establishedRanks.length = 0;
+              establishedScores.length = 0;
+              showToast(`Breakthrough! Clean matches increased to ${bestStepSnap.cleanTopMatches}! Returning to Clean Maximization.`);
+            }
+          }
+          const r1 = bestStepSnap.firstTrapRank;
+          if (bestStepSnap.cleanTopMatches > allTimeBestPeak.cleanTopMatches ||
+              (bestStepSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && r1 > allTimeBestPeak.firstTrapRank) ||
+              (bestStepSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && r1 === allTimeBestPeak.firstTrapRank && bestStepSnap.quality > allTimeBestPeak.quality)) {
+            snapshotAllTimeBest(bestStepSnap);
+          }
+        }
+      }
+    };
+
+    // Per-Trigger Marginal Contribution Verification ("Step-Back Proof" Pass):
+    // Steps elevated weights (> +5 or < -5) 5 points back toward baseline; if separation does not drop,
+    // keeps the simpler weight so triggers only earn higher magnitude when they prove marginal value.
+    const runContributionAudit = (triggerList: number[], frameStart: number) => {
+      if (inIlsKick || triggerList.length === 0) return;
+      for (let i = 0; i < triggerList.length; i++) {
+        if (performance.now() - frameStart >= MAX_FRAME_MS) break;
+        const tId = triggerList[i];
+        const indices = triggerIndicesArr[tId];
+        if (!indices || indices.length === 0) continue;
+        const curVal = bestPointsArr[tId];
+        if (curVal >= -5 && curVal <= 5) continue;
+
+        const stepBackVal = curVal > 5 ? curVal - 5 : curVal + 5;
+        const band = profilesByTrigId[tId]?.allowedBand;
+        if (!band || !band.includes(stepBackVal)) continue;
+
+        const delta = stepBackVal - curVal;
+        bestPointsArr[tId] = stepBackVal;
+        const testRegSum = runningRegSum + (getNormReg(stepBackVal) - getNormReg(curVal));
+        const auditMark = undoLen;
+        applyDelta(indices, delta);
+        totalComps++;
+
+        const evalRes = fastEvaluateBuckets(targetBuckets, trapBuckets, testRegSum);
+        let violated = false;
+        const r1 = evalRes.firstTrapRank;
+        if (r1 < allTimeBestPeak.firstTrapRank || evalRes.cleanTopMatches < allTimeBestPeak.cleanTopMatches) {
+          violated = true;
+        } else if (currentPhase >= 2 && establishedRanks.length > 0) {
+          for (let k = 0; k < establishedRanks.length; k++) {
+            const curR = k < trapRanksCount ? trapRanksBuf[k] : (evalRes.cleanTopMatches + 1);
+            if (curR < establishedRanks[k]) {
+              violated = true;
+              break;
+            }
+          }
+        }
+
+        const separationPreserved = !violated &&
+          evalRes.cleanTopMatches >= bestFastEval.cleanTopMatches &&
+          evalRes.firstTrapRank >= bestFastEval.firstTrapRank &&
+          evalRes.trapInTopN <= bestFastEval.trapInTopN &&
+          evalRes.targetOverTrapPairs >= bestFastEval.targetOverTrapPairs &&
+          evalRes.positiveTraps <= bestFastEval.positiveTraps &&
+          evalRes.positiveTargets >= bestFastEval.positiveTargets;
+
+        if (separationPreserved) {
+          undoLen = 0;
+          const snap = cloneEvalSnapshot(evalRes);
+          runningRegSum = testRegSum;
+          bestFastEval = snap;
+          bestTrapRanks = [...snap.trapRanks];
+          bestTrapGaps = [...snap.trapGaps];
+          targetingDirty = true;
+          frontierDirty = true;
+          if (snap.cleanTopMatches >= allTimeBestPeak.cleanTopMatches && r1 >= allTimeBestPeak.firstTrapRank) {
+            snapshotAllTimeBest(snap);
+            snapshotElite();
+          }
+        } else {
+          bestPointsArr[tId] = curVal;
+          rollbackTo(auditMark);
+        }
+      }
+    };
+
+    // Cached frontier state across inner iterations (integer-indexed)
+    let cachedTopTrapIndices: number[] = [];
+    let cachedFrameWinOnlyIds = new Int32Array(0);
+    let cachedFrameTrapOnlyIds = new Int32Array(0);
+    let cachedActiveTrapMatchIdx = -1;
+    let cachedFrontierPhase = -1;
+    let frontierDirty = true;
+
+    const refreshFrontierIfNeeded = () => {
+      if (!frontierDirty && !targetingDirty && cachedFrontierPhase === currentPhase) return;
+      frontierDirty = false;
+      cachedFrontierPhase = currentPhase;
+      cachedTopTrapIndices = [];
+      for (let i = 0; i < numMatches; i++) {
+        if (isTarget[i] === 0) {
+          if (cachedTopTrapIndices.length < 5) {
+            cachedTopTrapIndices.push(i);
+            cachedTopTrapIndices.sort((a, b) => matchScores[b] - matchScores[a]);
+          } else if (matchScores[i] > matchScores[cachedTopTrapIndices[4]]) {
+            cachedTopTrapIndices[4] = i;
+            cachedTopTrapIndices.sort((a, b) => matchScores[b] - matchScores[a]);
+          }
+        }
+      }
+      const frameMaxTrapIdx = cachedTopTrapIndices.length > 0 ? cachedTopTrapIndices[0] : -1;
+      const targetTrapIdxInPhase = currentPhase === 1 ? 0 : Math.min(currentPhase - 1, cachedTopTrapIndices.length - 1);
+      cachedActiveTrapMatchIdx = cachedTopTrapIndices.length > 0 ? cachedTopTrapIndices[targetTrapIdxInPhase] : frameMaxTrapIdx;
+
+      const winOnlyList: number[] = [];
+      const trapOnlyList: number[] = [];
+      if (cachedActiveTrapMatchIdx >= 0) {
+        const activeTrapScore = matchScores[cachedActiveTrapMatchIdx];
+        const frontierWinners: number[] = [];
+        for (let i = 0; i < numMatches; i++) {
+          if (isTarget[i] === 1 && matchScores[i] <= activeTrapScore) {
+            frontierWinners.push(i);
+          }
+        }
+        frontierWinners.sort((a, b) => matchScores[b] - matchScores[a]);
+        const selectedWinners = frontierWinners.slice(0, Math.min(10, frontierWinners.length));
+        const selectedTraps = cachedTopTrapIndices.slice(0, Math.min(3, cachedTopTrapIndices.length));
+
+        if (selectedWinners.length > 0) {
+          wFlagsBuf.fill(0);
+          focusTrapFlagsBuf.fill(0);
+          for (let w = 0; w < selectedWinners.length; w++) {
+            const winTrigs = matchTriggerIds[selectedWinners[w]];
+            for (let i = 0; i < winTrigs.length; i++) wFlagsBuf[winTrigs[i]]++;
+          }
+          for (let tr = 0; tr < selectedTraps.length; tr++) {
+            const trapTrigs = matchTriggerIds[selectedTraps[tr]];
+            for (let i = 0; i < trapTrigs.length; i++) focusTrapFlagsBuf[trapTrigs[i]]++;
+          }
+
+          for (let i = 0; i < allWorkingTriggerIds.length; i++) {
+            const tId = allWorkingTriggerIds[i];
+            const wCount = wFlagsBuf[tId];
+            const trCount = focusTrapFlagsBuf[tId];
+            if (wCount > 0 && wCount > trCount && bestPointsArr[tId] < bandMaxArr[tId]) {
+              winOnlyList.push(tId);
+            }
+            if (trCount > 0 && trCount >= wCount && bestPointsArr[tId] > bandMinArr[tId]) {
+              trapOnlyList.push(tId);
+            }
+          }
+        }
+      }
+      cachedFrameWinOnlyIds = new Int32Array(winOnlyList);
+      cachedFrameTrapOnlyIds = new Int32Array(trapOnlyList);
+    };
+
+    // Preallocated mutation buffers for zero-allocation inner loop
+    const mutTrigIds = new Int32Array(4);
+    const mutOldVals = new Int16Array(4);
+    const mutNewVals = new Int16Array(4);
+    const mutDeltas = new Int16Array(4);
+    const rebTrigIds = new Int32Array(4);
+    const rebOldVals = new Int16Array(4);
+    const rebNewVals = new Int16Array(4);
+    const rebDeltas = new Int16Array(4);
+    const defaultPoolIds = new Int32Array(
+      eligibleTriggerIds.length > 0
+        ? eligibleTriggerIds
+        : (isHistoryMode ? allTriggerIds : activeTriggerIds)
+    );
+    const broadPoolIds = new Int32Array(broadDriverTriggerIds);
+    const allWorkingPoolIds = new Int32Array(allWorkingTriggerIds);
+
+    // Systematic Round-Robin Epoch State (every active trigger participates equally)
+    const epochTriggerIds: number[] = allWorkingTriggerIds.filter(tId => triggerIndicesArr[tId].length > 0);
+    if (epochTriggerIds.length === 0) epochTriggerIds.push(...allWorkingTriggerIds);
+    const shuffleEpochTriggers = () => {
+      for (let i = epochTriggerIds.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        const tmp = epochTriggerIds[i];
+        epochTriggerIds[i] = epochTriggerIds[j];
+        epochTriggerIds[j] = tmp;
+      }
+    };
+    shuffleEpochTriggers();
+    let epochCursor = 0;
+    let auditPending = false;
+
+    // Run in high-throughput sliced asynchronous chunks with adaptive time-budgeting (~8ms/frame)
+    const runChunk = () => {
+      try {
+        if (stopDeepRef.current) {
+          finalizeLive();
+          setIsDeepOptimizing(false);
+          setDeepStatus('paused');
+          return;
+        }
+
+        const frameStart = performance.now();
+        const BATCH_INNER = 512;
+
+        frameLoop: while (performance.now() - frameStart < MAX_FRAME_MS) {
+          refreshFrontierIfNeeded();
+          const frameWinOnly = cachedFrameWinOnlyIds;
+          const frameTrapOnly = cachedFrameTrapOnlyIds;
+          const activeTrapMatchIdx = cachedActiveTrapMatchIdx;
+
+          // Marginal Step-Back Proof Pass at the end of each full trigger epoch
+          if (auditPending) {
+            auditPending = false;
+            undoLen = 0;
+            runContributionAudit(epochTriggerIds, frameStart);
+            refreshFrontierIfNeeded();
+          }
+
+          // Deterministic Breakthrough Sweep (runs periodically or when stalled to unlock stranded winners)
+          if (activeTrapMatchIdx >= 0 && (totalComps - lastSweepComp >= 2000 || (staleCleanComps > 0 && staleCleanComps % 1500 === 0))) {
+            undoLen = 0;
+            runBreakthroughSweep(activeTrapMatchIdx, frameStart);
+            lastSweepComp = totalComps;
+            refreshFrontierIfNeeded();
+          }
+
+          // Iterated Local Search (ILS) Kick when stalled in Phase 1 (strictly incremental ±5 perturbations across diverse triggers)
+          if (currentPhase === 1 && !inIlsKick && staleCleanComps >= 20000 && staleCleanComps % 20000 === 0) {
+            inIlsKick = true;
+            ilsKickComps = 0;
+            const uniqueCand: number[] = [];
+            sweepFlagsBuf.fill(0);
+            for (let i = 0; i < frameWinOnly.length; i++) {
+              const tId = frameWinOnly[i];
+              if (sweepFlagsBuf[tId] === 0) { sweepFlagsBuf[tId] = 1; uniqueCand.push(tId); }
+            }
+            for (let i = 0; i < frameTrapOnly.length; i++) {
+              const tId = frameTrapOnly[i];
+              if (sweepFlagsBuf[tId] === 0) { sweepFlagsBuf[tId] = 1; uniqueCand.push(tId); }
+            }
+            for (let i = 0; i < Math.min(6, epochTriggerIds.length); i++) {
+              const tId = epochTriggerIds[(epochCursor + i) % epochTriggerIds.length];
+              if (sweepFlagsBuf[tId] === 0) { sweepFlagsBuf[tId] = 1; uniqueCand.push(tId); }
+            }
+            if (uniqueCand.length >= 2) {
+              const numToPerturb = Math.min(uniqueCand.length, ((Math.random() * 3) | 0) + 2);
+              for (let p = 0; p < numToPerturb; p++) {
+                const tId = uniqueCand[(Math.random() * uniqueCand.length) | 0];
+                const curVal = bestPointsArr[tId];
+                const slot = tId * PTS_SPAN + Math.max(0, Math.min(80, curVal + PTS_OFFSET));
+                const validSteps = stepAnyTable[slot];
+                if (validSteps.length > 0) {
+                  const newVal = validSteps[(Math.random() * validSteps.length) | 0];
+                  const delta = newVal - curVal;
+                  const ind = triggerIndicesArr[tId];
+                  bestPointsArr[tId] = newVal;
+                  runningRegSum += getNormReg(newVal) - getNormReg(curVal);
+                  if (ind.length > 0) applyDelta(ind, delta);
+                }
+              }
+              undoLen = 0;
+              bestFastEval = cloneEvalSnapshot(fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum));
+              targetingDirty = true;
+              frontierDirty = true;
+            }
+          }
+
+          for (let sub = 0; sub < BATCH_INNER; sub++) {
+            // Check frame budget every 32 iterations for zero-overhead 60fps slicing
+            if ((sub & 31) === 0 && performance.now() - frameStart >= MAX_FRAME_MS) {
+              break frameLoop;
+            }
+
+            // Group Rotation
+            compsInCurrentGroup++;
+            if (compsInCurrentGroup >= COMPS_PER_GROUP) {
+              compsInCurrentGroup = 0;
+              currentGroupIndex = (currentGroupIndex + 1) % triggerGroupsIds.length;
+              if (currentGroupIndex === 0) {
+                for (let i = allWorkingTriggerIds.length - 1; i > 0; i--) {
+                  const j = (Math.random() * (i + 1)) | 0;
+                  const tmp = allWorkingTriggerIds[i];
+                  allWorkingTriggerIds[i] = allWorkingTriggerIds[j];
+                  allWorkingTriggerIds[j] = tmp;
+                }
+                rebuildGroups();
+              }
+            }
+
+            const chosenTrapIdx = currentPhase === 1 ? 0 : Math.min(currentPhase - 1, 4);
+            if ((targetingDirty && totalComps - lastTargetingComp >= 250) || totalComps - lastTargetingComp >= 1500) {
+              recomputeTargeting(chosenTrapIdx);
+              lastTargetingComp = totalComps;
+            }
+
+            const activeGroup = triggerGroupsIds[currentGroupIndex] || allWorkingPoolIds;
+            // Two-Track Incremental Schedule:
+            // - 68% Systematic Round-Robin Single-Trigger Sweep (every fired trigger proves its contribution at ±5)
+            // - 32% Targeted Frontier / Pairwise / Breakthrough Probes (1 or 2 triggers, strictly incremental)
+            const isRoundRobinTrack = Math.random() < 0.68 && epochTriggerIds.length > 0;
+            let clusterSize = isRoundRobinTrack ? 1 : (Math.random() < 0.55 ? 1 : 2);
+            let mutCount = 0;
+
+            let targetedMode: 'pairwise' | 'up' | 'down' | 'boundary' | 'breakthrough' | 'group' = 'group';
+            if (!isRoundRobinTrack) {
+              const r = Math.random();
+              if (r < 0.40 && ((frameWinOnly.length > 0 || frameTrapOnly.length > 0) || (targetUpIds.length > 0 && targetDownIds.length > 0))) {
+                targetedMode = 'pairwise';
+              } else if (r < 0.58 && targetUpIds.length > 0) {
+                targetedMode = 'up';
+              } else if (r < 0.72 && targetDownIds.length > 0) {
+                targetedMode = 'down';
+              } else if (r < 0.86 && cachedBoundaryCandidateIds.length > 0) {
+                targetedMode = 'boundary';
+              } else if (recentBreakthroughs.length > 0) {
+                targetedMode = 'breakthrough';
+              } else {
+                targetedMode = 'group';
+              }
+            }
+
+            for (let k = 0; k < clusterSize; k++) {
+              let tId = -1;
+              let targetedDir: 'up' | 'down' | 'any' | null = null;
+
+              if (isRoundRobinTrack) {
+                tId = epochTriggerIds[epochCursor++];
+                if (epochCursor >= epochTriggerIds.length) {
+                  epochCursor = 0;
+                  shuffleEpochTriggers();
+                  auditPending = true;
+                }
+                targetedDir = 'any';
+              } else if (targetedMode === 'pairwise') {
+                if (k % 2 === 0) {
+                  const useTargetUp = targetUpIds.length > 0 && (frameWinOnly.length === 0 || Math.random() < 0.45);
+                  const pool = useTargetUp ? targetUpIds : frameWinOnly;
+                  if (pool.length > 0) {
+                    tId = pool[(Math.random() * pool.length) | 0];
+                    targetedDir = 'up';
+                  }
+                } else {
+                  const useTargetDown = targetDownIds.length > 0 && (frameTrapOnly.length === 0 || Math.random() < 0.45);
+                  const pool = useTargetDown ? targetDownIds : frameTrapOnly;
+                  if (pool.length > 0) {
+                    tId = pool[(Math.random() * pool.length) | 0];
+                    targetedDir = 'down';
+                  }
+                }
+                if (tId < 0) continue;
+              } else if (targetedMode === 'up' && targetUpIds.length > 0) {
+                tId = targetUpIds[(Math.random() * targetUpIds.length) | 0];
                 targetedDir = 'up';
-              } else {
-                trigger = pairDownTrigger!;
+              } else if (targetedMode === 'down' && targetDownIds.length > 0) {
+                tId = targetDownIds[(Math.random() * targetDownIds.length) | 0];
                 targetedDir = 'down';
+              } else if (targetedMode === 'boundary' && cachedBoundaryCandidateIds.length > 0) {
+                tId = cachedBoundaryCandidateIds[(Math.random() * cachedBoundaryCandidateIds.length) | 0];
+                targetedDir = 'any';
+              } else if (targetedMode === 'breakthrough' && recentBreakthroughs.length > 0) {
+                const recentRecord = recentBreakthroughs[(Math.random() * recentBreakthroughs.length) | 0];
+                tId = recentRecord.triggerIds[(Math.random() * recentRecord.triggerIds.length) | 0];
+                targetedDir = 'any';
+              } else {
+                const useGroup = activeGroup.length > 0 && Math.random() < 0.55;
+                const useBroad = !useGroup && broadPoolIds.length > 0 && Math.random() < 0.50;
+                const pool = useGroup ? activeGroup : (useBroad ? broadPoolIds : defaultPoolIds);
+                if (pool.length === 0) continue;
+                tId = pool[(Math.random() * pool.length) | 0];
+                targetedDir = 'any';
               }
-            } else if (targetedMove) {
-              const useDown = targetDownList.length > 0 && (targetUpList.length === 0 || Math.random() < 0.5);
-              const list = useDown ? targetDownList : targetUpList;
-              trigger = list[Math.floor(Math.random() * list.length)];
-              targetedDir = useDown ? 'down' : 'up';
-            } else {
-              // 60% chance to select a broad high-match driver trigger, 40% any eligible trigger
-              const useBroad = broadDriverTriggers.length > 0 && Math.random() < 0.60;
-              const pool = useBroad ? broadDriverTriggers : (eligibleTriggers.length > 0
-                ? eligibleTriggers
-                : (isHistoryMode ? catalogTriggers : activeTriggers));
-              if (pool.length === 0) continue;
-              trigger = pool[Math.floor(Math.random() * pool.length)];
+
+              if (tId < 0) continue;
+              let duplicate = false;
+              for (let m = 0; m < mutCount; m++) {
+                if (mutTrigIds[m] === tId) { duplicate = true; break; }
+              }
+              if (duplicate) continue;
+
+              const liveH = triggerIndicesArr[tId].length;
+              if (liveH < 1) continue; // Only adjust triggers that actually fire in the evaluated match set
+
+              const tHits = triggerTargetCountsArr[tId];
+              const trHits = triggerTrapCountsArr[tId];
+              const currentVal = bestPointsArr[tId];
+              const isLayer2 = totalComps >= LAYER_1_INCREMENTAL_COMPS;
+              // Layer 1 (< 1M): strictly incremental (±5 primary, ±10 secondary).
+              // Layer 2 (>= 1M): unlocks escalation up to max bonus/penalty when needed to break plateaus.
+              const allowSecondaryStep = isLayer2 || staleCleanComps >= 25000 || inIlsKick;
+
+              let dir: 'up' | 'down' | 'any';
+              if (targetedDir) dir = targetedDir;
+              else if (tHits > trHits) dir = Math.random() < 0.65 ? 'up' : 'down';
+              else if (trHits > tHits) dir = Math.random() < 0.65 ? 'down' : 'up';
+              else dir = 'any';
+
+              const slot = tId * PTS_SPAN + Math.max(0, Math.min(80, currentVal + PTS_OFFSET));
+              const primaryValues = dir === 'up' ? stepUpTable[slot] : dir === 'down' ? stepDownTable[slot] : stepAnyTable[slot];
+              const stretchValues = dir === 'up' ? stretchUpTable[slot] : dir === 'down' ? stretchDownTable[slot] : stretchAnyTable[slot];
+              const escalateValues = dir === 'up' ? escalateUpTable[slot] : dir === 'down' ? escalateDownTable[slot] : escalateAnyTable[slot];
+
+              let candidateValues: Int16Array;
+              if (isLayer2 && escalateValues.length > 0 && (primaryValues.length === 0 || Math.random() < 0.45)) {
+                candidateValues = escalateValues;
+              } else if ((allowSecondaryStep && primaryValues.length === 0) || (allowSecondaryStep && Math.random() < 0.25)) {
+                candidateValues = stretchValues;
+              } else {
+                candidateValues = primaryValues;
+              }
+
+              if (candidateValues.length === 0 && !targetedDir && dir !== 'any') {
+                candidateValues = isLayer2 && escalateAnyTable[slot].length > 0
+                  ? escalateAnyTable[slot]
+                  : (allowSecondaryStep ? stretchAnyTable[slot] : stepAnyTable[slot]);
+              }
+              if (candidateValues.length === 0) continue;
+
+              const testVal = candidateValues[(Math.random() * candidateValues.length) | 0];
+              const delta = testVal - currentVal;
+              if (delta === 0) continue;
+
+              mutTrigIds[mutCount] = tId;
+              mutOldVals[mutCount] = currentVal;
+              mutNewVals[mutCount] = testVal;
+              mutDeltas[mutCount] = delta;
+              mutCount++;
             }
 
-            if (!trigger) continue;
-            // In live mode, guard against mutating triggers with insufficient live + historical hits
-            const liveH = triggerToIndices.get(trigger)?.length || 0;
-            const histH = histHitsMap.get(trigger)?.total || 0;
-            if (!isHistoryMode && liveH < 2 && histH < 20) continue;
+            if (mutCount === 0) continue;
 
-            // DOMAIN POLARITY-BASED DIRECTION (skipped for trap-targeted moves, which carry their own direction):
-            const trigPolarity = targetedDir ? 'TARGETED' : getTriggerSemanticPolarity(trigger);
-            const isUnderdogCat = activeCategoryConfig.targetObjective === 'underdog_only';
+            // Calculate incremental regularization delta & apply mutations
+            let batchRegDelta = 0;
+            undoLen = 0;
+            for (let m = 0; m < mutCount; m++) {
+              const tId = mutTrigIds[m];
+              const oldV = mutOldVals[m];
+              const newV = mutNewVals[m];
+              batchRegDelta += getNormReg(newV) - getNormReg(oldV);
+              bestPointsArr[tId] = newV;
+              const indices = triggerIndicesArr[tId];
+              if (indices.length > 0) {
+                applyDelta(indices, mutDeltas[m]);
+              }
+            }
+            const trialRegSum = runningRegSum + batchRegDelta;
 
-            if (isUnderdogCat) {
-              if (trigPolarity === 'PRO_UNDERDOG') forcePositive = true;
-              else if (trigPolarity === 'PRO_MFAV') forceNegative = true;
-            } else {
-              // Mfav / Top 12 categories:
-              if (trigPolarity === 'PRO_UNDERDOG') forceNegative = true;
-              else if (trigPolarity === 'PRO_MFAV') forcePositive = true;
+            totalComps++;
+            phaseComps++;
+            compsInPhaseMilestone++;
+            if (!layer2Announced && totalComps >= LAYER_1_INCREMENTAL_COMPS) {
+              layer2Announced = true;
+              showToast(`Layer 1 (1M incremental ±5/±10) complete at ${allTimeBestPeak.cleanTopMatches} clean matches. Entering Layer 2: Trigger Escalation to unlock higher clean matches!`);
             }
 
-            // Fallback to empirical stats if Neutral
-            if (trigPolarity === 'NEUTRAL') {
-              const counts = hitStatsMap.get(trigger);
-              if (counts) {
-                const totalH = counts.mfav + counts.draw + counts.underdog;
-                if (totalH > 0) {
-                  if (isUnderdogCat) {
-                    if (counts.underdog / totalH >= 0.25) forcePositive = true;
-                    else if ((counts.mfav + counts.draw) / totalH >= 0.60) forceNegative = true;
-                  } else if (activeCategoryConfig.targetObjective === 'mfav_only') {
-                    if (counts.mfav / totalH >= 0.55) forcePositive = true;
-                    else if ((counts.draw + counts.underdog) / totalH >= 0.45) forceNegative = true;
-                  } else {
-                    if ((counts.mfav + counts.draw) / totalH >= 0.65) forcePositive = true;
-                    else if (counts.underdog / totalH >= 0.22) forceNegative = true;
+            const testFastEval = fastEvaluateBuckets(targetBuckets, trapBuckets, trialRegSum);
+
+            // First Trap Rank & Peak Protection Guardrail
+            let slackViolated = false;
+            const curFirstTrapRank = testFastEval.firstTrapRank;
+            if (inIlsKick) {
+              if (testFastEval.cleanTopMatches < allTimeBestPeak.cleanTopMatches - 2) {
+                slackViolated = true;
+              }
+            } else {
+              if (curFirstTrapRank < allTimeBestPeak.firstTrapRank || testFastEval.cleanTopMatches < allTimeBestPeak.cleanTopMatches) {
+                slackViolated = true;
+              } else if (currentPhase >= 2 && establishedRanks.length > 0) {
+                for (let k = 0; k < establishedRanks.length; k++) {
+                  const curTrapR = k < trapRanksCount ? trapRanksBuf[k] : (testFastEval.cleanTopMatches + 1);
+                  if (curTrapR < establishedRanks[k]) {
+                    slackViolated = true;
+                    break;
                   }
                 }
               }
             }
 
-            if (selectedTriggersSet.has(trigger)) continue;
-            selectedTriggersSet.add(trigger);
+            let acceptMutation = false;
+            let cleanStreakClimbed = false;
 
-            const counts = hitStatsMap.get(trigger);
-            const calibratedAnchor = currentRulePointsMap.get(trigger);
-            const profile = getLiveProfile(trigger);
-            const currentVal = bestPoints.get(trigger) ?? 0;
+            if (!slackViolated) {
+              cleanStreakClimbed = testFastEval.cleanTopMatches > allTimeBestPeak.cleanTopMatches;
+              const cleanStreakMaintained = testFastEval.cleanTopMatches >= allTimeBestPeak.cleanTopMatches;
+              const qualityImproved = testFastEval.quality > bestFastEval.quality;
 
-            // Strictly incremental single 5-pt steps (dominant triggers may jump directly within their allowed band).
-            // Semantic polarity is a 75/25 direction bias, not a hard lock; allowedBand still enforced.
-            let dir: 'up' | 'down' | 'any';
-            if (targetedDir) dir = targetedDir;
-            else if (forcePositive) dir = Math.random() < 0.75 ? 'up' : 'down';
-            else if (forceNegative) dir = Math.random() < 0.75 ? 'down' : 'up';
-            else dir = 'any';
-            let candidateValues = liveStepCandidates(trigger, currentVal, profile.allowedBand, dir);
-            if (candidateValues.length === 0 && !targetedDir && dir !== 'any') {
-              candidateValues = liveStepCandidates(trigger, currentVal, profile.allowedBand, 'any');
-            }
+              if (cleanStreakClimbed) {
+                acceptMutation = true;
+              } else if (currentPhase >= 2) {
+                const targetTrapIdx = currentPhase - 1;
+                const curTargetGap = targetTrapIdx < trapRanksCount ? trapGapsBuf[targetTrapIdx] : 0;
+                const curTargetRank = targetTrapIdx < trapRanksCount ? trapRanksBuf[targetTrapIdx] : 0;
+                const gapImproved = curTargetGap > bestGapInPhase || curTargetRank > bestTrapRankInPhase;
 
-            // Skip trigger if no valid step exists
-            if (candidateValues.length === 0) continue;
-
-            const testVal = candidateValues[Math.floor(Math.random() * candidateValues.length)];
-            const delta = testVal - currentVal;
-            const indices = triggerToIndices.get(trigger);
-
-            batchMutations.push({
-              trigger,
-              oldVal: currentVal,
-              newVal: testVal,
-              delta,
-              indices
-            });
-          }
-
-        if (batchMutations.length === 0) continue;
-
-        // Apply all mutations in the batch (recording exact pre-mutation scores in the undo log)
-        undoIdx.length = 0;
-        undoOld.length = 0;
-        for (let m = 0; m < batchMutations.length; m++) {
-          const item = batchMutations[m];
-          bestPoints.set(item.trigger, item.newVal);
-          if (!item.indices || item.indices.length === 0) continue;
-          applyDelta(item.indices, item.delta);
-        }
-
-        totalComps++;
-
-        const testFastEval = fastEvaluateBuckets(targetBuckets, trapBuckets, bestPoints);
-
-        // Mutation Acceptance Evaluation:
-        const cleanStreakMaintained = testFastEval.cleanTopMatches >= bestCleanStreak;
-        const cleanStreakClimbed = testFastEval.cleanTopMatches > bestCleanStreak;
-        const qualityImproved = testFastEval.quality > bestFastEval.quality;
-
-        let acceptMutation = cleanStreakClimbed || (cleanStreakMaintained && qualityImproved);
-        // Plateau escape: occasionally accept sideways moves (same clean count, near-equal quality)
-        if (!acceptMutation &&
-          testFastEval.cleanTopMatches === bestCleanStreak &&
-          testFastEval.quality >= bestFastEval.quality - LIVE_PLATEAU_EPS &&
-          Math.random() < 0.10) {
-          acceptMutation = true;
-        }
-
-        if (acceptMutation) {
-          targetingDirty = true;
-          if (testFastEval.cleanTopMatches > bestCleanStreak) {
-            bestCleanStreak = testFastEval.cleanTopMatches;
-            compsSinceMilestone = 0;
-            updateUiState(true);
-          }
-          bestFastEval = testFastEval;
-
-          // --- Post-Breakthrough Contribution Rebalancing ---
-          // Run only on genuine clean streak climbs to avoid unnecessary CPU overhead
-          if (cleanStreakClimbed && batchMutations.length >= 2) {
-            const rebalanceBatch: {
-              trigger: string;
-              oldVal: number;
-              newVal: number;
-              delta: number;
-              indices: Int32Array | undefined;
-            }[] = [];
-
-            for (let bIdx = 0; bIdx < batchMutations.length; bIdx++) {
-              const item = batchMutations[bIdx];
-              const t = item.trigger;
-              const indices = item.indices;
-              if (!indices || indices.length === 0) continue;
-              if (!isHistoryMode && indices.length < 3) continue;
-
-              // Count targets vs traps hit by this trigger in the elevated positive scoring band
-              let tHits = 0;
-              let trHits = 0;
-              for (let k = 0; k < indices.length; k++) {
-                const mIdx = indices[k];
-                if (matchScores[mIdx] >= 0) {
-                  if (isTarget[mIdx] === 1) tHits++;
-                  else trHits++;
+                if (gapImproved && cleanStreakMaintained) {
+                  acceptMutation = true;
+                  bestGapInPhase = Math.max(bestGapInPhase, curTargetGap);
+                  bestTrapRankInPhase = Math.max(bestTrapRankInPhase, curTargetRank);
+                  compsSinceGapImprovement = 0;
+                } else if (cleanStreakMaintained && qualityImproved) {
+                  acceptMutation = true;
+                } else if (cleanStreakMaintained && testFastEval.quality >= bestFastEval.quality - LIVE_PLATEAU_EPS && Math.random() < 0.08) {
+                  acceptMutation = true;
                 }
-              }
-
-              const totalActiveHits = tHits + trHits;
-              if (totalActiveHits === 0) continue;
-              const targetRatio = tHits / totalActiveHits;
-
-              const counts = hitStatsMap.get(t);
-              const calibratedAnchor = currentRulePointsMap.get(t);
-              const profile = getTriggerAccuracyProfile(t, counts, activeCategoryConfig.targetObjective, calibratedAnchor, isHistoryMode);
-              const curPoints = bestPoints.get(t) ?? 0;
-              let rebalancedVal = curPoints;
-
-              if (targetRatio >= 0.75 && curPoints > 0) {
-                // Star Contributor: boost bonus towards +20 or +25
-                if (dominantTriggers.get(t) !== 'up') {
-                  // Normal trigger: single +5 step only
-                  if (profile.allowedBand.includes(curPoints + 5)) rebalancedVal = curPoints + 5;
-                } else {
-                  const higherBonus = profile.allowedBand.filter(v => v > curPoints);
-                  if (higherBonus.length > 0) rebalancedVal = Math.min(25, Math.max(...higherBonus));
-                }
-              } else if (targetRatio <= 0.40 && curPoints > 0) {
-                // Passenger / Drag: single -5 step only
-                if (profile.allowedBand.includes(curPoints - 5)) rebalancedVal = curPoints - 5;
-              } else if (trHits >= tHits * 1.5 && curPoints <= 0) {
-                // High-conviction trap suppressor: deepen penalty towards -20 or -25
-                if (dominantTriggers.get(t) !== 'down') {
-                  // Normal trigger: single -5 step only
-                  if (profile.allowedBand.includes(curPoints - 5)) rebalancedVal = curPoints - 5;
-                } else {
-                  const deeperNeg = profile.allowedBand.filter(v => v < curPoints);
-                  if (deeperNeg.length > 0) rebalancedVal = Math.max(-40, Math.min(...deeperNeg));
-                }
-              }
-
-              if (rebalancedVal !== curPoints) {
-                rebalanceBatch.push({
-                  trigger: t,
-                  oldVal: curPoints,
-                  newVal: rebalancedVal,
-                  delta: rebalancedVal - curPoints,
-                  indices
-                });
-              }
-            }
-
-            if (rebalanceBatch.length > 0) {
-              // Apply rebalanced points to matches
-              const rebalanceMark = undoIdx.length;
-              for (let m = 0; m < rebalanceBatch.length; m++) {
-                const item = rebalanceBatch[m];
-                bestPoints.set(item.trigger, item.newVal);
-                applyDelta(item.indices, item.delta);
-              }
-
-              totalComps++;
-              const rebalanceEval = fastEvaluateBuckets(targetBuckets, trapBuckets, bestPoints);
-
-              const rebalanceMaintained = rebalanceEval.cleanTopMatches >= bestCleanStreak;
-              const rebalanceClimbed = rebalanceEval.cleanTopMatches > bestCleanStreak;
-              const rebalanceQualityImproved = rebalanceEval.quality > bestFastEval.quality;
-
-              if (rebalanceClimbed || (rebalanceMaintained && rebalanceQualityImproved)) {
-                if (rebalanceClimbed) {
-                  bestCleanStreak = rebalanceEval.cleanTopMatches;
-                  compsSinceMilestone = 0;
-                  updateUiState(true);
-                }
-                bestFastEval = rebalanceEval;
               } else {
-                // Rollback rebalance if it didn't push more matches or improve quality (exact restore)
-                for (let m = rebalanceBatch.length - 1; m >= 0; m--) {
-                  bestPoints.set(rebalanceBatch[m].trigger, rebalanceBatch[m].oldVal);
+                if (cleanStreakMaintained && qualityImproved) {
+                  acceptMutation = true;
+                } else if (cleanStreakMaintained && testFastEval.quality >= bestFastEval.quality - LIVE_PLATEAU_EPS && Math.random() < 0.08) {
+                  acceptMutation = true;
                 }
-                rollbackTo(rebalanceMark);
               }
             }
+
+            if (acceptMutation) {
+              undoLen = 0;
+              const acceptedSnap = cloneEvalSnapshot(testFastEval);
+              runningRegSum = trialRegSum;
+              targetingDirty = true;
+              frontierDirty = true;
+              const deltaClean = acceptedSnap.cleanTopMatches - bestFastEval.cleanTopMatches;
+              const deltaQuality = acceptedSnap.quality - bestFastEval.quality;
+              if (deltaClean > 0 || deltaQuality > 0) {
+                recordBreakthroughMemoryIds(mutTrigIds, mutCount, deltaClean, deltaQuality);
+                compsSinceMilestone = 0;
+                compsInPhaseMilestone = 0;
+              }
+              if (acceptedSnap.cleanTopMatches > bestCleanStreak) {
+                bestCleanStreak = acceptedSnap.cleanTopMatches;
+                compsSinceCleanClimb = 0;
+                staleCleanComps = 0;
+                cleanStreakClimbedSinceLastMapUpdate = true;
+                if (inIlsKick) {
+                  inIlsKick = false;
+                  ilsKickComps = 0;
+                }
+                if (currentPhase > 1) {
+                  currentPhase = 1;
+                  phaseComps = 0;
+                  compsSinceGapImprovement = 0;
+                  establishedRanks.length = 0;
+                  establishedScores.length = 0;
+                  showToast(`Breakthrough! Clean matches increased to ${acceptedSnap.cleanTopMatches}! Returning to Clean Maximization.`);
+                }
+              }
+              bestTrapRanks = [...acceptedSnap.trapRanks];
+              bestTrapGaps = [...acceptedSnap.trapGaps];
+              bestFastEval = acceptedSnap;
+
+              const curPeakTrapR = acceptedSnap.firstTrapRank;
+              if (acceptedSnap.cleanTopMatches > allTimeBestPeak.cleanTopMatches ||
+                  (acceptedSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && curPeakTrapR > allTimeBestPeak.firstTrapRank) ||
+                  (acceptedSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && curPeakTrapR === allTimeBestPeak.firstTrapRank && acceptedSnap.quality > allTimeBestPeak.quality)) {
+                snapshotAllTimeBest(acceptedSnap);
+              }
+
+              if (cleanStreakClimbed) {
+                updateUiState(false);
+              }
+
+              // --- Post-Breakthrough Contribution Rebalancing (strictly trims over-stepped triggers back toward ±5) ---
+              if (cleanStreakClimbed && mutCount >= 2) {
+                let rebCount = 0;
+                for (let bIdx = 0; bIdx < mutCount; bIdx++) {
+                  const tId = mutTrigIds[bIdx];
+                  const indices = triggerIndicesArr[tId];
+                  if (!indices || indices.length === 0) continue;
+                  if (!isHistoryMode && indices.length < 3) continue;
+
+                  let tHits = 0;
+                  let trHits = 0;
+                  for (let k = 0; k < indices.length; k++) {
+                    const mIdx = indices[k];
+                    if (matchScores[mIdx] >= 0) {
+                      if (isTarget[mIdx] === 1) tHits++;
+                      else trHits++;
+                    }
+                  }
+
+                  const totalActiveHits = tHits + trHits;
+                  if (totalActiveHits === 0) continue;
+                  const targetRatio = tHits / totalActiveHits;
+
+                  const profile = profilesByTrigId[tId];
+                  const curPoints = bestPointsArr[tId];
+                  let rebalancedVal: number = curPoints;
+
+                  if (targetRatio <= 0.40 && curPoints > 5) {
+                    if (profile.allowedBand.includes(curPoints - 5)) {
+                      rebalancedVal = Math.max(5, curPoints - 5);
+                    }
+                  } else if (targetRatio >= 0.65 && curPoints < -5) {
+                    if (profile.allowedBand.includes(curPoints + 5)) {
+                      rebalancedVal = Math.min(-5, curPoints + 5);
+                    }
+                  }
+
+                  if ((!isUpsetsCat && rebalancedVal === 0) || (rebalancedVal !== 0 && rebalancedVal > -5 && rebalancedVal < 5)) {
+                    rebalancedVal = curPoints;
+                  }
+
+                  if (rebalancedVal !== curPoints) {
+                    rebTrigIds[rebCount] = tId;
+                    rebOldVals[rebCount] = curPoints;
+                    rebNewVals[rebCount] = rebalancedVal;
+                    rebDeltas[rebCount] = rebalancedVal - curPoints;
+                    rebCount++;
+                  }
+                }
+
+                if (rebCount > 0) {
+                  const rebalanceMark = undoLen;
+                  let rebDelta = 0;
+                  for (let m = 0; m < rebCount; m++) {
+                    const tId = rebTrigIds[m];
+                    const oldV = rebOldVals[m];
+                    const newV = rebNewVals[m];
+                    bestPointsArr[tId] = newV;
+                    rebDelta += getNormReg(newV) - getNormReg(oldV);
+                    applyDelta(triggerIndicesArr[tId], rebDeltas[m]);
+                  }
+
+                  totalComps++;
+                  const trialRebRegSum = runningRegSum + rebDelta;
+                  const rebalanceEval = fastEvaluateBuckets(targetBuckets, trapBuckets, trialRebRegSum);
+
+                  let rebSlackViolated = false;
+                  const curRebFirstTrapR = rebalanceEval.firstTrapRank;
+                  if (curRebFirstTrapR < allTimeBestPeak.firstTrapRank || rebalanceEval.cleanTopMatches < allTimeBestPeak.cleanTopMatches) {
+                    rebSlackViolated = true;
+                  } else if (currentPhase >= 2 && establishedRanks.length > 0) {
+                    for (let k = 0; k < establishedRanks.length; k++) {
+                      const allowedSlack = k === 0 ? 0 : 2;
+                      const curR = k < trapRanksCount ? trapRanksBuf[k] : (rebalanceEval.cleanTopMatches + 1);
+                      if (curR < establishedRanks[k] - allowedSlack) {
+                        rebSlackViolated = true;
+                        break;
+                      }
+                    }
+                  }
+
+                  const rebalanceMaintained = !rebSlackViolated && rebalanceEval.cleanTopMatches >= bestCleanStreak;
+                  const rebalanceClimbed = !rebSlackViolated && rebalanceEval.cleanTopMatches > bestCleanStreak;
+                  const rebalanceQualityImproved = !rebSlackViolated && rebalanceEval.quality > bestFastEval.quality;
+
+                  if (rebalanceClimbed || (rebalanceMaintained && rebalanceQualityImproved)) {
+                    undoLen = 0;
+                    const rebSnap = cloneEvalSnapshot(rebalanceEval);
+                    runningRegSum = trialRebRegSum;
+                    if (rebalanceClimbed) {
+                      bestCleanStreak = rebSnap.cleanTopMatches;
+                      compsSinceMilestone = 0;
+                      compsInPhaseMilestone = 0;
+                      updateUiState(false);
+                    }
+                    recordBreakthroughMemoryIds(rebTrigIds, rebCount, rebSnap.cleanTopMatches - bestFastEval.cleanTopMatches, rebSnap.quality - bestFastEval.quality);
+                    bestTrapRanks = [...rebSnap.trapRanks];
+                    bestTrapGaps = [...rebSnap.trapGaps];
+                    bestFastEval = rebSnap;
+
+                    if (rebSnap.cleanTopMatches > allTimeBestPeak.cleanTopMatches ||
+                        (rebSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && curRebFirstTrapR > allTimeBestPeak.firstTrapRank) ||
+                        (rebSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && curRebFirstTrapR === allTimeBestPeak.firstTrapRank && rebSnap.quality > allTimeBestPeak.quality)) {
+                      snapshotAllTimeBest(rebSnap);
+                    }
+                  } else {
+                    for (let m = rebCount - 1; m >= 0; m--) {
+                      bestPointsArr[rebTrigIds[m]] = rebOldVals[m];
+                    }
+                    rollbackTo(rebalanceMark);
+                  }
+                }
+              }
+            } else {
+              // Instant Batch Rollback: revert all mutations in the batch
+              for (let m = mutCount - 1; m >= 0; m--) {
+                bestPointsArr[mutTrigIds[m]] = mutOldVals[m];
+              }
+              rollbackTo(0);
+            }
+
+            // Stalemate / clean progress counter
+            if (cleanStreakClimbed) {
+              staleCleanComps = 0;
+              compsSinceCleanClimb = 0;
+            } else {
+              staleCleanComps++;
+              compsSinceCleanClimb++;
+            }
+
+            // ILS Kick counter
+            if (inIlsKick) {
+              ilsKickComps++;
+              if (ilsKickComps >= 15000) {
+                restoreAllTimeBest();
+                inIlsKick = false;
+                ilsKickComps = 0;
+              }
+            }
+
+            // Track best-ever (elite) state; restart from it after a long non-improving stretch
+            if (bestFastEval.cleanTopMatches > eliteEval.cleanTopMatches ||
+              (bestFastEval.cleanTopMatches === eliteEval.cleanTopMatches && bestFastEval.quality > eliteEval.quality)) {
+              snapshotElite();
+              liveStallCount = 0;
+            } else {
+              liveStallCount++;
+              if (!inIlsKick && liveStallCount >= LIVE_RESTART_AFTER) {
+                restoreElite();
+                liveStallCount = 0;
+              }
+            }
+
+            // Multi-Phase Sequential Trap Dispersion & Stalemate Transition
+            if (currentPhase === 1) {
+              if (staleCleanComps >= PHASE_1_STALEMATE_BUDGET) {
+                restoreAllTimeBest();
+                establishedRanks[0] = allTimeBestPeak.firstTrapRank;
+                establishedScores[0] = allTimeBestPeak.trapScores ? (allTimeBestPeak.trapScores[0] ?? 0) : 0;
+                currentPhase = 2;
+                phaseComps = 0;
+                compsSinceGapImprovement = 0;
+                bestGapInPhase = allTimeBestPeak.trapGaps ? (allTimeBestPeak.trapGaps[1] ?? 0) : 0;
+                bestTrapRankInPhase = allTimeBestPeak.trapRanks ? (allTimeBestPeak.trapRanks[1] ?? 0) : 0;
+                showToast(`Stalemate reached at ${allTimeBestPeak.cleanTopMatches} clean matches. Advancing to Phase 2: Widening Trap #2 gap!`);
+                updateUiState(true);
+              }
+            } else if (currentPhase >= 2 && currentPhase <= 4) {
+              compsSinceGapImprovement++;
+              if ((compsSinceGapImprovement >= GAP_PHASE_PATIENCE && phaseComps >= 100000) || phaseComps >= SUBSEQUENT_PHASE_BUDGET) {
+                restoreAllTimeBest();
+                const trapIdx = currentPhase - 1;
+                establishedRanks[trapIdx] = allTimeBestPeak.trapRanks ? (allTimeBestPeak.trapRanks[trapIdx] ?? allTimeBestPeak.cleanTopMatches + trapIdx + 1) : (allTimeBestPeak.cleanTopMatches + trapIdx + 1);
+                establishedScores[trapIdx] = allTimeBestPeak.trapScores ? (allTimeBestPeak.trapScores[trapIdx] ?? 0) : 0;
+                currentPhase = (currentPhase + 1) as (1 | 2 | 3 | 4 | 5);
+                phaseComps = 0;
+                compsSinceGapImprovement = 0;
+                const nextTrapIdx = currentPhase - 1;
+                bestGapInPhase = allTimeBestPeak.trapGaps ? (allTimeBestPeak.trapGaps[nextTrapIdx] ?? 0) : 0;
+                bestTrapRankInPhase = allTimeBestPeak.trapRanks ? (allTimeBestPeak.trapRanks[nextTrapIdx] ?? 0) : 0;
+                showToast(`Trap #${trapIdx + 1} locked at rank #${establishedRanks[trapIdx]}. Advancing to Phase ${currentPhase}: Widening Trap #${currentPhase} gap!`);
+                updateUiState(true);
+              }
+            } else if (currentPhase === 5) {
+              compsSinceGapImprovement++;
+              if ((compsSinceGapImprovement >= GAP_PHASE_PATIENCE && phaseComps >= 100000) || phaseComps >= SUBSEQUENT_PHASE_BUDGET) {
+                finalizeLive();
+                setDeepStatus('converged');
+                setDeepConvergenceMode('sweet_spot');
+                setIsDeepOptimizing(false);
+                const t1 = allTimeBestPeak.trapRanks[0] ?? 1;
+                const t2 = allTimeBestPeak.trapRanks[1] ?? '?';
+                const t3 = allTimeBestPeak.trapRanks[2] ?? '?';
+                const t4 = allTimeBestPeak.trapRanks[3] ?? '?';
+                const t5 = allTimeBestPeak.trapRanks[4] ?? '?';
+                showToast(`Optimal Trap Dispersion Converged! Promoted ${allTimeBestPeak.cleanTopMatches} clean winners with widened Trap gaps (T1: #${t1}, T2: #${t2}, T3: #${t3}, T4: #${t4}, T5: #${t5}) over ${totalComps.toLocaleString()} computations!`);
+                return;
+              }
+            }
+
+            // Safety stop at 5,000,000 total computations
+            if (totalComps >= 5000000) {
+              finalizeLive();
+              setDeepStatus('converged');
+              setIsDeepOptimizing(false);
+              showToast(`Optimization complete: Reached 5,000,000 computations with ${allTimeBestPeak.cleanTopMatches} clean winners!`);
+              return;
+            }
+
+            // 100% Ceiling achieved
+            if (!initiallyCeilingMet && bestFastEval.ceilingMet) {
+              finalizeLive();
+              setDeepStatus('converged');
+              setDeepConvergenceMode('perfect_100');
+              setIsDeepOptimizing(false);
+              showToast(`100% Perfect Separation! All ${bestFastEval.cleanTopMatches} winners are clean at the top!`);
+              return;
+            }
           }
-        } else {
-          // Instant Batch Rollback: revert all mutations in the batch
-          // (exact restore of stored pre-mutation scores — immune to ±299 clamp drift)
-          for (let m = batchMutations.length - 1; m >= 0; m--) {
-            bestPoints.set(batchMutations[m].trigger, batchMutations[m].oldVal);
-          }
-          rollbackTo(0);
         }
 
-        // Track best-ever (elite) state; restart from it after a long non-improving stretch
-        if (bestFastEval.cleanTopMatches > eliteEval.cleanTopMatches ||
-          (bestFastEval.cleanTopMatches === eliteEval.cleanTopMatches && bestFastEval.quality > eliteEval.quality)) {
-          snapshotElite();
-          liveStallCount = 0;
-        } else {
-          liveStallCount++;
-          if (liveStallCount >= LIVE_RESTART_AFTER) {
-            restoreElite();
-            liveStallCount = 0;
-          }
-        }
+        // Update UI after frame (throttled to 250ms)
+        updateUiState(false);
 
-        // 1. 100% Ceiling achieved
-        if (!initiallyCeilingMet && bestFastEval.ceilingMet) {
-          finalizeLive();
-          updateUiState(true);
-          setDeepStatus('converged');
-          setDeepConvergenceMode('perfect_100');
-          setIsDeepOptimizing(false);
-          showToast(`100% Perfect Separation! All ${bestFastEval.cleanTopMatches} winners are clean at the top!`);
-          return;
-        }
-
-        // 2. Self-aware Plateau Detection: Once baseline floor is met or high-volume horizon thresholds achieved
-        const topNPure = bestFastEval.trapInTopN === 0 || 
-          bestFastEval.cleanTopMatches >= activeCategoryConfig.targetCapacity ||
-          (bestFastEval.horizonMetrics && bestFastEval.horizonMetrics.h1000.traps <= 50 && bestFastEval.horizonMetrics.h500.traps <= 25);
-        if ((bestFastEval.floorMet || initiallyCeilingMet) && topNPure) {
-          compsSinceMilestone++;
-          if (compsSinceMilestone >= PATIENCE_BUDGET) {
-            finalizeLive();
-            updateUiState(true);
-            setDeepStatus('converged');
-            setDeepConvergenceMode(bestFastEval.ceilingMet ? 'perfect_100' : 'sweet_spot');
-            setIsDeepOptimizing(false);
-            showToast(bestFastEval.ceilingMet
-              ? `100% Perfect! Buffer margin (+${bestFastEval.bufferMargin.toFixed(1)} pts) over ${totalComps.toLocaleString()} computations!`
-              : `Optimal Density Converged! Promoted ${bestFastEval.cleanTopMatches} clean winners (${bestFastEval.horizonMetrics?.h1000.traps ?? 0} traps / 1,000) over ${totalComps.toLocaleString()} computations!`
-            );
-            return;
-          }
-        }
+        setTimeout(runChunk, 4);
+      } catch (err: any) {
+        console.error('Deep optimizer execution error:', err);
+        finalizeLive();
+        setIsDeepOptimizing(false);
+        setDeepStatus('paused');
+        showToast(`Optimizer stopped: ${err?.message || 'Calculation error'}`);
       }
-      }
-
-      // Update UI after frame (throttled to 30ms for smooth millisecond updates)
-      updateUiState(false);
-
-      setTimeout(runChunk, 0);
     };
 
-    setTimeout(runChunk, 0);
-  }, [completedMatches, selectedDay, activeCategory, phaStatsMap, activeCategoryConfig, deepPointsMap, currentRulePointsMap, deepComputations, datasetScope]);
+      setTimeout(runChunk, 4);
+    };
+
+    if (isHistoryMode || !allMatches || allMatches.length === 0 || datasetScope === 'live') {
+      if (isHistoryMode) {
+        hitStatsMap.forEach((stat, t) => {
+          histHitsMap.set(t, { mfav: stat.mfav, draw: stat.draw, underdog: stat.underdog, total: stat.mfav + stat.draw + stat.underdog });
+        });
+      }
+      launchCoreOptimizer();
+    } else {
+      // Sliced non-blocking processing of 3,000+ historical matches (guarantees zero UI freeze)
+      let histIdx = 0;
+      const sampleLimit = Math.min(allMatches.length, 3000);
+      const processHistBatch = () => {
+        if (stopDeepRef.current) return;
+        const sliceStart = performance.now();
+        while (histIdx < sampleLimit && performance.now() - sliceStart < 15) {
+          const m = allMatches[histIdx++];
+          const actual = getActualResult(m.result || '');
+          if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
+          const moStr = m.mo || (m as any).odds || (m as any).data?.mo || (m as any).data?.odds || '';
+          const moParts = String(moStr).split(/[- ,]+/).map(s => parseFloat(s.replace(/[^0-9.]/g, '').trim())).filter(p => !isNaN(p));
+          const homeOdds = moParts[0] || (m.homeOdds ? parseFloat(String(m.homeOdds).replace(/[^0-9.]/g, '')) : 0) || 0;
+          const awayOdds = moParts.length >= 3 ? (moParts[2] || 0) : (moParts.length === 2 ? (moParts[1] || 0) : ((m.awayOdds ? parseFloat(String(m.awayOdds).replace(/[^0-9.]/g, '')) : 0)));
+          if (homeOdds <= 0 || awayOdds <= 0) continue;
+          const mFav = getMarketFavorite(m);
+          const out: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
+          let trigs: Set<string> = (m as any)._opwCatalogTriggers;
+          if (!trigs) {
+            try {
+              const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
+              trigs = evaluateAllCatalogTriggers(stats, m);
+              (m as any)._opwCatalogTriggers = trigs;
+            } catch (e) {
+              continue;
+            }
+          }
+          trigs.forEach(t => {
+            let h = histHitsMap.get(t);
+            if (!h) {
+              h = { mfav: 0, draw: 0, underdog: 0, total: 0 };
+              histHitsMap.set(t, h);
+            }
+            if (out === 'mfav') h.mfav++;
+            else if (out === 'draw') h.draw++;
+            else h.underdog++;
+            h.total++;
+          });
+        }
+        if (histIdx < sampleLimit) {
+          setTimeout(processHistBatch, 0);
+        } else {
+          launchCoreOptimizer();
+        }
+      };
+      processHistBatch();
+    }
+    } catch (err: any) {
+      console.error('Failed to start deep optimization:', err);
+      setIsDeepOptimizing(false);
+      setDeepStatus('idle');
+      showToast(`Could not start Self-Learn: ${err?.message || 'Initialization error'}`);
+    }
+  }, [completedMatches, evaluatedCategoryProfiles, selectedDay, activeCategory, phaStatsMap, activeCategoryConfig, deepPointsMap, currentRulePointsMap, deepComputations, datasetScope]);
 
   const pauseDeepOptimization = useCallback(() => {
     stopDeepRef.current = true;
     setIsDeepOptimizing(false);
     setDeepStatus('paused');
+    try {
+      const peakSnapshot = allTimeBestPeakRef.current;
+      const ptsToAdopt = (peakSnapshot && peakSnapshot.points && peakSnapshot.points.size > 0)
+        ? peakSnapshot.points
+        : deepPointsMap;
+      if (ptsToAdopt && ptsToAdopt.size > 0) {
+        adoptCalibratedRulesPermanently(
+          ptsToAdopt,
+          peakSnapshot ? peakSnapshot.cleanTopMatches : deepCleanMatches,
+          peakSnapshot ? peakSnapshot.firstTrapRank : (deepFirstTrapRank ?? 1),
+          peakSnapshot ? peakSnapshot.quality : deepQuality,
+          peakSnapshot ? peakSnapshot.trapRanks : deepTrapRanks,
+          peakSnapshot ? peakSnapshot.trapGaps : deepTrapGaps
+        );
+      }
+    } catch (e) {}
     showToast(`Optimization paused at ${deepComputations.toLocaleString()} computations.`);
-  }, [deepComputations]);
+  }, [deepComputations, activeCategory, deepPointsMap, deepCleanMatches, deepFirstTrapRank, deepQuality, deepTrapRanks, deepTrapGaps, adoptCalibratedRulesPermanently, showToast]);
 
   const resetDeepOptimization = useCallback(() => {
     stopDeepRef.current = true;
+    allTimeBestPeakRef.current = null;
     setIsDeepOptimizing(false);
     setDeepStatus('idle');
     setDeepConvergenceMode('none');
@@ -3665,6 +5708,17 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     setDeepTargetCeiling(0);
     setDeepFirstTrapRank(1);
     setDeepTargetsInTop5000(0);
+    setDeepTrapRanks([1]);
+    setDeepTrapScores([]);
+    setDeepTrapGaps([]);
+    setDeepTrapDispersionHealth('CLUSTERED');
+    setDeepOptimizerPhase({
+      currentPhase: 1,
+      phaseComps: 0,
+      phaseBudget: 500000,
+      establishedRanks: [],
+      establishedScores: []
+    });
     setDeepHorizonMetrics({
       h500: { horizon: 500, traps: 0, targets: 0, total: 0, winRate: 0 },
       h1000: { horizon: 1000, traps: 0, targets: 0, total: 0, winRate: 0 },
@@ -3729,7 +5783,6 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
           }
           const triggersHit = new Set<string>();
           allTriggers.forEach(t => {
-            if (t === "Odds for underdog >= 3.0" && cat.targetObjective !== 'underdog_only') return;
             triggersHit.add(t);
           });
           const matchDay = selectedDay !== 'all' ? selectedDay : getMatchDayOfWeek(m);
@@ -3744,35 +5797,75 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
         profiles.forEach(p => p.triggersHit.forEach(t => activeTriggersSet.add(t)));
         const activeTriggers = Array.from(activeTriggersSet);
 
+        const batchHitStats = new Map<string, { mfav: number; draw: number; underdog: number }>();
+        profiles.forEach(p => {
+          p.triggersHit.forEach(t => {
+            let st = batchHitStats.get(t);
+            if (!st) {
+              st = { mfav: 0, draw: 0, underdog: 0 };
+              batchHitStats.set(t, st);
+            }
+            if (p.outcome === 'mfav') st.mfav++;
+            else if (p.outcome === 'draw') st.draw++;
+            else st.underdog++;
+          });
+        });
+
+        const batchHistStats = new Map<string, { mfav: number; draw: number; underdog: number }>();
+        if (allMatches && allMatches.length > 0) {
+          allMatches.forEach(m => {
+            const trigs: Set<string> | undefined = (m as any)._opwCatalogTriggers;
+            if (!trigs) return;
+            const actual = getActualResult(m.result || '');
+            if (actual !== '1' && actual !== 'X' && actual !== '2') return;
+            const mFav = getMarketFavorite(m);
+            const outcome = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
+            trigs.forEach(t => {
+              let st = batchHistStats.get(t);
+              if (!st) {
+                st = { mfav: 0, draw: 0, underdog: 0 };
+                batchHistStats.set(t, st);
+              }
+              st[outcome]++;
+            });
+          });
+        }
+
         const catalogTriggers = getFullActiveCatalogTriggers();
         const catPoints = new Map<string, number>();
-        const targetDay = selectedDay !== 'all' ? selectedDay : 'saturday';
+        const targetDay = selectedDay !== 'all' ? selectedDay : (liveMatchDay || 'sunday');
         const existingCatRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[cat.id]?.rules || [];
         const existingCatMap = new Map<string, number>();
         existingCatRules.forEach((r: any) => existingCatMap.set(r.description, r.points));
 
+        const isUpsetsCat = cat.targetObjective === 'underdog_only';
+        const batchProfileMap = new Map<string, TriggerAccuracyProfile>();
         catalogTriggers.forEach(desc => {
-          const liveHits = profiles.filter(p => p.triggersHit.has(desc)).length;
-          const histHits = allMatches ? allMatches.filter(m => (m as any)._opwCatalogTriggers?.has(desc)).length : 0;
-          const totalHits = liveHits + histHits;
+          const liveSt = batchHitStats.get(desc);
+          const histSt = batchHistStats.get(desc);
           const existingVal = existingCatMap.get(desc);
+          const trigProf = getTriggerAccuracyProfile(desc, liveSt, cat.targetObjective, existingVal, false, cat.id, targetDay, histSt);
+          batchProfileMap.set(desc, trigProf);
+          const liveHits = liveSt ? liveSt.mfav + liveSt.draw + liveSt.underdog : 0;
+          const histHits = histSt ? histSt.mfav + histSt.draw + histSt.underdog : 0;
+          const totalHits = liveHits + histHits;
           let dflt: number;
 
           if (totalHits > 0) {
-            if (existingVal !== undefined && existingVal !== 0) {
+            if (existingVal !== undefined && ((trigProf.zeroEligible && existingVal === 0) || (existingVal !== 0 && (existingVal >= 5 || existingVal <= -5)))) {
               dflt = existingVal;
             } else {
               const polarity = getTriggerSemanticPolarity(desc);
-              const isUnderdogCat = cat.targetObjective === 'underdog_only';
-              dflt = (isUnderdogCat ? polarity === 'PRO_UNDERDOG' : polarity === 'PRO_MFAV') ? 5 : -5;
+              dflt = (isUpsetsCat ? polarity === 'PRO_UNDERDOG' : polarity === 'PRO_MFAV') ? 5 : -5;
             }
           } else {
-            dflt = (existingVal !== undefined && existingVal !== 0)
+            dflt = (existingVal !== undefined && ((trigProf.zeroEligible && existingVal === 0) || (existingVal !== 0 && (existingVal >= 5 || existingVal <= -5))))
               ? existingVal
-              : borrowTriggerPoints(desc, cat.id, targetDay);
+              : 5;
           }
-          if (dflt === 0) {
-            dflt = borrowTriggerPoints(desc, cat.id, targetDay);
+          if ((!trigProf.zeroEligible && dflt === 0) || (dflt !== 0 && dflt > -5 && dflt < 5)) {
+            const polarity = getTriggerSemanticPolarity(desc);
+            dflt = (isUpsetsCat ? polarity === 'PRO_UNDERDOG' : polarity === 'PRO_MFAV') ? 5 : -5;
           }
           catPoints.set(desc, dflt);
         });
@@ -3797,8 +5890,10 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
         if (bestEval.horizonMetrics) setDeepHorizonMetrics(bestEval.horizonMetrics);
         setDeepPointsMap(new Map(bestPoints));
 
-        // Self-aware batch convergence: climbs past floor, expands frontier, stops on 100% or sweet-spot plateau
+        // Self-aware incremental batch convergence: round-robin ±5 coordinate steps across all active triggers
         let iter = 0;
+        let batchCursor = 0;
+        const batchPool = activeTriggers.length > 0 ? activeTriggers : catalogTriggers;
         while (!bestEval.ceilingMet && !stopDeepRef.current) {
           const topNPure = bestEval.trapInTopN === 0 || 
             bestEval.cleanTopMatches >= cat.targetCapacity ||
@@ -3812,14 +5907,34 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
             iter++;
             categoryComps++;
             totalBatchComps++;
-            const targetTrigger = activeTriggers.length > 0 && Math.random() < 0.75
-              ? activeTriggers[Math.floor(Math.random() * activeTriggers.length)]
-              : catalogTriggers[Math.floor(Math.random() * catalogTriggers.length)];
+            const targetTrigger = (batchPool.length > 0 && Math.random() < 0.75)
+              ? batchPool[(batchCursor++) % batchPool.length]
+              : batchPool[Math.floor(Math.random() * batchPool.length)];
+            if (!targetTrigger) continue;
 
             const currentVal = bestPoints.get(targetTrigger) ?? 0;
-            const otherValues = ALLOWED_POINT_VALUES.filter(v => v !== currentVal);
-            if (otherValues.length === 0) continue;
-            const testVal = otherValues[Math.floor(Math.random() * otherValues.length)];
+            const trigProf = batchProfileMap.get(targetTrigger) || getTriggerAccuracyProfile(targetTrigger, batchHitStats.get(targetTrigger), cat.targetObjective, currentVal, false, cat.id, targetDay, batchHistStats.get(targetTrigger));
+            const trigBand = trigProf.allowedBand;
+            const allowBatchZero = isUpsetsCat && compsSinceMilestone >= 2500 && trigProf.zeroEligible && Math.abs(currentVal) <= 10;
+            const step5Values = trigBand.filter(v =>
+              (v === currentVal + 5 || v === currentVal - 5 || (allowBatchZero && v === 0)) &&
+              v !== currentVal &&
+              (allowBatchZero ? (v === 0 || v >= 5 || v <= -5) : (v !== 0 && (v >= 5 || v <= -5)))
+            );
+            const step10Values = trigBand.filter(v =>
+              (v === currentVal + 10 || v === currentVal - 10 || v === currentVal + 5 || v === currentVal - 5 || (allowBatchZero && v === 0)) &&
+              v !== currentVal &&
+              (allowBatchZero ? (v === 0 || v >= 5 || v <= -5) : (v !== 0 && (v >= 5 || v <= -5)))
+            );
+            const fallbackNearest = trigBand
+              .filter(v => v !== currentVal && (allowBatchZero ? (v === 0 || v >= 5 || v <= -5) : (v !== 0 && (v >= 5 || v <= -5))))
+              .sort((a, b) => Math.abs(a - currentVal) - Math.abs(b - currentVal))
+              .slice(0, 2);
+            const candPool = step5Values.length > 0 && compsSinceMilestone < 2500
+              ? step5Values
+              : (step10Values.length > 0 ? step10Values : fallbackNearest);
+            if (candPool.length === 0) continue;
+            const testVal = candPool[Math.floor(Math.random() * candPool.length)];
 
             bestPoints.set(targetTrigger, testVal);
             const testEval = evaluateSeparation(profiles, bestPoints, cat.targetObjective, cat.targetCapacity);
@@ -3858,32 +5973,31 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       // Commit to runtime
       const tunedRules = Array.from(bestPoints.entries()).map(([description, points]) => ({
         description,
-        points: points !== 0 ? points : borrowTriggerPoints(description, cat.id, targetDay)
+        points
       }));
-      const finalRules = populateCategoryWithMasterRules(tunedRules, cat.targetObjective, cat.id, targetDay);
-      const defaultSettings = DAILY_DEFAULT_CATEGORY_SETTINGS[targetDay]?.[cat.id] || DAILY_DEFAULT_CATEGORY_SETTINGS.saturday[cat.id] || OPTIMIZED_CATEGORY_SETTINGS[cat.id] || {
+      const finalRules = populateCategoryWithMasterRules(tunedRules, cat.targetObjective, cat.id, targetDay, { preserveExact: true });
+      const defaultSettings = DAILY_DEFAULT_CATEGORY_SETTINGS[targetDay]?.[cat.id] || OPTIMIZED_CATEGORY_SETTINGS[cat.id] || {
         name: cat.label,
         description: cat.description,
         baseLogic: "Points based on Primary Pattern PHA %.",
         baseWeightIntervals: [
-          { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-          { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-          { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-          { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-          { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-          { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+          { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
         ],
         rules: []
       };
       const updated = { ...defaultSettings, rules: finalRules };
-      if (selectedDay !== 'all') {
-        updateDailyOptimizedCategorySettings(selectedDay, cat.id, updated, true);
-      } else {
+      updateDailyOptimizedCategorySettings(targetDay, cat.id, updated, false);
+      if (selectedDay === 'all') {
         updateOptimizedCategorySettings(cat.id, updated);
       }
 
-      // Save bestPoints into deepCategoryPointsMap for ALL categories
-      setDeepCategoryPointsMap(prev => ({ ...prev, [cat.id]: new Map(bestPoints) }));
+      // Save bestPoints into deepCategoryPointsMap for this day and category
+      setDeepCategoryPointsMap(prev => ({ ...prev, [`${targetDay}_${cat.id}`]: new Map(bestPoints) }));
       setDeepPointsMap(new Map(bestPoints));
       setDeepPurityPct(bestEval.purityPct);
       setDeepInversions(bestEval.inversions);
@@ -3914,122 +6028,32 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     }
   }, [rawDataset, phaStatsMap, liveViewType, matchStars, activeCategory, selectedDay]);
 
-  // Real Match Data Trigger Discovery & Synergistic Combo Mining
-  const runTriggerDiscovery = useCallback(() => {
-    if (!completedMatches || completedMatches.length === 0) {
-      showToast('No completed matches available for discovery.');
-      return;
-    }
+  const coreRecommendationsCount = useMemo(() => {
+    return effectiveRecommendations.filter(r => !isLeagueTrigger(r.description)).length;
+  }, [effectiveRecommendations]);
 
-    setIsDiscovering(true);
+  const leagueRecommendationsCount = useMemo(() => {
+    return effectiveRecommendations.filter(r => isLeagueTrigger(r.description)).length;
+  }, [effectiveRecommendations]);
 
-    try {
-      // Build real match profiles in memory directly from completed matches
-      const profiles: { outcome: 'mfav' | 'draw' | 'underdog'; triggersHit: Set<string> }[] = [];
-      const statsList: MatchStatSummary[] = [];
+  const leagueBonusCount = useMemo(() => {
+    return effectiveRecommendations.filter(r => isLeagueTrigger(r.description) && r.recommendedPoints > 0).length;
+  }, [effectiveRecommendations]);
 
-      const activeCatForEval = activeCategory === 'safety' ? 'best_bet' : activeCategory;
-
-      completedMatches.forEach(m => {
-        const actual = getActualResult(m.result || '');
-        if (actual !== '1' && actual !== 'X' && actual !== '2') return;
-
-        // Data integrity: Ensure valid market odds exist
-        const moParts = (m.mo || '').split(/[- ,]+/).map(s => parseFloat(s.trim())).filter(p => !isNaN(p));
-        if (moParts.length < 3 || moParts.some(o => o <= 1.0)) return;
-
-        const mFav = getMarketFavorite(m);
-        const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
-
-        let hitSet: Set<string>;
-        const cached = (m as any)._opwCatalogTriggers;
-        if (cached && (cached instanceof Set || Array.isArray(cached))) {
-          hitSet = cached instanceof Set ? cached : new Set(cached);
-        } else {
-          const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCatForEval);
-          stats.evalCategoryId = activeCatForEval;
-          hitSet = evaluateAllCatalogTriggers(stats, m);
-          (m as any)._opwCatalogTriggers = hitSet;
-        }
-
-        profiles.push({ outcome, triggersHit: hitSet });
-      });
-
-      // 1. Mine Synergistic Combos on real match profiles
-      const discoveryResult = mineSynergisticCombos(
-        profiles,
-        activeCategoryConfig.targetObjective,
-        { minSupport: activeCategoryConfig.targetObjective === 'underdog_only' ? 12 : 18, minSynergyLift: 8.0 }
-      );
-
-      // 2. Mine Parameter Continuations on continuous variables
-      const continuations = mineParameterContinuations(statsList, activeCategoryConfig.targetObjective);
-
-      const merged = [...continuations, ...discoveryResult.candidates];
-      setDiscoveredCandidates(merged);
-      setShowDiscoveryPanel(true);
-      if (merged.length > 0) {
-        showToast(`Discovered ${merged.length} real dynamic combos across ${discoveryResult.totalMatchesScanned} matches! (${discoveryResult.totalPairsEvaluated} pairs evaluated)`);
-      } else {
-        showToast(`Scanned ${discoveryResult.totalMatchesScanned} matches (${discoveryResult.totalPairsEvaluated} pairs). No combos met the minimum +8% synergy threshold.`);
-      }
-    } catch (e) {
-      console.error('Error during trigger discovery:', e);
-      showToast('Error scanning match data for combos.');
-    } finally {
-      setIsDiscovering(false);
-    }
-  }, [completedMatches, activeCategory, selectedDay, activeCategoryConfig, phaStatsMap, showToast]);
-
-  const handleApproveCandidate = useCallback((candidate: CandidateComboTrigger) => {
-    const approved: ApprovedCustomTrigger = {
-      id: candidate.id,
-      description: candidate.description,
-      triggerA: candidate.triggerA,
-      triggerB: candidate.triggerB,
-      type: candidate.type,
-      points: candidate.recommendedPoints,
-      targetObjective: candidate.targetObjective,
-      approvedAt: new Date().toISOString(),
-      isActive: true,
-      domain: candidate.domain,
-      realTotalHits: candidate.realTotalHits,
-      realAccuracy: candidate.realAccuracy
-    };
-
-    saveApprovedCustomTrigger(approved);
-    rawDataset.forEach(m => delete (m as any)._opwCatalogTriggers);
-    if (matches) matches.forEach(m => delete (m as any)._opwCatalogTriggers);
-    setApprovedCustomTriggersList(loadApprovedCustomTriggers());
-    setCustomTriggersVersion(v => v + 1);
-    setDiscoveredCandidates(prev => prev.filter(c => c.id !== candidate.id));
-    showToast(`Approved "${candidate.description}" (${candidate.recommendedPoints > 0 ? '+' : ''}${candidate.recommendedPoints} PTS) and added to Catalog!`);
-  }, [rawDataset, matches, showToast]);
-
-  const handleDismissCandidate = useCallback((candidateId: string) => {
-    setDiscoveredCandidates(prev => prev.filter(c => c.id !== candidateId));
-  }, []);
-
-  const handleToggleApproved = useCallback((triggerId: string) => {
-    toggleApprovedCustomTrigger(triggerId);
-    rawDataset.forEach(m => delete (m as any)._opwCatalogTriggers);
-    if (matches) matches.forEach(m => delete (m as any)._opwCatalogTriggers);
-    setApprovedCustomTriggersList(loadApprovedCustomTriggers());
-    setCustomTriggersVersion(v => v + 1);
-  }, [rawDataset, matches]);
-
-  const handleRemoveApproved = useCallback((triggerId: string) => {
-    removeApprovedCustomTrigger(triggerId);
-    rawDataset.forEach(m => delete (m as any)._opwCatalogTriggers);
-    if (matches) matches.forEach(m => delete (m as any)._opwCatalogTriggers);
-    setApprovedCustomTriggersList(loadApprovedCustomTriggers());
-    setCustomTriggersVersion(v => v + 1);
-    showToast('Removed custom trigger from catalog.');
-  }, [rawDataset, matches, showToast]);
+  const leaguePenaltyCount = useMemo(() => {
+    return effectiveRecommendations.filter(r => isLeagueTrigger(r.description) && r.recommendedPoints < 0).length;
+  }, [effectiveRecommendations]);
 
   // Filter & sort recommendations table
   const filteredRecommendations = useMemo(() => {
     let list = effectiveRecommendations;
+
+    // Partition by triggersViewTab ('core' vs 'leagues')
+    if (triggersViewTab === 'core') {
+      list = list.filter(r => !isLeagueTrigger(r.description));
+    } else {
+      list = list.filter(r => isLeagueTrigger(r.description));
+    }
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -4040,9 +6064,6 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       list = list.filter(r => r.recommendedPoints > 0);
     } else if (recommendationFilter === 'penalty') {
       list = list.filter(r => r.recommendedPoints < 0);
-    } else if (recommendationFilter === 'protected') {
-      const guardedSet = new Set(protectedGuardsList.map(g => g.trigger));
-      list = list.filter(r => guardedSet.has(r.description));
     } else if (recommendationFilter === 'zero') {
       list = list.filter(r => r.recommendedPoints === 0);
     } else if (recommendationFilter === 'mismatch') {
@@ -4068,47 +6089,128 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     });
 
     return list;
-  }, [effectiveRecommendations, searchQuery, recommendationFilter, sortField, sortDir, protectedGuardsList]);
+  }, [effectiveRecommendations, searchQuery, recommendationFilter, sortField, sortDir, triggersViewTab, isLeagueTrigger]);
+
+  // Pagination & Stable Row Handlers for 60fps Zero-Lag Scrolling
+  const [tablePageSize, setTablePageSize] = useState<number>(60);
+  const [tablePage, setTablePage] = useState<number>(0);
+
+  useEffect(() => {
+    setTablePage(0);
+  }, [activeCategory, selectedDay, triggersViewTab, recommendationFilter, searchQuery, sortField, sortDir, tablePageSize]);
+
+  const totalTablePages = tablePageSize > 0
+    ? Math.max(1, Math.ceil(filteredRecommendations.length / tablePageSize))
+    : 1;
+  const clampedTablePage = Math.min(tablePage, totalTablePages - 1);
+
+  const paginatedRecommendations = useMemo(() => {
+    if (tablePageSize <= 0) return filteredRecommendations;
+    const start = clampedTablePage * tablePageSize;
+    return filteredRecommendations.slice(start, start + tablePageSize);
+  }, [filteredRecommendations, clampedTablePage, tablePageSize]);
+
+  const rowHandlersRef = useRef({
+    handleSetTriggerPoints,
+    handleToggleLeaguePolarity,
+    setHistoryInspectTrigger
+  });
+  rowHandlersRef.current.handleSetTriggerPoints = handleSetTriggerPoints;
+  rowHandlersRef.current.handleToggleLeaguePolarity = handleToggleLeaguePolarity;
+  rowHandlersRef.current.setHistoryInspectTrigger = setHistoryInspectTrigger;
+
+  const stableInspectHistory = useCallback((desc: string) => {
+    rowHandlersRef.current.setHistoryInspectTrigger(desc);
+  }, []);
+
+  const stableSetTriggerPoints = useCallback((desc: string, pts: number) => {
+    rowHandlersRef.current.handleSetTriggerPoints(desc, pts);
+  }, []);
+
+  const stableToggleLeaguePolarity = useCallback((desc: string) => {
+    rowHandlersRef.current.handleToggleLeaguePolarity(desc);
+  }, []);
 
   // Apply Recommendations to Runtime Category Settings
-  const handleApplyRecommendations = useCallback(async () => {
-    // Only pass actively sample-tuned rules; preserve all algorithmically discovered points including 0
-    const isDeepCalibrated = isDeepOptimizing || deepStatus === 'converged' || !!(deepCategoryPointsMap[activeCategory] && deepCategoryPointsMap[activeCategory].size > 0);
-    const deepMap = deepCategoryPointsMap[activeCategory];
-
-    let tunedRules: { description: string; points: number }[];
-    if (deepMap && deepMap.size > 0) {
-      tunedRules = Array.from(deepMap.entries()).map(([description, points]) => ({
-        description,
-        points: points !== 0 ? Math.max(-40, Math.min(25, points)) : borrowTriggerPoints(description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined)
-      }));
-    } else {
-      tunedRules = effectiveRecommendations
-        .filter(r => isDeepCalibrated ? true : (r.totalHits >= 1))
-        .map(r => ({
-          description: r.description,
-          points: r.recommendedPoints !== 0 ? Math.max(-40, Math.min(25, r.recommendedPoints)) : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined)
-        }));
+  const handleApplyRecommendations = useCallback(async (persistToCodebase?: any) => {
+    const isCodebaseSave = persistToCodebase === true;
+    const effectiveTargetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const dayCatKey = `${effectiveTargetDay}_${activeCategory}`;
+    let deepMap = (allTimeBestPeakRef.current?.category === activeCategory && allTimeBestPeakRef.current.points.size > 0)
+      ? allTimeBestPeakRef.current.points
+      : ((deepPointsCategoryRef.current === activeCategory && deepPointsMap && deepPointsMap.size > 0)
+        ? deepPointsMap
+        : deepCategoryPointsMap[dayCatKey]);
+    if (!deepMap || deepMap.size === 0) {
+      const peakMem = loadOptimizerPeakMemory(effectiveTargetDay, activeCategory);
+      if (peakMem?.points) {
+        deepMap = new Map(Object.entries(peakMem.points));
+      }
     }
+
+    // Build complete calibrated trigger map:
+    // 1. Seed with currentRulePointsMap so untuned triggers retain their exact existing points for this day & category.
+    // 2. Overlay deepMap so tuned triggers strictly override old points.
+    // 3. Pass to populateCategoryWithMasterRules so any unconfigured trigger gets +5 points and no trigger is ever 0 (except Upsets where 0 is allowed) or omitted.
+    const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
+    const mergedPoints = new Map<string, number>();
+    currentRulePointsMap.forEach((pts, desc) => {
+      if (desc && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
+        mergedPoints.set(desc, pts);
+      }
+    });
+    if (deepMap && deepMap.size > 0) {
+      deepMap.forEach((pts, desc) => {
+        if (desc && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
+          mergedPoints.set(desc, pts);
+        }
+      });
+    } else {
+      effectiveRecommendations.forEach(r => {
+        if (r.description && typeof r.recommendedPoints === 'number' && (isUpsetsCat || r.recommendedPoints !== 0)) {
+          mergedPoints.set(r.description, r.recommendedPoints);
+        }
+      });
+    }
+
+    const tunedRules: { description: string; points: number }[] = Array.from(mergedPoints.entries()).map(([description, points]) => ({
+      description,
+      points: Math.max(isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30, Math.min(40, points))
+    }));
 
     const finalRules = populateCategoryWithMasterRules(
       tunedRules,
       activeCategoryConfig.targetObjective,
       activeCategoryConfig.id,
-      selectedDay !== 'all' ? selectedDay : undefined
+      effectiveTargetDay,
+      { preserveExact: true }
     );
+
+    // Category-based locking: If computation turned a league trigger from Pro-Mfav (>= 0) to Pro-Underdog (< 0),
+    // lock it permanently for this day & category so it never reverts to Pro-Mfav.
+    finalRules.forEach(r => {
+      if (isLeagueTrigger(r.description) && r.points < 0) {
+        const prevPts = currentRulePointsMap.get(r.description) ?? 0;
+        if (prevPts >= 0) {
+          lockLeagueAsProUnderdog(r.description, activeCategory, effectiveTargetDay);
+          const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
+            : (activeCategory === 'top_10_value' ? 'top_12_value' : undefined);
+          if (aliasCatId) lockLeagueAsProUnderdog(r.description, aliasCatId, effectiveTargetDay);
+        }
+      }
+    });
 
     const existingSettings = activeSettings || {
       name: activeCategoryConfig.label,
       description: activeCategoryConfig.description,
       baseLogic: "Points based on Primary Pattern PHA %.",
       baseWeightIntervals: [
-        { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-        { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-        { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-        { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-        { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-        { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+        { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
       ],
       rules: []
     };
@@ -4118,27 +6220,137 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       rules: finalRules
     };
 
-    if (selectedDay !== 'all') {
-      updateDailyOptimizedCategorySettings(selectedDay, activeCategory, updated, false);
-      showToast(`Applied ${finalRules.length} calibrated rules (${tunedRules.length} sample-tuned) to ${activeCategoryConfig.label} (${selectedDay.toUpperCase()})!`);
-    } else {
-      updateOptimizedCategorySettings(activeCategory, updated);
-      showToast(`Applied ${finalRules.length} calibrated rules to Main Algo!`);
+    // Strict Day Isolation: Only target the active day unless 'all' days is explicitly selected
+    const targetDaysArray: DayOfWeek[] = selectedDay === 'all'
+      ? (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as DayOfWeek[])
+      : [effectiveTargetDay];
+
+    const aliasKeyForPeak = activeCategory === 'top_12_value' ? 'top_10_value'
+      : (activeCategory === 'top_10_value' ? 'top_12_value'
+      : (activeCategory === 'upsets' ? 'upset'
+      : (activeCategory === 'upset' ? 'upsets'
+      : (activeCategory === 'bankers_dlive' ? 'banker' : undefined))));
+
+    targetDaysArray.forEach(d => {
+      updateDailyOptimizedCategorySettings(d, activeCategory, updated, true, { silent: true, source: 'codebase' });
+      const verifiedClean = cleanMatchesBreakdown.totalTargets > 0 ? cleanMatchesBreakdown.cleanCount : (deepCleanMatches || 0);
+      const verifiedTrapRank = cleanMatchesBreakdown.totalTargets > 0 ? cleanMatchesBreakdown.firstTrapRank : (deepFirstTrapRank || 0);
+      const peakPayload = {
+        cleanTopMatches: verifiedClean,
+        firstTrapRank: verifiedTrapRank,
+        quality: deepQuality || 0,
+        trapRanks: [],
+        trapGaps: [],
+        points: Object.fromEntries(finalRules.map(r => [r.description, r.points]))
+      };
+      saveOptimizerPeakMemory(d, activeCategory, peakPayload);
+      if (aliasKeyForPeak) {
+        saveOptimizerPeakMemory(d, aliasKeyForPeak, peakPayload);
+      }
+    });
+
+    const finalPointsMap = new Map(finalRules.map(r => [r.description, r.points]));
+    deepPointsCategoryRef.current = activeCategory;
+    setDeepPointsMap(finalPointsMap);
+    deepCategoryPointsMapRef.current[dayCatKey] = finalPointsMap;
+    deepCategoryPointsMapRef.current[activeCategory] = finalPointsMap;
+    targetDaysArray.forEach(d => {
+      deepCategoryPointsMapRef.current[`${d}_${activeCategory}`] = finalPointsMap;
+      if (aliasKeyForPeak) {
+        deepCategoryPointsMapRef.current[`${d}_${aliasKeyForPeak}`] = finalPointsMap;
+      }
+    });
+
+    // Keep in-memory deep maps synchronized across all target days
+    setDeepCategoryPointsMap(prev => {
+      const next = { ...prev, [dayCatKey]: finalPointsMap, [activeCategory]: finalPointsMap };
+      targetDaysArray.forEach(d => {
+        next[`${d}_${activeCategory}`] = finalPointsMap;
+        if (aliasKeyForPeak) {
+          next[`${d}_${aliasKeyForPeak}`] = finalPointsMap;
+        }
+      });
+      return next;
+    });
+
+    // If Apply to Runtime was clicked directly, also persist to /api/opw/save-to-code so old rules are permanently deleted on disk & RDS
+    if (!isCodebaseSave && typeof fetch !== 'undefined') {
+      try {
+        const completeRulesPayload = finalRules.map(r => ({
+          description: r.description,
+          points: r.points,
+          note: `Calibrated Rules (${activeCategoryConfig.label}): ${r.points > 0 ? '+' : ''}${r.points} pts`
+        }));
+        const categoriesPayload: Record<string, { rules: typeof completeRulesPayload; targetObjective: string }> = {
+          [activeCategory]: { rules: completeRulesPayload, targetObjective: activeCategoryConfig.targetObjective }
+        };
+        if (aliasKeyForPeak) {
+          categoriesPayload[aliasKeyForPeak] = { rules: completeRulesPayload, targetObjective: activeCategoryConfig.targetObjective };
+        }
+        await fetch('/api/opw/save-to-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            day: effectiveTargetDay,
+            days: targetDaysArray,
+            categories: categoriesPayload,
+            customTriggers: []
+          })
+        });
+      } catch (persistErr) {
+        console.warn('[OPW Apply] Server persistence notice:', persistErr);
+      }
     }
+
+    setDailySettingsMeta(targetDaysArray, Date.now() + 1000);
+    invalidateServerRulesCache();
     savePersistedDailySettings();
+
+    // Clear any cached lockedOpwScores on match objects so Live Analysis & Seer Optimized Slips recompute with new points
+    (matches || []).forEach(m => { delete (m as any).lockedOpwScores; });
+    (allMatches || []).forEach(m => { delete (m as any).lockedOpwScores; });
+    (rawDataset || []).forEach(m => { delete (m as any).lockedOpwScores; });
+
+    showToast(`Applied ${finalRules.length} calibrated rules (${tunedRules.length} sample-tuned) to ${activeCategoryConfig.label} (${effectiveTargetDay.toUpperCase()})!`);
+
+    clearOptimizedScoreCache();
 
     // Clean up locked slips on client localStorage, backend disk, and Supabase
     const targetCats = (activeCategory === 'top_12_value' || activeCategory === 'top_10_value')
-      ? ['top_12_value', 'top_10_value']
+      ? ['top_12_value', 'top_10_value', 'botb_best', 'high_confidence']
+      : (activeCategory === 'bankers_dlive' || activeCategory === 'bankers_jackpot')
+      ? [activeCategory, 'botb_best', 'high_confidence']
+      : (activeCategory === 'upsets' || activeCategory === 'upset')
+      ? ['upsets', 'upset']
       : [activeCategory];
 
     if (typeof window !== 'undefined') {
+      const mergedMatchesMap = new Map<string, Match>();
+      (matches || []).forEach(m => {
+        const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
+        mergedMatchesMap.set(key, m);
+      });
+      (rawDataset || []).forEach(m => {
+        const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
+        if (!mergedMatchesMap.has(key)) mergedMatchesMap.set(key, m);
+      });
+      const allAvailableMatches = Array.from(mergedMatchesMap.values());
+
+      const distinctDates = new Set<string>();
+      allAvailableMatches.forEach(m => {
+        const d = getLogicalDate(m.date, m.time);
+        if (d) distinctDates.add(d);
+      });
+      distinctDates.add(getAnalysisDateString());
+
       try {
+        SESSION_SLIP_CACHE.clear();
         const toDelete: string[] = [];
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
-          if (key && (key.startsWith('local_locked_slip_') || key.startsWith('seer_locked_slip_hash_'))) {
-            if (activeCategory === 'all' || targetCats.some(c => key.endsWith(`_${c}`) || key.endsWith(`_ai_${c}`))) {
+          if (key && (key.startsWith(`local_locked_slip_`) || key.startsWith(`seer_locked_slip_hash_`))) {
+            const matchesDate = Array.from(distinctDates).some(d => key.includes(d));
+            if (matchesDate && (activeCategory === 'all' || targetCats.some(c => key.endsWith(`_${c}`) || key.endsWith(`_ai_${c}`)))) {
               toDelete.push(key);
             }
           }
@@ -4146,165 +6358,376 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
         toDelete.forEach(k => window.localStorage.removeItem(k));
       } catch (e) {}
 
-      // Delete from backend disk storage and Supabase for current dates
-      const distinctDates = new Set<string>();
-      distinctDates.add(getAnalysisDateString());
-      if (matches && matches.length > 0) {
-        matches.forEach(m => {
-          if (m.date) distinctDates.add(getAnalysisDateString(m.date));
-        });
+      // Delete from backend disk storage, PostgreSQL database, and Supabase and await completion
+      try {
+        await invalidateLockedSlipsForWeights(targetCats, distinctDates, [...CATEGORIES.map(c => c.id), 'botb_best', 'high_confidence']);
+        for (const d of distinctDates) {
+          for (const c of targetCats) {
+            await deleteLockedSlip(d, c).catch(() => {});
+          }
+        }
+      } catch (delErr) {
+        console.warn('[OPW Slip Invalidation] Notice:', delErr);
       }
-      const deletePromises: Promise<any>[] = [];
-      distinctDates.forEach(d => {
-        targetCats.forEach(c => {
-          deletePromises.push(deleteLockedSlip(d, c));
-        });
-      });
-      await Promise.allSettled(deletePromises);
 
-      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: activeCategory, day: selectedDay } }));
-      window.dispatchEvent(new Event('seerLockedSlipsUpdated'));
-    }
-  }, [effectiveRecommendations, activeSettings, activeCategoryConfig, selectedDay, activeCategory, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, showToast]);
+      // Immediately generate and permanently save the NEW locked slip using newly calibrated OPW points for every active logical date
+      const primaryDate = Array.from(distinctDates)[0] || getAnalysisDateString();
+      if (allAvailableMatches.length > 0) {
+        try {
+          clearOptimizedScoreCache();
+          const newSlipsToSave: SeerLockedSlip[] = [];
+          for (const slipDate of distinctDates) {
+            const pool = allAvailableMatches.filter(m => {
+              const mDate = getLogicalDate(m.date, m.time);
+              return (mDate === slipDate || !mDate) && !isBannedFromSeerSlips(m);
+            });
+            if (pool.length > 0) {
+              const dayOfWeek = getMatchDayOfWeek({ date: slipDate } as Match) || effectiveTargetDay;
+              const generated = generateSeerSlips(
+                pool,
+                phaStatsMap || {},
+                matchStars,
+                liveViewType === 'jackpot',
+                false,
+                dayOfWeek
+              );
+              for (const catKey of targetCats) {
+                const picksData = generated.live[catKey] || generated.spec[catKey] || generated.live[activeCategory] || generated.spec[activeCategory] || [];
+                if (picksData && picksData.length > 0) {
+                  const picks = picksData.map((p: any) => ({
+                    match_id: p.match_id,
+                    team: p.team || "",
+                    prediction: p.prediction || "1",
+                    primaryPrediction: p.prediction || "1",
+                    odds: p.odds || "1.0",
+                    reason: p.reason || "Automated Calibrated OPW Selection",
+                    confidence: p.confidence || "100%",
+                    category: catKey,
+                    le: p.le || "",
+                    l10: p.l10 || "",
+                    rating: p.rating || "",
+                    gs: p.gs || "",
+                    ga: p.ga || "",
+                    league: p.league || "",
+                    evaluatorTags: p.evaluatorTags || [],
+                    opwPoints: p.opwPoints,
+                    opwRulesHit: p.opwRulesHit,
+                    opwBaseInfo: p.opwBaseInfo,
+                    isHprOverride: p.isHprOverride || false,
+                  }));
 
-  // Apply Recommendations across ALL Categories for the Selected Day and Main Algo
-  const handleApplyRuntimeToAllCategories = useCallback(async () => {
-    CATEGORIES.forEach(cat => {
-      let rulesToApply: { description: string; points: number }[];
+                  const newSlip: SeerLockedSlip = {
+                    id: `${slipDate}_${catKey}`,
+                    date: slipDate,
+                    category: catKey,
+                    picks: picks,
+                    backups: [],
+                    weightsAtTime: DEFAULT_WEIGHTS,
+                    createdAt: new Date().toISOString(),
+                    type: liveViewType === 'jackpot' ? 'jackpot' : 'daily',
+                  };
+                  const newAiSlip: SeerLockedSlip = {
+                    id: `${slipDate}_ai_${catKey}`,
+                    date: slipDate,
+                    category: `ai_${catKey}`,
+                    picks: picks,
+                    backups: [],
+                    weightsAtTime: DEFAULT_WEIGHTS,
+                    createdAt: new Date().toISOString(),
+                    type: liveViewType === 'jackpot' ? 'jackpot' : 'daily',
+                  };
 
-      const deepMap = deepCategoryPointsMap[cat.id];
-
-      if (deepMap && deepMap.size > 0) {
-        // 1. Prioritize Deep Continuous Permutation Optimizer points (resolve 0 to borrowTriggerPoints)
-        rulesToApply = Array.from(deepMap.entries())
-          .map(([description, points]) => ({
-            description,
-            points: points !== 0 ? Math.max(-40, Math.min(25, points)) : borrowTriggerPoints(description, cat.id, selectedDay !== 'all' ? selectedDay : undefined)
-          }));
-      } else if (cat.id === activeCategory && effectiveRecommendations.length > 0) {
-        const isDeepCalibrated = isDeepOptimizing || deepStatus === 'converged' || !!(deepCategoryPointsMap[cat.id] && deepCategoryPointsMap[cat.id].size > 0);
-        rulesToApply = effectiveRecommendations
-          .filter(r => isDeepCalibrated ? true : (r.totalHits >= 1))
-          .map(r => ({
-            description: r.description,
-            points: r.recommendedPoints !== 0 ? Math.max(-40, Math.min(25, r.recommendedPoints)) : borrowTriggerPoints(r.description, cat.id, selectedDay !== 'all' ? selectedDay : undefined)
-          }));
-      } else {
-        // 2. Check if current runtime already has calibrated rules (e.g. from prior deep batch run)
-        const targetDay = selectedDay !== 'all' ? selectedDay : 'saturday';
-        const existingRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[cat.id]?.rules;
-        if (existingRules && existingRules.length > 0) {
-          rulesToApply = existingRules.map(r => ({ description: r.description, points: r.points !== 0 ? r.points : borrowTriggerPoints(r.description, cat.id, targetDay) }));
-        } else {
-          // 3. Fallback to heuristic computation only if no deep optimization exists
-          const computed = computeCategoryRecommendations(
-            cat,
-            rawDataset,
-            phaStatsMap,
-            matchStars,
-            liveViewType,
-            selectedDay,
-            allMatches
-          );
-          rulesToApply = computed.recommendations
-            .filter(r => r.totalHits >= 1)
-            .map(r => ({
-              description: r.description,
-              points: r.recommendedPoints !== 0 ? Math.max(-40, Math.min(25, r.recommendedPoints)) : borrowTriggerPoints(r.description, cat.id, selectedDay !== 'all' ? selectedDay : undefined)
-            }));
+                  newSlipsToSave.push(newSlip, newAiSlip);
+                  console.log(`[OPW Apply] Prepared newly calibrated sticky slip: ${newSlip.id} (${picks.length} picks)`);
+                }
+              }
+            }
+          }
+          if (newSlipsToSave.length > 0) {
+            await saveLockedSlipsBulk(newSlipsToSave, true);
+          }
+        } catch (genErr) {
+          console.warn('[OPW Apply] Notice generating new slip:', genErr);
         }
       }
 
-      const finalRules = populateCategoryWithMasterRules(rulesToApply, cat.targetObjective, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
+      // Verify runtime score parity against optimizer
+      try {
+        const effectiveDay = effectiveTargetDay;
+        const completed = allAvailableMatches.filter(m => {
+          const act = getActualResult(m.result || '');
+          return act === '1' || act === 'X' || act === '2';
+        });
+        if (completed.length > 0) {
+          const isTargetFn = (m: Match) => {
+            const act = getActualResult(m.result || '');
+            const mFav = getMarketFavorite(m);
+            if (activeCategory === 'upsets' || activeCategory === 'underdog_only') {
+              const underdog = mFav === '1' ? '2' : '1';
+              return act === underdog;
+            }
+            return act === mFav;
+          };
+          const scored = completed.map(m => ({
+            match: m,
+            isTarget: isTargetFn(m),
+            score: getOptimizedScoreDetailed(m, activeCategory, phaStatsMap || {}, effectiveDay).totalScore
+          })).sort((a, b) => b.score - a.score);
+          const firstTrapIdx = scored.findIndex(s => !s.isTarget);
+          const runtimeTrapRank = firstTrapIdx >= 0 ? firstTrapIdx + 1 : scored.length;
+          console.log(`[OPW Parity Check] ${activeCategoryConfig.label} applied at runtime on ${effectiveDay}. Runtime first trap rank: #${runtimeTrapRank}`);
+        }
+      } catch (err) {}
+
+      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, syncMainAlgo: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('opw-weights-updated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+    }
+  }, [effectiveRecommendations, activeSettings, activeCategoryConfig, selectedDay, liveMatchDay, datasetDay, activeCategory, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, deepCleanMatches, deepFirstTrapRank, deepQuality, matches, rawDataset, phaStatsMap, matchStars, liveViewType, showToast]);
+
+  // Apply Recommendations across ALL Categories for the Selected Day and Main Algo
+  const handleApplyRuntimeToAllCategories = useCallback(async () => {
+    const mergedMatchesMap = new Map<string, Match>();
+    (matches || []).forEach(m => {
+      const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
+      mergedMatchesMap.set(key, m);
+    });
+    (rawDataset || []).forEach(m => {
+      const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
+      if (!mergedMatchesMap.has(key)) mergedMatchesMap.set(key, m);
+    });
+    const allAvailableMatches = Array.from(mergedMatchesMap.values());
+
+    const matchDaysInPool = new Set<DayOfWeek>();
+    allAvailableMatches.forEach(m => {
+      const d = getMatchDayOfWeek(m);
+      if (d) matchDaysInPool.add(d);
+    });
+
+    CATEGORIES.forEach(cat => {
+      let rulesToApply: { description: string; points: number }[];
+
+      const targetDay = datasetDay;
+      const dayCatKey = `${targetDay}_${cat.id}`;
+      let deepMap = (cat.id === activeCategory && deepPointsMap && deepPointsMap.size > 0)
+        ? deepPointsMap
+        : deepCategoryPointsMap[dayCatKey];
+      if (!deepMap || deepMap.size === 0) {
+        const peakMem = loadOptimizerPeakMemory(targetDay, cat.id);
+        if (peakMem?.points) {
+          deepMap = new Map(Object.entries(peakMem.points));
+        }
+      }
+
+      if (deepMap && deepMap.size > 0) {
+        rulesToApply = Array.from(deepMap.entries())
+          .map(([description, points]) => ({
+            description,
+            points: Math.max(isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30, Math.min(40, points))
+          }));
+      } else if (cat.id === activeCategory && effectiveRecommendations.length > 0) {
+        rulesToApply = effectiveRecommendations
+          .map(r => ({
+            description: r.description,
+            points: Math.max(isLeagueTrigger(r.description) ? getLeagueTriggerMaxPenalty(r.description) : -30, Math.min(40, r.recommendedPoints))
+          }));
+      } else {
+        const aliasKey = cat.id === 'upsets' ? 'upset' : (cat.id === 'upset' ? 'upsets' : (cat.id === 'top_12_value' ? 'top_10_value' : (cat.id === 'top_10_value' ? 'top_12_value' : (cat.id === 'value_bets' ? 'value_bet' : (cat.id === 'value_bet' ? 'value_bets' : cat.id)))));
+        const existingRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[cat.id]?.rules
+          || DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasKey]?.rules
+          || OPTIMIZED_CATEGORY_SETTINGS[cat.id]?.rules
+          || OPTIMIZED_CATEGORY_SETTINGS[aliasKey]?.rules;
+        if (existingRules && existingRules.length > 0) {
+          rulesToApply = existingRules.map(r => ({ description: r.description, points: r.points }));
+        } else {
+          const masterFallback = MASTER_RULES_MAP[cat.id] || MASTER_RULES_MAP[aliasKey];
+          if (masterFallback && masterFallback.length > 0) {
+            rulesToApply = masterFallback.map(r => ({ description: r.description, points: r.points }));
+          } else {
+            rulesToApply = [];
+          }
+        }
+      }
+
+      const finalRules = populateCategoryWithMasterRules(rulesToApply, cat.targetObjective, cat.id, selectedDay !== 'all' ? selectedDay : targetDay, { preserveExact: true });
       const existingSettings = (selectedDay !== 'all' ? DAILY_OPTIMIZED_SETTINGS[selectedDay]?.[cat.id] : undefined) ||
-        OPTIMIZED_CATEGORY_SETTINGS[cat.id] || 
-        DAILY_DEFAULT_CATEGORY_SETTINGS.saturday[cat.id] || {
+        (selectedDay !== 'all' ? DAILY_DEFAULT_CATEGORY_SETTINGS[selectedDay]?.[cat.id] : undefined) ||
+        OPTIMIZED_CATEGORY_SETTINGS[cat.id] || {
         name: cat.label,
         description: cat.description,
         baseLogic: "Points based on Primary Pattern PHA %.",
         baseWeightIntervals: [
-          { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-          { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-          { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-          { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-          { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-          { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+          { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
         ],
         rules: []
       };
 
       const updated = { ...existingSettings, rules: finalRules };
+      const isActCat = cat.id === activeCategory;
+      const activeCleanMetric = cleanMatchesBreakdown.totalTargets > 0 ? cleanMatchesBreakdown.cleanCount : (deepCleanMatches || 0);
+      const activeTrapRankMetric = cleanMatchesBreakdown.totalTargets > 0 ? cleanMatchesBreakdown.firstTrapRank : (deepFirstTrapRank || 0);
       if (selectedDay !== 'all') {
-        updateDailyOptimizedCategorySettings(selectedDay, cat.id, updated, false);
+        const targetDays = new Set<DayOfWeek>([selectedDay]);
+        if (datasetDay) targetDays.add(datasetDay);
+        if (liveMatchDay) targetDays.add(liveMatchDay);
+        matchDaysInPool.forEach(d => targetDays.add(d));
+        targetDays.forEach(d => {
+          updateDailyOptimizedCategorySettings(d, cat.id, updated, true, { silent: true, source: 'codebase' });
+          const existingPeak = !isActCat ? loadOptimizerPeakMemory(d, cat.id) : null;
+          saveOptimizerPeakMemory(d, cat.id, {
+            cleanTopMatches: isActCat ? activeCleanMetric : (existingPeak?.cleanTopMatches ?? 0),
+            firstTrapRank: isActCat ? activeTrapRankMetric : (existingPeak?.firstTrapRank ?? 0),
+            quality: isActCat ? (deepQuality || 0) : (existingPeak?.quality ?? 0),
+            trapRanks: existingPeak?.trapRanks ?? [],
+            trapGaps: existingPeak?.trapGaps ?? [],
+            points: Object.fromEntries(finalRules.map(r => [r.description, r.points]))
+          });
+        });
       } else {
-        updateOptimizedCategorySettings(cat.id, updated);
-      }
-    });
-
-    savePersistedDailySettings();
-
-    // Sync any tuned combo points to approved custom triggers so localStorage & server stay in sync
-    const approvedList = loadApprovedCustomTriggers();
-    let approvedUpdated = false;
-    CATEGORIES.forEach(cat => {
-      const deepMap = deepCategoryPointsMap[cat.id];
-      if (deepMap) {
-        deepMap.forEach((points, desc) => {
-          const custom = approvedList.find(c => c.description === desc);
-          if (custom && custom.points !== points) {
-            custom.points = points;
-            approvedUpdated = true;
-          }
+        updateOptimizedCategorySettings(cat.id, updated, undefined, { silent: true, source: 'codebase' });
+        const allDays: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+        allDays.forEach(d => {
+          updateDailyOptimizedCategorySettings(d, cat.id, updated, true, { silent: true, source: 'codebase' });
+          const existingPeak = !isActCat ? loadOptimizerPeakMemory(d, cat.id) : null;
+          saveOptimizerPeakMemory(d, cat.id, {
+            cleanTopMatches: isActCat ? activeCleanMetric : (existingPeak?.cleanTopMatches ?? 0),
+            firstTrapRank: isActCat ? activeTrapRankMetric : (existingPeak?.firstTrapRank ?? 0),
+            quality: isActCat ? (deepQuality || 0) : (existingPeak?.quality ?? 0),
+            trapRanks: existingPeak?.trapRanks ?? [],
+            trapGaps: existingPeak?.trapGaps ?? [],
+            points: Object.fromEntries(finalRules.map(r => [r.description, r.points]))
+          });
         });
       }
     });
-    if (approvedUpdated && typeof window !== 'undefined') {
-      window.localStorage.setItem('seer_approved_custom_triggers_v1', JSON.stringify(approvedList));
-      window.dispatchEvent(new CustomEvent('seerCustomTriggersUpdated'));
-      fetch('/api/opw/save-custom-triggers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ triggers: approvedList })
-      }).catch(err => console.warn('[CustomTriggers] Sync error:', err));
-    }
+
+    (matches || []).forEach(m => { delete (m as any).lockedOpwScores; });
+    (allMatches || []).forEach(m => { delete (m as any).lockedOpwScores; });
+    (rawDataset || []).forEach(m => { delete (m as any).lockedOpwScores; });
+    savePersistedDailySettings();
+    clearOptimizedScoreCache();
 
     if (typeof window !== 'undefined') {
+      const distinctDates = new Set<string>();
+      allAvailableMatches.forEach(m => {
+        const d = getLogicalDate(m.date, m.time);
+        if (d) distinctDates.add(d);
+      });
+      distinctDates.add(getAnalysisDateString());
+
       try {
+        SESSION_SLIP_CACHE.clear();
         const toDelete: string[] = [];
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
-          if (key && key.startsWith('local_locked_slip_')) {
-            toDelete.push(key);
+          if (key && (key.startsWith(`local_locked_slip_`) || key.startsWith(`seer_locked_slip_hash_`))) {
+            const matchesDate = Array.from(distinctDates).some(d => key.includes(d));
+            if (matchesDate) {
+              toDelete.push(key);
+            }
           }
         }
         toDelete.forEach(k => window.localStorage.removeItem(k));
       } catch (e) {}
 
-      // Delete from backend disk storage and Supabase for current dates across all categories
-      const distinctDates = new Set<string>();
-      distinctDates.add(getAnalysisDateString());
-      if (matches && matches.length > 0) {
-        matches.forEach(m => {
-          if (m.date) distinctDates.add(getAnalysisDateString(m.date));
-        });
-      }
-      const deletePromises: Promise<any>[] = [];
-      distinctDates.forEach(d => {
-        CATEGORIES.forEach(cat => {
-          deletePromises.push(deleteLockedSlip(d, cat.id));
-          if (cat.id === 'top_12_value') {
-            deletePromises.push(deleteLockedSlip(d, 'top_10_value'));
-          }
-        });
-      });
-      await Promise.allSettled(deletePromises);
+      // Delete from backend disk storage and Supabase
+      const allSlipCatIds = Array.from(new Set([...CATEGORIES.map(c => c.id), 'top_10_value', 'upset', 'botb_best', 'high_confidence']));
+      await invalidateLockedSlipsForWeights('all', distinctDates, allSlipCatIds)
+        .catch(err => console.warn('[OPW Slip Invalidation] Background error:', err));
 
-      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: 'all', day: selectedDay } }));
-      window.dispatchEvent(new Event('seerLockedSlipsUpdated'));
+      // Immediately generate and save locked slips for ALL categories across active logical dates
+      if (allAvailableMatches.length > 0) {
+        try {
+          clearOptimizedScoreCache();
+          const newSlipsToSave: SeerLockedSlip[] = [];
+          const effDay = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
+          for (const slipDate of distinctDates) {
+            const pool = allAvailableMatches.filter(m => {
+              const mDate = getLogicalDate(m.date, m.time);
+              return (mDate === slipDate || !mDate) && !isBannedFromSeerSlips(m);
+            });
+            if (pool.length > 0) {
+              const dayOfWeek = getMatchDayOfWeek({ date: slipDate } as Match) || effDay;
+              const generated = generateSeerSlips(
+                pool,
+                phaStatsMap || {},
+                matchStars,
+                liveViewType === 'jackpot',
+                false,
+                dayOfWeek
+              );
+              for (const catId of allSlipCatIds) {
+                const picksData = generated.live[catId] || generated.spec[catId] || [];
+                if (picksData && picksData.length > 0) {
+                  const picks = picksData.map((p: any) => ({
+                    match_id: p.match_id,
+                    team: p.team || "",
+                    prediction: p.prediction || "1",
+                    primaryPrediction: p.prediction || "1",
+                    odds: p.odds || "1.0",
+                    reason: p.reason || "Automated Calibrated OPW Selection",
+                    confidence: p.confidence || "100%",
+                    category: catId,
+                    le: p.le || "",
+                    l10: p.l10 || "",
+                    rating: p.rating || "",
+                    gs: p.gs || "",
+                    ga: p.ga || "",
+                    league: p.league || "",
+                    evaluatorTags: p.evaluatorTags || [],
+                    opwPoints: p.opwPoints,
+                    opwRulesHit: p.opwRulesHit,
+                    opwBaseInfo: p.opwBaseInfo,
+                    isHprOverride: p.isHprOverride || false,
+                  }));
+
+                  const newSlip: SeerLockedSlip = {
+                    id: `${slipDate}_${catId}`,
+                    date: slipDate,
+                    category: catId,
+                    picks: picks,
+                    backups: [],
+                    weightsAtTime: DEFAULT_WEIGHTS,
+                    createdAt: new Date().toISOString(),
+                    type: liveViewType === 'jackpot' ? 'jackpot' : 'daily',
+                  };
+                  const newAiSlip: SeerLockedSlip = {
+                    id: `${slipDate}_ai_${catId}`,
+                    date: slipDate,
+                    category: `ai_${catId}`,
+                    picks: picks,
+                    backups: [],
+                    weightsAtTime: DEFAULT_WEIGHTS,
+                    createdAt: new Date().toISOString(),
+                    type: liveViewType === 'jackpot' ? 'jackpot' : 'daily',
+                  };
+                  newSlipsToSave.push(newSlip, newAiSlip);
+                }
+              }
+            }
+          }
+          if (newSlipsToSave.length > 0) {
+            await saveLockedSlipsBulk(newSlipsToSave, true);
+          }
+        } catch (genErr) {
+          console.warn('[OPW Apply All] Notice generating new slips:', genErr);
+        }
+      }
+
+      const effDay = selectedDay !== 'all' ? selectedDay : (liveMatchDay || 'sunday');
+      const primaryDate = Array.from(distinctDates)[0] || getAnalysisDateString();
+      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: 'all', day: effDay, purge: false, wipeSlips: false, refreshLocked: true, syncMainAlgo: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: 'all', day: effDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('opw-weights-updated', { detail: { category: 'all', day: effDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
     }
     const dayLabel = selectedDay !== 'all' ? selectedDay.toUpperCase() : 'Main Algo';
     showToast(`Applied calibrated runtime weights across ALL 7 categories to ${dayLabel}!`);
-  }, [activeCategory, effectiveRecommendations, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, showToast]);
+  }, [activeCategory, effectiveRecommendations, rawDataset, datasetDay, phaStatsMap, matchStars, liveViewType, selectedDay, liveMatchDay, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, showToast]);
 
   const handleResetToCodeDefaults = () => {
     resetToCodeDefaults(selectedDay !== 'all' ? selectedDay : undefined);
@@ -4338,21 +6761,24 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       return;
     }
 
-    const isDeepCalibrated = isDeepOptimizing || deepStatus === 'converged' || !!(deepCategoryPointsMap[activeCategory] && deepCategoryPointsMap[activeCategory].size > 0);
-    const deepMap = deepCategoryPointsMap[activeCategory];
+    const dayCatKey = `${selectedDay !== 'all' ? selectedDay : datasetDay}_${activeCategory}`;
+    const isDeepCalibrated = isDeepOptimizing || deepStatus === 'converged' || !!(deepCategoryPointsMap[dayCatKey] && deepCategoryPointsMap[dayCatKey].size > 0);
+    const deepMap = deepCategoryPointsMap[dayCatKey];
 
     let tunedRules: { description: string; points: number }[];
     if (deepMap && deepMap.size > 0) {
       tunedRules = Array.from(deepMap.entries()).map(([description, points]) => ({
         description,
-        points: points !== 0 ? Math.max(-40, Math.min(25, points)) : borrowTriggerPoints(description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined)
+        points: Math.max(-40, Math.min(25, points))
       }));
     } else {
       tunedRules = effectiveRecommendations
         .filter(r => isDeepCalibrated ? true : (r.totalHits >= 1))
         .map(r => ({
           description: r.description,
-          points: r.recommendedPoints !== 0 ? Math.max(-40, Math.min(25, r.recommendedPoints)) : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined)
+          points: isDeepCalibrated
+            ? Math.max(-40, Math.min(25, r.recommendedPoints))
+            : (r.recommendedPoints !== 0 ? Math.max(-40, Math.min(25, r.recommendedPoints)) : 5)
         }));
     }
 
@@ -4360,7 +6786,8 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       tunedRules,
       activeCategoryConfig.targetObjective,
       activeCategoryConfig.id,
-      selectedDay !== 'all' ? selectedDay : undefined
+      selectedDay !== 'all' ? selectedDay : undefined,
+      { preserveExact: !!isDeepCalibrated || !!(deepMap && deepMap.size > 0) }
     );
 
     const existingSettings = activeSettings || {
@@ -4368,12 +6795,12 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       description: activeCategoryConfig.description,
       baseLogic: "Points based on Primary Pattern PHA %.",
       baseWeightIntervals: [
-        { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-        { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-        { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-        { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-        { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-        { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+        { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
       ],
       rules: []
     };
@@ -4392,15 +6819,40 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       updateOptimizedCategorySettings(activeCategory, updated);
     }
 
-    savePersistedDailySettings();
+    clearOptimizedScoreCache();
 
     // Clean up locked slips on client localStorage and backend disk
     const targetCats = (activeCategory === 'top_12_value' || activeCategory === 'top_10_value')
-      ? ['top_12_value', 'top_10_value']
+      ? ['top_12_value', 'top_10_value', 'botb_best', 'high_confidence']
+      : (activeCategory === 'bankers_dlive' || activeCategory === 'bankers_jackpot')
+      ? [activeCategory, 'botb_best', 'high_confidence']
+      : (activeCategory === 'upsets' || activeCategory === 'upset')
+      ? ['upsets', 'upset']
       : [activeCategory];
 
     if (typeof window !== 'undefined') {
+      const mergedMatchesMap = new Map<string, Match>();
+      (matches || []).forEach(m => {
+        const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
+        mergedMatchesMap.set(key, m);
+      });
+      (rawDataset || []).forEach(m => {
+        const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
+        if (!mergedMatchesMap.has(key)) mergedMatchesMap.set(key, m);
+      });
+      const allAvailableMatches = Array.from(mergedMatchesMap.values());
+
+      const distinctDates = new Set<string>();
+      distinctDates.add(getAnalysisDateString());
+      allAvailableMatches.forEach(m => {
+        if (m.date) {
+          distinctDates.add(getAnalysisDateString(m.date));
+          distinctDates.add(getLogicalDate(m.date, m.time));
+        }
+      });
+
       try {
+        SESSION_SLIP_CACHE.clear();
         const toDelete: string[] = [];
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
@@ -4413,23 +6865,78 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
         toDelete.forEach(k => window.localStorage.removeItem(k));
       } catch (e) {}
 
-      const distinctDates = new Set<string>();
-      distinctDates.add(getAnalysisDateString());
-      if (matches && matches.length > 0) {
-        matches.forEach(m => {
-          if (m.date) distinctDates.add(getAnalysisDateString(m.date));
-        });
-      }
-      const deletePromises: Promise<any>[] = [];
-      distinctDates.forEach(d => {
-        targetCats.forEach(c => {
-          deletePromises.push(deleteLockedSlip(d, c));
-        });
-      });
-      await Promise.allSettled(deletePromises);
+      await invalidateLockedSlipsForWeights(targetCats, distinctDates, [...CATEGORIES.map(c => c.id), 'botb_best', 'high_confidence']);
 
-      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: activeCategory, days: adoptedDaysList } }));
-      window.dispatchEvent(new Event('seerLockedSlipsUpdated'));
+      // Regenerate and re-lock slips for active dates
+      if (allAvailableMatches.length > 0) {
+        try {
+          clearOptimizedScoreCache();
+          const newSlipsToSave: SeerLockedSlip[] = [];
+          for (const slipDate of distinctDates) {
+            const pool = allAvailableMatches.filter(m => {
+              const mDate = getLogicalDate(m.date, m.time);
+              return (mDate === slipDate || !mDate) && !isBannedFromSeerSlips(m);
+            });
+            if (pool.length > 0) {
+              const dayOfWeek = getMatchDayOfWeek({ date: slipDate } as Match) || adoptedDaysList[0];
+              const generated = generateSeerSlips(
+                pool,
+                phaStatsMap || {},
+                matchStars,
+                liveViewType === 'jackpot',
+                false,
+                dayOfWeek
+              );
+              for (const catKey of targetCats) {
+                const picksData = generated.live[catKey] || generated.spec[catKey] || generated.live[activeCategory] || generated.spec[activeCategory] || [];
+                if (picksData && picksData.length > 0) {
+                  const picks = picksData.map((p: any) => ({
+                    match_id: p.match_id,
+                    team: p.team || "",
+                    prediction: p.prediction || "1",
+                    primaryPrediction: p.prediction || "1",
+                    odds: p.odds || "1.0",
+                    reason: p.reason || "Automated Calibrated OPW Selection",
+                    confidence: p.confidence || "100%",
+                    category: catKey,
+                    le: p.le || "",
+                    l10: p.l10 || "",
+                    rating: p.rating || "",
+                    gs: p.gs || "",
+                    ga: p.ga || "",
+                    league: p.league || "",
+                    evaluatorTags: p.evaluatorTags || [],
+                    opwPoints: p.opwPoints,
+                    opwRulesHit: p.opwRulesHit,
+                    opwBaseInfo: p.opwBaseInfo,
+                    isHprOverride: p.isHprOverride || false,
+                  }));
+                  newSlipsToSave.push({
+                    id: `${slipDate}_${catKey}`,
+                    date: slipDate,
+                    category: catKey,
+                    picks,
+                    backups: [],
+                    weightsAtTime: DEFAULT_WEIGHTS,
+                    createdAt: new Date().toISOString(),
+                    type: liveViewType === 'jackpot' ? 'jackpot' : 'daily',
+                  });
+                }
+              }
+            }
+          }
+          if (newSlipsToSave.length > 0) {
+            await saveLockedSlipsBulk(newSlipsToSave, true);
+          }
+        } catch (err) {
+          console.warn('[OPW Adopt] Notice regenerating slips:', err);
+        }
+      }
+
+      const primaryDate = Array.from(distinctDates)[0] || getAnalysisDateString();
+      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: activeCategory, days: adoptedDaysList, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: activeCategory, days: adoptedDaysList, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('opw-weights-updated', { detail: { category: activeCategory, days: adoptedDaysList, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
     }
 
     setShowAdoptModal(false);
@@ -4439,7 +6946,7 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       ? 'ALL 7 DAYS'
       : adoptedDaysList.map(d => d.slice(0, 3).toUpperCase()).join(', ');
     showToast(`Adopted ${finalRules.length} calibrated rules for ${activeCategoryConfig.label} to ${targetDaysLabel}${adoptToMainAlgo ? ' & Main Algo' : ''}!`);
-  }, [selectedAdoptDays, adoptToMainAlgo, activeCategory, activeCategoryConfig, activeSettings, effectiveRecommendations, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, showToast]);
+  }, [selectedAdoptDays, adoptToMainAlgo, activeCategory, activeCategoryConfig, activeSettings, effectiveRecommendations, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay, datasetDay, showToast]);
 
   const handleExportJSON = () => {
     const data = {
@@ -4476,14 +6983,15 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
   }, []);
 
   const generateCodeUpdateSnippet = useCallback(() => {
-    const activeDayKey = selectedDay !== 'all' ? selectedDay : 'saturday';
+    const activeDayKey = selectedDay !== 'all' ? selectedDay : datasetDay;
     const targetFile = getDailyOpwFilename(activeDayKey);
-    const deepMap = deepCategoryPointsMap[activeCategory];
+    const deepMap = deepCategoryPointsMap[`${activeDayKey}_${activeCategory}`];
     
+    const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
     let nonZeroRules: { description: string; points: number; note: string }[];
     if (deepMap && deepMap.size > 0) {
       nonZeroRules = Array.from(deepMap.entries()).map(([description, points]) => {
-        const finalPts = points !== 0 ? points : borrowTriggerPoints(description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined);
+        const finalPts = (points !== 0 || isUpsetsCat) ? points : 5;
         return {
           description,
           points: finalPts,
@@ -4492,7 +7000,7 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
       });
     } else {
       nonZeroRules = effectiveRecommendations.map(r => {
-        const finalPts = r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, activeCategoryConfig.id, selectedDay !== 'all' ? selectedDay : undefined);
+        const finalPts = (r.recommendedPoints !== 0 || isUpsetsCat) ? r.recommendedPoints : 5;
         return {
           description: r.description,
           points: finalPts,
@@ -4506,12 +7014,12 @@ export const OPWAlgo: React.FC<OPWAlgoProps> = ({
     ).join('\n');
 
     return `// ============================================================================
-// OPW ALGO CODE UPDATE: ${activeDayKey.toUpperCase()} & MAIN ALGO
-// Target File: ${targetFile} & src/opwalgo.tsx
+// OPW ALGO CODE UPDATE: ${activeDayKey.toUpperCase()}
+// Target File: ${targetFile}
 // Category: ${activeCategoryConfig.label} ("${activeCategory}")
 // Objective: ${activeCategoryConfig.targetObjective}
 // Generated: ${new Date().toLocaleString()}
-// Isolation Policy: Only ${activeDayKey.toUpperCase()} and Main Algo are adjusted.
+// Isolation Policy: Only ${activeDayKey.toUpperCase()} is adjusted. Other days are unaffected.
 // ============================================================================
 
 rules: populateCategoryWithMasterRules([
@@ -4520,16 +7028,16 @@ ${rulesCode}
   }, [effectiveRecommendations, selectedDay, activeCategory, activeCategoryConfig, getDailyOpwFilename, deepCategoryPointsMap]);
 
   const generateAllCodeUpdatesSnippet = useCallback(() => {
-    const activeDayKey = selectedDay !== 'all' ? selectedDay : 'saturday';
+    const activeDayKey = selectedDay !== 'all' ? selectedDay : datasetDay;
     const targetFile = getDailyOpwFilename(activeDayKey);
-    const dayLabel = selectedDay !== 'all' ? selectedDay.toUpperCase() : 'SATURDAY & MAIN ALGO';
+    const dayLabel = activeDayKey.toUpperCase();
 
     const sections: string[] = [
       `// ============================================================================`,
-      `// SEER OPW ALGO CODE UPDATE: ${dayLabel} & MAIN ALGO`,
+      `// SEER OPW ALGO CODE UPDATE: ${dayLabel}`,
       `// Generated: ${new Date().toLocaleString()}`,
-      `// Target Files: ${targetFile} & src/opwalgo.tsx`,
-      `// Isolation Policy: Only ${dayLabel} and Main Algo are adjusted. Other daily files are unaffected.`,
+      `// Target File: ${targetFile}`,
+      `// Isolation Policy: Only ${dayLabel} is adjusted. Other daily files are unaffected.`,
       `// ============================================================================\n`
     ];
 
@@ -4539,11 +7047,12 @@ ${rulesCode}
       sections.push(`// ----------------------------------------------------------------------------`);
       
       let rules: { description: string; points: number; note: string }[];
-      const deepMap = deepCategoryPointsMap[cat.id];
+      const deepMap = deepCategoryPointsMap[`${activeDayKey}_${cat.id}`];
+      const isCatUd = cat.id === 'upsets' || cat.id === 'upset' || cat.targetObjective === 'underdog_only';
 
       if (deepMap && deepMap.size > 0) {
         rules = Array.from(deepMap.entries()).map(([description, points]) => {
-          const finalPts = points !== 0 ? points : borrowTriggerPoints(description, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
+          const finalPts = (points !== 0 || isCatUd) ? points : 5;
           return {
             description,
             points: finalPts,
@@ -4552,7 +7061,7 @@ ${rulesCode}
         });
       } else if (cat.id === activeCategory && effectiveRecommendations.length > 0) {
         rules = effectiveRecommendations.map(r => {
-          const finalPts = r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
+          const finalPts = (r.recommendedPoints !== 0 || isCatUd) ? r.recommendedPoints : 5;
           return {
             description: r.description,
             points: finalPts,
@@ -4561,10 +7070,14 @@ ${rulesCode}
         });
       } else {
         const targetDay = selectedDay !== 'all' ? selectedDay : 'saturday';
-        const existingRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[cat.id]?.rules;
+        const aliasKey = cat.id === 'upsets' ? 'upset' : (cat.id === 'upset' ? 'upsets' : (cat.id === 'top_12_value' ? 'top_10_value' : (cat.id === 'top_10_value' ? 'top_12_value' : (cat.id === 'value_bets' ? 'value_bet' : (cat.id === 'value_bet' ? 'value_bets' : cat.id)))));
+        const existingRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[cat.id]?.rules
+          || DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasKey]?.rules
+          || OPTIMIZED_CATEGORY_SETTINGS[cat.id]?.rules
+          || OPTIMIZED_CATEGORY_SETTINGS[aliasKey]?.rules;
         if (existingRules && existingRules.length > 0) {
           rules = existingRules.map(r => {
-            const finalPts = r.points !== 0 ? r.points : borrowTriggerPoints(r.description, cat.id, targetDay);
+            const finalPts = (r.points !== 0 || isCatUd) ? r.points : 5;
             return {
               description: r.description,
               points: finalPts,
@@ -4572,21 +7085,13 @@ ${rulesCode}
             };
           });
         } else {
-          const computed = computeCategoryRecommendations(
-            cat,
-            rawDataset,
-            phaStatsMap,
-            matchStars,
-            liveViewType,
-            selectedDay,
-            allMatches
-          );
-          rules = computed.recommendations.map(r => {
-            const finalPts = r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, cat.id, selectedDay !== 'all' ? selectedDay : undefined);
+          const masterFallback = MASTER_RULES_MAP[cat.id] || MASTER_RULES_MAP[aliasKey] || [];
+          rules = masterFallback.map(r => {
+            const finalPts = (r.points !== 0 || isCatUd) ? r.points : 5;
             return {
               description: r.description,
               points: finalPts,
-              note: `${finalPts > 0 ? '+' : ''}${finalPts} pts (${r.mfavPct.toFixed(0)}% Mfav, ${r.drawPct.toFixed(0)}% Draw, ${r.underdogPct.toFixed(0)}% UD | ${r.totalHits} hits)`
+              note: `Master Rules: ${finalPts > 0 ? '+' : ''}${finalPts} pts`
             };
           });
         }
@@ -4601,7 +7106,7 @@ ${rulesCode}
 
     sections.push(`// ============================================================================`);
     sections.push(`// INTEGRATION FOR ${targetFile}:`);
-    sections.push(`// Copy to ${targetFile} (get${activeDayKey.charAt(0).toUpperCase() + activeDayKey.slice(1)}CategorySettings) and src/opwalgo.tsx.`);
+    sections.push(`// Copy to ${targetFile} (get${activeDayKey.charAt(0).toUpperCase() + activeDayKey.slice(1)}CategorySettings).`);
     sections.push(`// ============================================================================`);
 
     return sections.join('\n');
@@ -4609,89 +7114,116 @@ ${rulesCode}
 
   // Permanently save calibrated rules to codebase via /api/opw/save-to-code
   const handleSaveCalibratedRulesToCode = useCallback(async () => {
+    let safetyTimer: any;
     try {
       setIsSavingCode(true);
-      const targetDay = selectedDay !== 'all' ? selectedDay : 'saturday';
+      safetyTimer = setTimeout(() => {
+        setIsSavingCode(false);
+      }, 8000);
+      await new Promise(r => setTimeout(r, 0));
+
+      const targetDay = datasetDay;
+      const dayForBackend = selectedDay === 'all' ? targetDay : selectedDay;
       
+      // Strict Day Isolation: Only target the active day unless 'all' days is explicitly selected
+      const daysArray: DayOfWeek[] = selectedDay === 'all'
+        ? (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as DayOfWeek[])
+        : [dayForBackend];
+
       const categoriesPayload: Record<string, { rules: { description: string; points: number; note?: string }[]; targetObjective: string }> = {};
 
-      CATEGORIES.forEach(cat => {
-        let rules: { description: string; points: number; note?: string }[] = [];
-        const deepMap = deepCategoryPointsMap[cat.id];
+      // Day & Category Isolation: Only process the active category unless in Historical Universe mode with multi-category scope
+      const categoriesToProcess = (datasetScope === 'history') 
+        ? CATEGORIES 
+        : [CATEGORIES.find(c => c.id === activeCategory)!].filter(Boolean);
 
-        if (deepMap && deepMap.size > 0) {
-          rules = Array.from(deepMap.entries()).map(([description, points]) => {
-            const finalPts = points !== 0 ? points : borrowTriggerPoints(description, cat.id, targetDay);
-            return {
-              description,
-              points: finalPts,
-              note: `Deep Continuous Permutation Optimizer: ${finalPts > 0 ? '+' : ''}${finalPts} pts`
-            };
-          });
-        } else if (cat.id === activeCategory && effectiveRecommendations.length > 0) {
-          rules = effectiveRecommendations.map(r => {
-            const finalPts = r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, cat.id, targetDay);
-            return {
-              description: r.description,
-              points: finalPts,
-              note: `${finalPts > 0 ? '+' : ''}${finalPts} pts (${r.mfavPct.toFixed(0)}% Mfav, ${r.drawPct.toFixed(0)}% Draw, ${r.underdogPct.toFixed(0)}% UD | ${r.totalHits} hits)`
-            };
-          });
-        } else {
-          const existingRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[cat.id]?.rules;
-          if (existingRules && existingRules.length > 0) {
-            rules = existingRules.map(r => {
-              const finalPts = r.points !== 0 ? r.points : borrowTriggerPoints(r.description, cat.id, targetDay);
-              return {
-                description: r.description,
-                points: finalPts,
-                note: `Calibrated Runtime: ${finalPts > 0 ? '+' : ''}${finalPts} pts`
-              };
-            });
-          } else {
-            const computed = computeCategoryRecommendations(cat, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay, allMatches);
-            rules = computed.recommendations.map(r => {
-              const finalPts = r.recommendedPoints !== 0 ? r.recommendedPoints : borrowTriggerPoints(r.description, cat.id, targetDay);
-              return {
-                description: r.description,
-                points: finalPts,
-                note: `${finalPts > 0 ? '+' : ''}${finalPts} pts (${r.mfavPct.toFixed(0)}% Mfav, ${r.drawPct.toFixed(0)}% Draw, ${r.underdogPct.toFixed(0)}% UD | ${r.totalHits} hits)`
-              };
-            });
+      categoriesToProcess.forEach(cat => {
+        const dayCatKey = `${dayForBackend}_${cat.id}`;
+        let deepMap = (cat.id === activeCategory && allTimeBestPeakRef.current?.category === activeCategory && allTimeBestPeakRef.current.points.size > 0)
+          ? allTimeBestPeakRef.current.points
+          : ((cat.id === activeCategory && deepPointsCategoryRef.current === activeCategory && deepPointsMap && deepPointsMap.size > 0)
+            ? deepPointsMap
+            : deepCategoryPointsMap[dayCatKey]);
+        if (!deepMap || deepMap.size === 0) {
+          const peakMem = loadOptimizerPeakMemory(dayForBackend, cat.id);
+          if (peakMem?.points) {
+            deepMap = new Map(Object.entries(peakMem.points));
           }
         }
 
-        categoriesPayload[cat.id] = {
-          rules,
-          targetObjective: cat.targetObjective
-        };
-      });
+        const aliasKey = cat.id === 'upsets' ? 'upset' : (cat.id === 'upset' ? 'upsets' : (cat.id === 'top_12_value' ? 'top_10_value' : (cat.id === 'top_10_value' ? 'top_12_value' : (cat.id === 'value_bets' ? 'value_bet' : (cat.id === 'value_bet' ? 'value_bets' : cat.id)))));
+        const existingRules = DAILY_OPTIMIZED_SETTINGS[dayForBackend]?.[cat.id]?.rules
+          || DAILY_OPTIMIZED_SETTINGS[dayForBackend]?.[aliasKey]?.rules
+          || OPTIMIZED_CATEGORY_SETTINGS[cat.id]?.rules
+          || OPTIMIZED_CATEGORY_SETTINGS[aliasKey]?.rules
+          || MASTER_RULES_MAP[cat.id]
+          || MASTER_RULES_MAP[aliasKey]
+          || [];
 
-      // Sync approved custom triggers points and include in save-to-code payload for permanent server persistence
-      const approvedList = loadApprovedCustomTriggers();
-      let approvedUpdated = false;
-      CATEGORIES.forEach(cat => {
-        const catRules = categoriesPayload[cat.id]?.rules;
-        if (catRules) {
-          catRules.forEach(r => {
-            const custom = approvedList.find(c => c.description === r.description);
-            if (custom && custom.points !== r.points) {
-              custom.points = r.points;
-              approvedUpdated = true;
+        // 1. Seed with existing saved rules for this day & category so untuned triggers retain their exact points.
+        // 2. Overlay deepMap so tuned triggers strictly replace old points.
+        const isCatUpsets = cat.id === 'upsets' || cat.id === 'upset' || cat.targetObjective === 'underdog_only';
+        const mergedMap = new Map<string, number>();
+        existingRules.forEach(r => {
+          if (r.description && typeof r.points === 'number' && (isCatUpsets || r.points !== 0)) {
+            mergedMap.set(r.description, r.points);
+          }
+        });
+
+        if (deepMap && deepMap.size > 0) {
+          deepMap.forEach((pts, desc) => {
+            if (desc && typeof pts === 'number' && (isCatUpsets || pts !== 0)) {
+              mergedMap.set(desc, pts);
+            }
+          });
+        } else if (cat.id === activeCategory && effectiveRecommendations.length > 0) {
+          effectiveRecommendations.forEach(r => {
+            if (r.description && typeof r.recommendedPoints === 'number' && (isCatUpsets || r.recommendedPoints !== 0)) {
+              mergedMap.set(r.description, r.recommendedPoints);
             }
           });
         }
+
+        const rules = Array.from(mergedMap.entries()).map(([description, points]) => ({
+          description,
+          points,
+          note: `Calibrated Rules (${cat.label}): ${points > 0 ? '+' : ''}${points} pts`
+        }));
+
+        const completeRules = populateCategoryWithMasterRules(rules, cat.targetObjective, cat.id, dayForBackend, { preserveExact: true }).map(r => ({
+          description: r.description,
+          points: r.points,
+          note: `Calibrated Rules (${cat.label}): ${r.points > 0 ? '+' : ''}${r.points} pts`
+        }));
+
+        categoriesPayload[cat.id] = {
+          rules: completeRules,
+          targetObjective: cat.targetObjective
+        };
+
+        const payloadAliasKey = cat.id === 'top_12_value' ? 'top_10_value'
+          : (cat.id === 'top_10_value' ? 'top_12_value'
+          : (cat.id === 'upsets' ? 'upset'
+          : (cat.id === 'upset' ? 'upsets'
+          : (cat.id === 'bankers_dlive' ? 'banker'
+          : (cat.id === 'value_bets' ? 'value_bet'
+          : (cat.id === 'value_bet' ? 'value_bets' : undefined))))));
+        if (payloadAliasKey) {
+          categoriesPayload[payloadAliasKey] = {
+            rules: completeRules,
+            targetObjective: cat.targetObjective
+          };
+        }
       });
-      if (approvedUpdated && typeof window !== 'undefined') {
-        window.localStorage.setItem('seer_approved_custom_triggers_v1', JSON.stringify(approvedList));
-        window.dispatchEvent(new CustomEvent('seerCustomTriggersUpdated'));
-      }
+
+      const approvedList: any[] = [];
 
       const res = await fetch('/api/opw/save-to-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          day: targetDay,
+          day: dayForBackend,
+          days: daysArray,
           categories: categoriesPayload,
           customTriggers: approvedList
         })
@@ -4702,17 +7234,25 @@ ${rulesCode}
         throw new Error(result.error || 'Failed to save to code');
       }
 
-      // Automatically sync runtime weights & localStorage across all categories
-      handleApplyRuntimeToAllCategories();
+      // Automatically sync runtime weights & localStorage for this specific day and category
+      try {
+        await handleApplyRecommendations(true);
+        setDailySettingsMeta(daysArray, Date.now() + 1000);
+        invalidateServerRulesCache();
+        savePersistedDailySettings();
+      } catch (applyErr) {
+        console.warn('[OPW Save] Runtime sync warning:', applyErr);
+      }
 
-      showToast('Permanently saved Deep Continuous Optimizer rules to codebase and applied to runtime!');
+      showToast(`Permanently saved calibrated rules to codebase (${dayForBackend.toUpperCase()} - ${activeCategoryConfig.label}) and applied to runtime!`);
     } catch (err: any) {
       console.error("Failed to save to code:", err);
       showToast(`Error saving to code: ${err.message}`);
     } finally {
+      if (safetyTimer) clearTimeout(safetyTimer);
       setIsSavingCode(false);
     }
-  }, [selectedDay, deepCategoryPointsMap, activeCategory, effectiveRecommendations, rawDataset, phaStatsMap, matchStars, liveViewType, handleApplyRuntimeToAllCategories, showToast]);
+  }, [selectedDay, liveMatchDay, datasetDay, deepPointsMap, deepCategoryPointsMap, activeCategory, effectiveRecommendations, rawDataset, phaStatsMap, matchStars, liveViewType, handleApplyRecommendations, showToast]);
 
   const handleCopyReport = () => {
     const lines = [
@@ -4730,9 +7270,15 @@ ${rulesCode}
     showToast('Markdown summary copied to clipboard.');
   };
 
-  const bonusCount = effectiveRecommendations.filter(r => r.recommendedPoints > 0).length;
-  const penaltyCount = effectiveRecommendations.filter(r => r.recommendedPoints < 0).length;
-  const mismatchCount = effectiveRecommendations.filter(r => r.recommendedPoints !== r.currentPoints).length;
+  const activeTabRecommendations = useMemo(() => {
+    return triggersViewTab === 'core'
+      ? effectiveRecommendations.filter(r => !isLeagueTrigger(r.description))
+      : effectiveRecommendations.filter(r => isLeagueTrigger(r.description));
+  }, [effectiveRecommendations, triggersViewTab, isLeagueTrigger]);
+
+  const bonusCount = activeTabRecommendations.filter(r => r.recommendedPoints > 0).length;
+  const penaltyCount = activeTabRecommendations.filter(r => r.recommendedPoints < 0).length;
+  const mismatchCount = activeTabRecommendations.filter(r => r.recommendedPoints !== r.currentPoints).length;
 
   return (
     <div className="space-y-6 pb-12 text-slate-100">
@@ -4773,7 +7319,7 @@ ${rulesCode}
         </div>
 
         {/* Global Action Buttons */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1 w-full sm:w-auto">
           <button
             onClick={handleCopyReport}
             className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition"
@@ -4849,13 +7395,48 @@ ${rulesCode}
       </div>
 
       {/* Category Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar -mx-2 px-2 pb-1 scroll-smooth">
         {CATEGORIES.map(c => {
           const isActive = activeCategory === c.id;
           return (
             <button
               key={c.id}
-              onClick={() => setActiveCategory(c.id)}
+              onClick={() => {
+                if (c.id === activeCategory) return;
+                setActiveCategory(c.id);
+                deepPointsCategoryRef.current = c.id;
+                const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+                const dayCatKey = `${targetDay}_${c.id}`;
+                const aliasCatId = c.id === 'top_12_value' ? 'top_10_value' 
+                  : (c.id === 'upsets' ? 'upset' 
+                  : (c.id === 'upset' ? 'upsets' 
+                  : (c.id === 'bankers_dlive' ? 'banker' 
+                  : (c.id === 'banker' ? 'bankers_dlive' : undefined))));
+                const existing = deepCategoryPointsMapRef.current[dayCatKey] || (aliasCatId ? deepCategoryPointsMapRef.current[`${targetDay}_${aliasCatId}`] : undefined);
+                if (existing && existing.size > 0) {
+                  setDeepPointsMap(new Map(existing));
+                } else {
+                  const persistedRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[c.id]?.rules
+                    || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasCatId]?.rules : undefined);
+                  const isCatUd = c.id === 'upsets' || c.id === 'upset' || c.targetObjective === 'underdog_only';
+                  if (persistedRules && persistedRules.length > 0) {
+                    const sanitized = sanitizeRulePolarity(persistedRules, c.id, { preserveExact: true, day: targetDay });
+                    const restoredMap = new Map(sanitized.filter(r => isCatUd || r.points !== 0).map(r => [r.description, r.points]));
+                    deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+                    setDeepPointsMap(restoredMap);
+                  } else {
+                    const peakMem = loadOptimizerPeakMemory(targetDay, c.id) || (aliasCatId ? loadOptimizerPeakMemory(targetDay, aliasCatId) : null);
+                    if (peakMem?.points && Object.keys(peakMem.points).length > 0) {
+                      const sanitized = sanitizeRulePolarity(peakMem.points, c.id, { preserveExact: true, day: targetDay });
+                      const restoredMap = new Map(Object.entries(sanitized));
+                      deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+                      setDeepPointsMap(restoredMap);
+                    } else {
+                      setDeepPointsMap(null);
+                    }
+                  }
+                }
+              }}
               className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 whitespace-nowrap border ${
                 isActive
                   ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-900/40'
@@ -4870,9 +7451,9 @@ ${rulesCode}
       </div>
 
       {/* Control Filter Bar: Timeframe & Dataset Scope */}
-      <div className="bg-slate-900/90 border border-slate-800/80 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+      <div className="bg-slate-900/90 border border-slate-800/80 rounded-xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         {/* Day Selector */}
-        <div className="flex items-center gap-1.5 overflow-x-auto">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0 w-full sm:w-auto">
           <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-1">Timeframe:</span>
           {(['all', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const).map(d => {
             const isSel = selectedDay === d;
@@ -4893,7 +7474,7 @@ ${rulesCode}
         </div>
 
         {/* Dataset Scope */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar w-full sm:w-auto">
           <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Dataset Scope:</span>
           {(['live', 'history', 'all'] as const).map(scope => {
             const isSel = datasetScope === scope;
@@ -4903,7 +7484,9 @@ ${rulesCode}
                 onClick={() => {
                   setDatasetScope(scope);
                   userPickedDayRef.current = false;
-                  if (scope === 'history' || scope === 'live') {
+                  if (scope === 'history') {
+                    setSelectedDay('all');
+                  } else if (scope === 'live') {
                     setSelectedDay(initialDay && initialDay !== 'all' ? initialDay : liveMatchDay);
                   }
                 }}
@@ -5033,16 +7616,6 @@ ${rulesCode}
                 )}
 
                 <button
-                  onClick={runTriggerDiscovery}
-                  disabled={isDiscovering}
-                  className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg shadow-cyan-900/40 flex items-center gap-1.5 transition disabled:opacity-50"
-                  title="Scan real match data for synergistic trigger combos and non-colliding parameter continuations"
-                >
-                  {isDiscovering ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  {isDiscovering ? 'Scanning...' : '🧠 Discover Combos'}
-                </button>
-
-                <button
                   onClick={() => setShowAdoptModal(true)}
                   className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/40 flex items-center gap-1.5 transition"
                   title="Adopt calibrated trigger points to selected daily algos (e.g. Saturday only, or all days)"
@@ -5050,15 +7623,39 @@ ${rulesCode}
                   <Layers size={14} /> Adopt to Daily Algos (Mon–Sun)
                 </button>
 
+
                 {deepComputations > 0 && !isDeepOptimizing && (
-                  <button
-                    onClick={resetDeepOptimization}
-                    className="p-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 transition"
-                    title="Reset Self-Learn Optimizer"
-                  >
-                    <RotateCcw size={14} />
-                  </button>
+                  <>
+                    <button
+                      onClick={handleApplyRecommendations}
+                      className="px-3.5 py-2 rounded-lg text-xs font-bold bg-teal-600 hover:bg-teal-500 text-white shadow-lg shadow-teal-900/40 flex items-center gap-1.5 transition"
+                      title="Permanently save calibrated weights to runtime and browser storage"
+                    >
+                      <CheckCircle2 size={14} /> Save Calibrations
+                    </button>
+                    <button
+                      onClick={resetDeepOptimization}
+                      className="p-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 transition"
+                      title="Reset Self-Learn Optimizer"
+                    >
+                      <RotateCcw size={14} />
+                    </button>
+                  </>
                 )}
+
+                <button
+                  onClick={startBatchOptimizeAll}
+                  disabled={isDeepOptimizing}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 ${
+                    isDeepOptimizing
+                      ? 'bg-slate-800/50 text-slate-500 border-slate-800 cursor-not-allowed'
+                      : 'bg-purple-950/60 hover:bg-purple-900/80 text-purple-300 border-purple-500/40 shadow-lg shadow-purple-950/50'
+                  }`}
+                  title="Iteratively run deep optimization across all 7 categories and all days"
+                >
+                  <Sparkles size={14} />
+                  Batch Optimize All Categories
+                </button>
               </>
             ) : (
               /* LIVE MODE: Continuous Optimizer & Batch Optimize All Categories ONLY */
@@ -5081,21 +7678,26 @@ ${rulesCode}
                   </button>
                 )}
 
-                <button
-                  onClick={runTriggerDiscovery}
-                  disabled={isDiscovering}
-                  className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg shadow-cyan-900/40 flex items-center gap-1.5 transition disabled:opacity-50"
-                  title="Scan real match data for synergistic trigger combos and non-colliding parameter continuations"
-                >
-                  {isDiscovering ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  {isDiscovering ? 'Scanning...' : '🧠 Discover Combos'}
-                </button>
+                {savedPeakMemory && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/90 border border-indigo-500/30 rounded-lg text-xs font-mono text-indigo-300 shadow">
+                    <span className="text-[10px] text-slate-400">⚡ Peak Memory:</span>
+                    <span className="font-bold text-emerald-400">{savedPeakMemory.cleanTopMatches} Clean</span>
+                    <span className="text-[10px] text-slate-400">(T1: #{savedPeakMemory.firstTrapRank ?? '—'})</span>
+                    <button
+                      onClick={handleClearPeakMemory}
+                      className="ml-1 text-[10px] text-rose-400 hover:text-rose-300 underline font-sans cursor-pointer"
+                      title="Clear saved peak memory to start afresh from default rules"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                )}
 
                 {deepComputations > 0 && !isDeepOptimizing && (
                   <>
                     <button
                       onClick={handleApplyRecommendations}
-                      className="px-3.5 py-2 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/40 flex items-center gap-1.5 transition"
+                      className="px-3.5 py-2 rounded-lg text-xs font-bold bg-teal-600 hover:bg-teal-500 text-white shadow-lg shadow-teal-900/40 flex items-center gap-1.5 transition"
                       title="Permanently save calibrated weights to runtime and browser storage"
                     >
                       <CheckCircle2 size={14} /> Save Calibrations
@@ -5146,39 +7748,6 @@ ${rulesCode}
           </div>
         )}
 
-        {/* Live Optimizer Diagnostics (live / combined scope only) */}
-        {datasetScope !== 'history' && deepDiagnostics && (
-          <div className="mb-4 p-3 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px] font-mono text-slate-300 space-y-1">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span>
-                Targets seen by optimizer:{' '}
-                <strong className={deepDiagnostics.seen < deepDiagnostics.expected ? 'text-amber-300' : 'text-emerald-300'}>
-                  {deepDiagnostics.seen} / {deepDiagnostics.expected}
-                </strong>
-                <span className="text-slate-500"> matches ({deepDiagnostics.targetsSeen} targets)</span>
-              </span>
-              {deepDiagnostics.droppedNoOdds > 0 && (
-                <span className="text-amber-400">
-                  ⚠ {deepDiagnostics.droppedNoOdds} completed match{deepDiagnostics.droppedNoOdds === 1 ? '' : 'es'} dropped (missing odds)
-                </span>
-              )}
-              <span className="text-slate-500">Goal: top {deepDiagnostics.goalN} targets clean</span>
-            </div>
-            {deepDiagnostics.infeasible.length > 0 && (
-              <div className="text-rose-300">
-                {deepDiagnostics.infeasible.slice(0, 5).map((inf, i) => (
-                  <div key={i}>
-                    ⛔ Trap <strong>{inf.teams}</strong> can't be beaten by trigger weights (only {inf.separable} of {deepDiagnostics.goalN} targets can be ranked above it within allowed bands)
-                    {inf.triggers.length > 0 && (
-                      <span className="text-slate-400"> — distinguishing triggers: {inf.triggers.join(', ')}</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Live Metrics Grid */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
@@ -5197,7 +7766,9 @@ ${rulesCode}
               )}
             </div>
             <div className="text-[10px] text-slate-500 mt-0.5 flex items-center justify-between font-mono">
-              <span>Statistical evaluations</span>
+              <span className={deepComputations >= 1000000 ? 'text-amber-400 font-semibold' : 'text-emerald-400/90'}>
+                {deepComputations >= 1000000 ? 'L2 • Escalation (Max Unlock)' : 'L1 • Incremental (±5 / ±10)'}
+              </span>
               {deepElapsedMs > 0 && (
                 <span className="text-slate-400">
                   {(deepElapsedMs / 1000).toFixed(2)}s
@@ -5207,44 +7778,80 @@ ${rulesCode}
           </div>
 
           {(() => {
+            const displayCleanMatches = isDeepOptimizing
+              ? deepCleanMatches
+              : (cleanMatchesBreakdown.totalTargets > 0 ? cleanMatchesBreakdown.cleanCount : deepCleanMatches);
+            const displayFirstTrapRank = isDeepOptimizing
+              ? deepFirstTrapRank
+              : (cleanMatchesBreakdown.totalTargets > 0 ? cleanMatchesBreakdown.firstTrapRank : deepFirstTrapRank);
+            const displayTiedAtBoundary = isDeepOptimizing ? deepTiedAtBoundary : cleanMatchesBreakdown.tiedAtBoundary;
             const effectiveTargetFloor = deepTargetClean > 0 ? deepTargetClean : categoryHorizons.floor;
-            const effectiveTargetCeiling = deepTargetCeiling > 0 ? deepTargetCeiling : categoryHorizons.ceiling;
+            const effectiveTargetCeiling = cleanMatchesBreakdown.totalTargets > 0
+              ? cleanMatchesBreakdown.totalTargets
+              : (deepTargetCeiling > 0 ? deepTargetCeiling : categoryHorizons.ceiling);
             return (
               <>
                 <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-slate-400 uppercase font-semibold">Clean Target</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-slate-400 uppercase font-semibold">Clean Target</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsCleanMatchesModalOpen(true)}
+                        className="p-1 rounded bg-slate-900/90 hover:bg-indigo-600/30 text-indigo-400 hover:text-indigo-200 border border-slate-700/80 hover:border-indigo-500/50 transition cursor-pointer"
+                        title="View all Clean Matches, First Trap & exact OPW Trigger Points breakdown"
+                      >
+                        <Eye size={13} />
+                      </button>
+                    </div>
                     <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
-                      deepConvergenceMode === 'perfect_100' || (effectiveTargetCeiling > 0 && deepCleanMatches >= effectiveTargetCeiling)
+                      deepConvergenceMode === 'perfect_100' || (effectiveTargetCeiling > 0 && displayCleanMatches >= effectiveTargetCeiling)
                         ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
                         : deepConvergenceMode === 'sweet_spot'
                         ? 'bg-teal-500/20 text-teal-300 border border-teal-500/40'
-                        : deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
+                        : displayCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
                         ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                         : 'bg-indigo-500/20 text-indigo-300'
                     }`}>
-                      {deepConvergenceMode === 'perfect_100' || (effectiveTargetCeiling > 0 && deepCleanMatches >= effectiveTargetCeiling)
+                      {deepConvergenceMode === 'perfect_100' || (effectiveTargetCeiling > 0 && displayCleanMatches >= effectiveTargetCeiling)
                         ? '100% PERFECT'
                         : deepConvergenceMode === 'sweet_spot'
                         ? 'SWEET SPOT'
-                        : deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
-                        ? `FRONTIER: +${deepCleanMatches - effectiveTargetFloor}`
+                        : displayCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
+                        ? `FRONTIER: +${displayCleanMatches - effectiveTargetFloor}`
                         : `GOAL: ${effectiveTargetFloor}`}
                     </span>
                   </div>
-                  <p className={`text-xl font-bold font-mono mt-1 ${
-                    deepConvergenceMode === 'perfect_100' || deepConvergenceMode === 'sweet_spot' || (deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0)
-                      ? 'text-emerald-400'
-                      : 'text-indigo-400'
-                  }`}>
-                    {effectiveTargetCeiling > 0 ? `${deepCleanMatches.toLocaleString()} / ${effectiveTargetCeiling.toLocaleString()}` : effectiveTargetFloor > 0 ? `${deepCleanMatches.toLocaleString()} / ${effectiveTargetFloor.toLocaleString()}` : '—'}
-                  </p>
+                  <div className="flex items-baseline justify-between mt-1">
+                    <p className={`text-xl font-bold font-mono ${
+                      deepConvergenceMode === 'perfect_100' || deepConvergenceMode === 'sweet_spot' || (displayCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0)
+                        ? 'text-emerald-400'
+                        : 'text-indigo-400'
+                    }`}>
+                      {effectiveTargetCeiling > 0 ? `${displayCleanMatches.toLocaleString()} / ${effectiveTargetCeiling.toLocaleString()}` : effectiveTargetFloor > 0 ? `${displayCleanMatches.toLocaleString()} / ${effectiveTargetFloor.toLocaleString()}` : '—'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setIsCleanMatchesModalOpen(true)}
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 underline font-medium cursor-pointer"
+                    >
+                      Inspect ({displayCleanMatches})
+                    </button>
+                  </div>
                   <p className="text-[10px] text-slate-500 mt-0.5">
-                    {deepConvergenceMode === 'perfect_100'
+                    {displayCleanMatches > 0 && displayTiedAtBoundary > 0 && displayFirstTrapRank > displayCleanMatches + 1 ? (
+                      <span className="text-slate-400">
+                        {displayCleanMatches} clean • <span className="text-amber-300 font-mono font-semibold">{displayTiedAtBoundary} tied (#{(displayCleanMatches + 1)}–#{(displayCleanMatches + displayTiedAtBoundary)})</span> • Trap #1 at <span className="text-rose-400 font-mono font-semibold">#{displayFirstTrapRank}</span>
+                      </span>
+                    ) : displayFirstTrapRank > 0 && cleanMatchesBreakdown.firstTrap ? (
+                      <span className="text-slate-400">
+                        {displayCleanMatches} clean • Trap #1 at <span className="text-rose-400 font-mono font-semibold">#{displayFirstTrapRank}</span> ({cleanMatchesBreakdown.firstTrap.totalScore} pts)
+                      </span>
+                    ) : deepConvergenceMode === 'perfect_100'
                       ? 'All winners clean at the top'
                       : deepConvergenceMode === 'sweet_spot'
                       ? `Optimal sweet spot (floor ${effectiveTargetFloor} met)`
-                      : deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
+                      : displayCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
                       ? `Floor (${effectiveTargetFloor}) met • Climbing frontier`
                       : deepTargetsInTop5000 > 0
                       ? `${deepTargetsInTop5000.toLocaleString()} in top 5k • Target: 2,000`
@@ -5254,35 +7861,75 @@ ${rulesCode}
 
                 <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-slate-400 uppercase font-semibold">First Trap Rank</span>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold">Top 5 Trap Dispersion</span>
                     <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
-                      deepConvergenceMode === 'perfect_100'
+                      deepTrapDispersionHealth === 'HEALTHY'
                         ? 'bg-emerald-500/20 text-emerald-400'
-                        : deepConvergenceMode === 'sweet_spot'
+                        : deepTrapDispersionHealth === 'MODERATE'
                         ? 'bg-teal-500/20 text-teal-300'
-                        : deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
-                        ? 'bg-cyan-500/20 text-cyan-300'
-                        : 'text-slate-400'
+                        : 'bg-amber-500/20 text-amber-400'
                     }`}>
-                      {deepConvergenceMode === 'perfect_100'
-                        ? '100% CLEAN'
-                        : deepConvergenceMode === 'sweet_spot'
-                        ? 'OPTIMAL'
-                        : deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0
-                        ? 'CLEAN'
-                        : 'TRACKING'}
+                      {deepTrapDispersionHealth === 'HEALTHY' ? 'HEALTHY SPREAD' : deepTrapDispersionHealth === 'MODERATE' ? 'MODERATE' : 'CLUSTERED'}
                     </span>
                   </div>
-                  <p className={`text-xl font-bold font-mono mt-1 ${
-                    deepConvergenceMode === 'perfect_100' || deepConvergenceMode === 'sweet_spot' || (deepCleanMatches >= effectiveTargetFloor && effectiveTargetFloor > 0)
-                      ? 'text-emerald-400'
-                      : 'text-amber-400'
-                  }`}>
-                    {deepComputations > 0 ? `Rank #${deepFirstTrapRank}` : '—'}
-                  </p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    {deepCleanMatches} consecutive clean winners
-                  </p>
+
+                  {deepComputations > 0 ? (
+                    <div className="mt-2 space-y-1.5">
+                      {/* Top 5 Trap Ladder Chips */}
+                      <div className="grid grid-cols-5 gap-1 text-center font-mono">
+                        <div className="bg-slate-900/90 border border-slate-800 rounded p-1">
+                          <div className="text-[9px] text-amber-400 font-bold">T1</div>
+                          <div className="text-xs font-bold text-white">#{deepTrapRanks[0] ?? deepFirstTrapRank}</div>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800 rounded p-1">
+                          <div className="text-[9px] text-slate-400 font-bold">T2</div>
+                          <div className="text-xs font-bold text-slate-200">#{deepTrapRanks[1] ?? '—'}</div>
+                          {deepTrapGaps[1] !== undefined && <div className={`text-[8px] font-bold ${deepTrapGaps[1] >= 10 ? 'text-emerald-400' : 'text-slate-400'}`}>+{deepTrapGaps[1]}</div>}
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800 rounded p-1">
+                          <div className="text-[9px] text-slate-400 font-bold">T3</div>
+                          <div className="text-xs font-bold text-slate-200">#{deepTrapRanks[2] ?? '—'}</div>
+                          {deepTrapGaps[2] !== undefined && <div className={`text-[8px] font-bold ${deepTrapGaps[2] >= 10 ? 'text-emerald-400' : 'text-slate-400'}`}>+{deepTrapGaps[2]}</div>}
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800 rounded p-1">
+                          <div className="text-[9px] text-slate-400 font-bold">T4</div>
+                          <div className="text-xs font-bold text-slate-200">#{deepTrapRanks[3] ?? '—'}</div>
+                          {deepTrapGaps[3] !== undefined && <div className={`text-[8px] font-bold ${deepTrapGaps[3] >= 10 ? 'text-emerald-400' : 'text-slate-400'}`}>+{deepTrapGaps[3]}</div>}
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800 rounded p-1">
+                          <div className="text-[9px] text-slate-400 font-bold">T5</div>
+                          <div className="text-xs font-bold text-slate-200">#{deepTrapRanks[4] ?? '—'}</div>
+                          {deepTrapGaps[4] !== undefined && <div className={`text-[8px] font-bold ${deepTrapGaps[4] >= 10 ? 'text-emerald-400' : 'text-slate-400'}`}>+{deepTrapGaps[4]}</div>}
+                        </div>
+                      </div>
+
+                      {/* Phase Status & Slack Guardrail */}
+                      <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                        <span className="font-semibold text-indigo-300">
+                          Phase {deepOptimizerPhase.currentPhase}/5: {deepOptimizerPhase.currentPhase === 1 ? 'Clean Max' : `Gap T${deepOptimizerPhase.currentPhase}`}
+                        </span>
+                        {deepOptimizerPhase.currentPhase >= 2 && deepOptimizerPhase.establishedRanks.length > 0 ? (
+                          <span className="text-[9px] font-mono text-emerald-400">
+                            Locked: R1 ≥ #{deepOptimizerPhase.establishedRanks[0] ?? deepCleanMatches + 1}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-mono text-slate-500">
+                            {deepCleanMatches} clean winners before T1
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xl font-bold font-mono mt-1 text-slate-500">
+                        —
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Awaiting continuous optimization
+                      </p>
+                    </>
+                  )}
+
                   {deepComputations > 0 && deepHorizonMetrics && (
                     <div className="flex items-center gap-1.5 mt-1.5 pt-1.5 border-t border-slate-800/80 text-[10px] font-mono text-slate-400">
                       <span>Traps:</span>
@@ -5397,620 +8044,93 @@ ${rulesCode}
         </div>
       </div>
 
-      {/* Slip Upset Post-Mortem & Protected Trap Guards Panel */}
-      {(slipPostMortems.length > 0 || protectedGuardsList.length > 0) && (
-        <div className="bg-gradient-to-r from-slate-900 via-rose-950/20 to-slate-900 border border-rose-500/30 rounded-xl p-5 shadow-xl space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-rose-500/20 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-rose-500/20 text-rose-300 rounded-lg">
-                <Shield size={20} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    Slip Upset Post-Mortem & Protected Trap Guards
-                  </h3>
-                  {slipPostMortems.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold">
-                      {slipPostMortems.length} Slip {slipPostMortems.length === 1 ? 'Casualty' : 'Casualties'}
-                    </span>
-                  )}
-                  {protectedGuardsList.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold flex items-center gap-1">
-                      <Shield size={11} />
-                      {protectedGuardsList.length} Active Guards
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Identifies matches that reached the slip but suffered an outright upset. Protect their warning penalties so future optimizer computations never relax them.
-                </p>
-              </div>
-            </div>
 
-            <button
-              onClick={() => setShowPostMortemPanel(p => !p)}
-              className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition"
-            >
-              {showPostMortemPanel ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              {showPostMortemPanel ? 'Collapse' : 'Expand Post-Mortem'}
-            </button>
-          </div>
 
-          {showPostMortemPanel && (
-            <div className="space-y-4 pt-1">
-              {slipPostMortems.length > 0 ? (
-                <div className="space-y-3">
-                  {slipPostMortems.map((pm, idx) => (
-                    <div key={`${pm.matchId}_${idx}`} className="bg-slate-950/80 border border-slate-800 rounded-lg p-4 space-y-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-xs font-mono font-bold">
-                            #{pm.rankOnSlip} on Slip
-                          </span>
-                          <span className="font-bold text-white text-sm">
-                            {pm.teams}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-mono font-bold">
-                            FT: {pm.actualResult}
-                          </span>
-                          <span className="text-xs font-mono text-slate-400">
-                            Pred: {pm.prediction}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
-                            {pm.opwPoints > 0 ? `+${pm.opwPoints}` : pm.opwPoints} PTS
-                          </span>
-                          <span className="text-xs font-mono text-rose-300 bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded font-semibold">
-                            Deficit: -{pm.pointsDeficitToExit} pts needed
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                        {/* Active Warning Penalties */}
-                        <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800/60 space-y-2">
-                          <div className="flex items-center justify-between text-slate-300 font-semibold border-b border-slate-800/60 pb-1.5">
-                            <span className="flex items-center gap-1.5 text-rose-400">
-                              <AlertTriangle size={13} /> Active Warning Penalties
-                            </span>
-                            <span className="text-[11px] text-slate-500 font-mono">Overpowered warnings</span>
-                          </div>
-
-                          {pm.activePenalties.length === 0 ? (
-                            <p className="text-slate-500 text-xs italic py-1">
-                              No negative triggers fired. Match entered slip purely on base score and bonuses.
-                            </p>
-                          ) : (
-                            <div className="space-y-2">
-                              {pm.activePenalties.map(pen => {
-                                const deepenedFloor = Math.min(-20, pen.points - Math.ceil(pm.pointsDeficitToExit / 5) * 5);
-                                return (
-                                  <div key={pen.trigger} className="p-2 rounded bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
-                                    <div className="min-w-0 flex-1">
-                                      <p className="text-slate-200 font-medium truncate">{pen.trigger}</p>
-                                      <p className="text-[10px] text-slate-500 font-mono">Current points: {pen.points} pts</p>
-                                    </div>
-                                    <div className="flex items-center gap-1.5 shrink-0">
-                                      {pen.isProtected ? (
-                                        <div className="flex items-center gap-1">
-                                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold flex items-center gap-1">
-                                            <Shield size={10} /> Guard (≤ {pen.currentFloor})
-                                          </span>
-                                          <button
-                                            onClick={() => removeProtectedPenaltyGuard(pen.trigger)}
-                                            className="text-slate-500 hover:text-rose-400 text-[10px] underline ml-1"
-                                          >
-                                            Remove
-                                          </button>
-                                        </div>
-                                      ) : (
-                                        <>
-                                          <button
-                                            onClick={() => {
-                                              saveProtectedPenaltyGuard({
-                                                trigger: pen.trigger,
-                                                floorPoints: pen.points,
-                                                sourceMatch: pm.teams,
-                                                sourceDate: pm.date,
-                                                category: pm.category,
-                                                reason: `Locked from slip upset (${pm.teams})`,
-                                                markedAt: new Date().toISOString()
-                                              });
-                                              showToast(`Protected "${pen.trigger}" at floor ${pen.points} pts.`);
-                                            }}
-                                            className="px-2 py-0.5 rounded bg-amber-600/90 hover:bg-amber-500 text-white text-[10px] font-bold flex items-center gap-1 transition shadow-xs"
-                                            title="Lock this penalty so optimizer can never reduce it"
-                                          >
-                                            <Shield size={10} /> Lock Floor ({pen.points})
-                                          </button>
-                                          <button
-                                            onClick={() => {
-                                              saveProtectedPenaltyGuard({
-                                                trigger: pen.trigger,
-                                                floorPoints: deepenedFloor,
-                                                sourceMatch: pm.teams,
-                                                sourceDate: pm.date,
-                                                category: pm.category,
-                                                reason: `Deepened & locked from slip upset (${pm.teams})`,
-                                                markedAt: new Date().toISOString()
-                                              });
-                                              showToast(`Deepened and protected "${pen.trigger}" to ${deepenedFloor} pts.`);
-                                            }}
-                                            className="px-2 py-0.5 rounded bg-indigo-600/90 hover:bg-indigo-500 text-white text-[10px] font-bold flex items-center gap-1 transition shadow-xs"
-                                            title="Deepen penalty to sink this match below slip capacity"
-                                          >
-                                            ⚖️ Deepen ({deepenedFloor})
-                                          </button>
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Exclusive Spoiler Triggers */}
-                        <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800/60 space-y-2">
-                          <div className="flex items-center justify-between text-slate-300 font-semibold border-b border-slate-800/60 pb-1.5">
-                            <span className="flex items-center gap-1.5 text-amber-400">
-                              <Sparkles size={13} /> Exclusive Spoiler Triggers
-                            </span>
-                            <span className="text-[11px] text-slate-500 font-mono">Present only on trap</span>
-                          </div>
-
-                          {pm.exclusiveSpoilerTriggers.length === 0 ? (
-                            <p className="text-slate-500 text-xs italic py-1">
-                              All positive triggers were shared with winning slip matches.
-                            </p>
-                          ) : (
-                            <div className="space-y-1.5">
-                              {pm.exclusiveSpoilerTriggers.map(sp => (
-                                <div key={sp.trigger} className="p-2 rounded bg-slate-950/70 border border-slate-800 flex items-center justify-between gap-2">
-                                  <span className="text-slate-300 font-medium truncate">{sp.trigger}</span>
-                                  <div className="flex items-center gap-1.5 shrink-0">
-                                    <span className="text-[10px] font-mono text-slate-500">{sp.polarity}</span>
-                                    <span className="px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 font-mono font-bold text-[11px]">
-                                      +{sp.points} pts
-                                    </span>
-                                  </div>
-                                </div>
-                              ))}
-                              <p className="text-[10px] text-slate-500 mt-1">
-                                💡 These positive triggers boosted this match onto the slip, but were absent from all winning slip matches.
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="p-4 rounded-lg bg-slate-950/60 border border-slate-800 text-xs text-slate-400 text-center">
-                  No upset casualties detected on the active locked slip. All locked picks are either winning, hedged, or pending.
-                </div>
-              )}
-
-              {/* Protected Guards Summary Table */}
-              {protectedGuardsList.length > 0 && (
-                <div className="pt-2 border-t border-slate-800/80">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs uppercase font-bold text-slate-300 flex items-center gap-1.5">
-                      <Shield size={12} className="text-amber-400" /> All Protected Penalty Guards ({protectedGuardsList.length})
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      Optimizer is strictly forbidden from mutating these above their locked floor
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                    {protectedGuardsList.map(g => (
-                      <div key={g.trigger} className="p-2.5 rounded-lg bg-slate-950/80 border border-amber-500/20 flex items-center justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs text-slate-200 font-medium truncate">{g.trigger}</p>
-                          <p className="text-[10px] text-amber-400/80 font-mono">Floor: ≤ {g.floorPoints} pts {g.sourceMatch ? `(${g.sourceMatch})` : ''}</p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            removeProtectedPenaltyGuard(g.trigger);
-                            showToast(`Removed protected guard for "${g.trigger}".`);
-                          }}
-                          className="text-slate-500 hover:text-rose-400 text-xs p-1"
-                          title="Remove protection"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Live Selection Accuracy & Outcome Verification Panel */}
-      {liveSelectionImpact && (
-        <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/30 rounded-xl p-5 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-indigo-500/20 pb-4 mb-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-500/20 text-indigo-300 rounded-lg">
-                <Award size={20} />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  {activeCategoryConfig.label} Live Selection Impact: Current vs Recommended Weights
-                </h3>
-                <p className="text-xs text-slate-400">
-                  100% Live empirical analysis: Evaluates real completed matches in the live database to verify selection accuracy under recommended vs current weights.
-                </p>
-              </div>
-            </div>
-            {liveSelectionImpact.improvement > 0 && (
-              <div className="px-3.5 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5">
-                <TrendingUp size={16} />
-                +{liveSelectionImpact.improvement.toFixed(1)}% {liveSelectionImpact.metricLabel} Improvement
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-slate-950/70 p-4 rounded-lg border border-slate-800">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold text-slate-300 uppercase">Current Weights (Top {liveSelectionImpact.topN})</span>
-                <span className="text-xs font-mono font-bold text-slate-400">{liveSelectionImpact.current.safePct.toFixed(1)}% {liveSelectionImpact.metricLabel}</span>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono font-bold">Mfav: {liveSelectionImpact.current.mfav}</span>
-                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono font-bold">Draw: {liveSelectionImpact.current.draw}</span>
-                <span className={`px-2 py-0.5 rounded font-mono font-bold ${liveSelectionImpact.current.ud > 0 ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>Underdog: {liveSelectionImpact.current.ud}</span>
-                <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono text-[11px]">Inversions: {liveSelectionImpact.current.inversions}</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-950/70 p-4 rounded-lg border border-indigo-500/40 shadow-inner">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold text-indigo-300 uppercase flex items-center gap-1.5">
-                  <Sparkles size={14} className="text-indigo-400" /> Recommended Weights (Top {liveSelectionImpact.topN})
-                </span>
-                <span className="text-xs font-mono font-bold text-emerald-400">{liveSelectionImpact.recommended.safePct.toFixed(1)}% {liveSelectionImpact.metricLabel}</span>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono font-bold">Mfav: {liveSelectionImpact.recommended.mfav}</span>
-                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono font-bold">Draw: {liveSelectionImpact.recommended.draw}</span>
-                <span className={`px-2 py-0.5 rounded font-mono font-bold ${liveSelectionImpact.recommended.ud === 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-400'}`}>Underdog: {liveSelectionImpact.recommended.ud}</span>
-                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${liveSelectionImpact.recommended.inversions === 0 ? 'bg-emerald-500/20 text-emerald-300 font-bold' : 'bg-slate-800 text-slate-400'}`}>Inversions: {liveSelectionImpact.recommended.inversions}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* AI Trigger Discovery & Synergistic Combos Section (Real Match Data) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-lg bg-cyan-600/20 border border-cyan-500/40 text-cyan-400">
-              <Sparkles size={20} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                  🧠 AI Trigger Discovery & Synergistic Combos
-                </h3>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 uppercase">
-                  Real Match Data
-                </span>
-                {discoveredCandidates.length > 0 && (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    {discoveredCandidates.length} Candidates
-                  </span>
-                )}
-                {approvedCustomTriggersList.length > 0 && (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    {approvedCustomTriggersList.length} Approved Active
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Mines statistical co-occurrences on real matches. Discovers high-synergy pairs (e.g. 50% + 50% → 75%) and non-colliding parameter continuations with manual approval.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={runTriggerDiscovery}
-              disabled={isDiscovering}
-              className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg shadow-cyan-900/40 flex items-center gap-1.5 transition disabled:opacity-50"
-            >
-              {isDiscovering ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
-              {isDiscovering ? 'Scanning Real Matches...' : '🔍 Scan Real Match Data'}
-            </button>
-            <button
-              onClick={() => setShowDiscoveryPanel(p => !p)}
-              className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1"
-            >
-              {showDiscoveryPanel ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              {showDiscoveryPanel ? 'Collapse' : 'Expand Panel'}
-            </button>
-          </div>
-        </div>
-
-        {showDiscoveryPanel && (
-          <div className="space-y-4 pt-1">
-            {/* Filter Tabs */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-1.5">
-                {(['all', 'combos', 'continuations', 'approved'] as const).map(tab => {
-                  const isSel = discoveryFilter === tab;
-                  const label = tab === 'all'
-                    ? `All Candidates (${discoveredCandidates.length})`
-                    : tab === 'combos'
-                    ? `Synergy Combos (${discoveredCandidates.filter(c => c.type === 'synergy_combo').length})`
-                    : tab === 'continuations'
-                    ? `Continuations / Partitions (${discoveredCandidates.filter(c => c.type === 'progression_continuation').length})`
-                    : `Approved in Catalog (${approvedCustomTriggersList.length})`;
-                  return (
-                    <button
-                      key={tab}
-                      onClick={() => setDiscoveryFilter(tab)}
-                      className={`px-3 py-1 rounded-md text-xs font-semibold transition border ${
-                        isSel
-                          ? 'bg-cyan-600 text-white border-cyan-500'
-                          : 'bg-slate-950 text-slate-400 hover:text-white border-slate-800'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {discoveredCandidates.length > 0 && discoveryFilter !== 'approved' && (
-                <button
-                  onClick={() => setDiscoveredCandidates([])}
-                  className="text-xs text-slate-500 hover:text-slate-300 underline"
-                >
-                  Clear Candidates
-                </button>
-              )}
-            </div>
-
-            {/* Content: Approved Tab */}
-            {discoveryFilter === 'approved' ? (
-              approvedCustomTriggersList.length === 0 ? (
-                <div className="p-8 text-center bg-slate-950/50 rounded-lg border border-slate-800 text-slate-500 text-xs">
-                  No custom triggers approved yet. Click <strong>Scan Real Match Data</strong> to discover synergistic combos and continuations, then approve the ones you want.
-                </div>
-              ) : (
-                <div className="overflow-x-auto rounded-lg border border-slate-800">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-950 text-slate-400 font-semibold border-b border-slate-800">
-                      <tr>
-                        <th className="py-2.5 px-3">Status</th>
-                        <th className="py-2.5 px-3">Approved Trigger / Combo Description</th>
-                        <th className="py-2.5 px-2">Domain</th>
-                        <th className="py-2.5 px-2 text-center">Type</th>
-                        <th className="py-2.5 px-2 text-center">Assigned PTS</th>
-                        <th className="py-2.5 px-2 text-center">Real Sample</th>
-                        <th className="py-2.5 px-2 text-center">Accuracy</th>
-                        <th className="py-2.5 px-3 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 bg-slate-900/60 font-mono">
-                      {approvedCustomTriggersList.map(t => (
-                        <tr key={t.id} className="hover:bg-slate-800/40 transition">
-                          <td className="py-2.5 px-3">
-                            <button
-                              onClick={() => handleToggleApproved(t.id)}
-                              className={`px-2 py-0.5 rounded text-[11px] font-bold border transition ${
-                                t.isActive
-                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                                  : 'bg-slate-800 text-slate-500 border-slate-700'
-                              }`}
-                            >
-                              {t.isActive ? 'Active' : 'Disabled'}
-                            </button>
-                          </td>
-                          <td className="py-2.5 px-3 font-sans font-semibold text-white">
-                            {t.description}
-                          </td>
-                          <td className="py-2.5 px-2 font-sans text-slate-400 text-[11px]">
-                            {t.domain}
-                          </td>
-                          <td className="py-2.5 px-2 text-center">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                              {t.type === 'synergy_combo' ? 'Combo' : 'Continuation'}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-2 text-center font-bold">
-                            <span className={`px-2 py-0.5 rounded ${t.points > 0 ? 'bg-indigo-500/20 text-indigo-300' : t.points < 0 ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-800 text-slate-400'}`}>
-                              {t.points > 0 ? `+${t.points}` : t.points} PTS
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-2 text-center text-slate-400">
-                            {t.realTotalHits} matches
-                          </td>
-                          <td className="py-2.5 px-2 text-center text-emerald-400 font-bold">
-                            {t.realAccuracy.toFixed(1)}%
-                          </td>
-                          <td className="py-2.5 px-3 text-right">
-                            <button
-                              onClick={() => handleRemoveApproved(t.id)}
-                              className="p-1 rounded text-rose-400 hover:bg-rose-500/20 transition"
-                              title="Delete from Catalog"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )
-            ) : (
-              /* Candidates Grid */
-              (() => {
-                const filtered = discoveredCandidates.filter(c => {
-                  if (discoveryFilter === 'combos') return c.type === 'synergy_combo';
-                  if (discoveryFilter === 'continuations') return c.type === 'progression_continuation';
-                  return true;
-                });
-
-                if (filtered.length === 0) {
-                  return (
-                    <div className="p-8 text-center bg-slate-950/50 rounded-lg border border-slate-800 text-slate-500 text-xs">
-                      {isDiscovering
-                        ? 'Scanning match profiles for synergistic trigger co-occurrences...'
-                        : 'No candidates currently queued. Click "Scan Real Match Data" above to discover new statistical combos on the active dataset.'}
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                    {filtered.map(c => {
-                      const isTrapCombo = c.recommendedPoints < 0;
-                      return (
-                        <div
-                          key={c.id}
-                          className="bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl p-4 space-y-3 transition flex flex-col justify-between"
-                        >
-                          <div className="space-y-2.5">
-                            {/* Card Header */}
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                                  {c.domain}
-                                </span>
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                                  c.type === 'synergy_combo'
-                                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
-                                    : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                                }`}>
-                                  {c.type === 'synergy_combo' ? '⚡ Synergistic Combo' : '🔄 Parameter Continuation'}
-                                </span>
-                              </div>
-                              <span className={`px-2.5 py-0.5 rounded font-mono font-bold text-xs border ${
-                                isTrapCombo
-                                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
-                                  : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                              }`}>
-                                {c.recommendedPoints > 0 ? `+${c.recommendedPoints}` : c.recommendedPoints} PTS
-                              </span>
-                            </div>
-
-                            {/* Trigger Description */}
-                            <h4 className="text-xs font-bold text-white leading-relaxed">
-                              {c.description}
-                            </h4>
-
-                            {/* Real Data Statistics Proof Box */}
-                            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-2">
-                              <div className="grid grid-cols-3 gap-2 text-center text-xs font-mono">
-                                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800/80">
-                                  <span className="text-[10px] text-slate-400 block font-sans">Real Matches</span>
-                                  <strong className="text-white">{c.realTotalHits}</strong>
-                                </div>
-                                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800/80">
-                                  <span className="text-[10px] text-slate-400 block font-sans">Verified Win %</span>
-                                  <strong className={isTrapCombo ? 'text-rose-400' : 'text-emerald-400'}>
-                                    {c.realAccuracy.toFixed(1)}%
-                                  </strong>
-                                </div>
-                                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800/80">
-                                  <span className="text-[10px] text-slate-400 block font-sans">
-                                    {isTrapCombo ? 'Trap Concentration' : 'Synergy Lift'}
-                                  </span>
-                                  <strong className={isTrapCombo ? 'text-rose-400' : 'text-emerald-300'}>
-                                    {c.realSynergyLift >= 0 ? `+${c.realSynergyLift.toFixed(1)}%` : `${c.realSynergyLift.toFixed(1)}%`}
-                                  </strong>
-                                </div>
-                              </div>
-
-                              {c.type === 'synergy_combo' && (
-                                <div className="bg-slate-950/90 p-2.5 rounded border border-slate-800/80 space-y-1.5 text-[11px] font-mono">
-                                  <div className="text-[10px] font-sans font-bold text-slate-400 uppercase tracking-wider">
-                                    Computational Proof & Efficiency Breakdown
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                    <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
-                                      <span className="text-slate-400 block font-sans truncate" title={c.triggerA}>Solo A: {c.triggerA}</span>
-                                      <strong className="text-cyan-300">{c.winsA}/{c.hitsA} ({c.accuracyA.toFixed(1)}%)</strong>
-                                    </div>
-                                    <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
-                                      <span className="text-slate-400 block font-sans truncate" title={c.triggerB}>Solo B: {c.triggerB}</span>
-                                      <strong className="text-cyan-300">{c.winsB}/{c.hitsB} ({c.accuracyB.toFixed(1)}%)</strong>
-                                    </div>
-                                  </div>
-                                  <p className="text-[11px] text-slate-300 font-sans leading-normal pt-1">
-                                    📊 Co-occurred in <strong>{c.realTotalHits} real matches</strong> with a combined win rate of <strong className={isTrapCombo ? 'text-rose-400' : 'text-emerald-400'}>{c.realAccuracy.toFixed(1)}%</strong> ({c.realTargetHits} targets, {c.realTrapHits} traps) — 
-                                    <span className={c.realSynergyLift >= 0 ? 'text-emerald-300 font-bold' : 'text-rose-400 font-bold'}>
-                                      {' '}{c.realSynergyLift >= 0 ? `+${c.realSynergyLift.toFixed(1)}% lift` : `${c.realSynergyLift.toFixed(1)}% trap shift`}
-                                    </span> over solo performance.
-                                  </p>
-                                </div>
-                              )}
-
-                              {/* Collision / Partition Status */}
-                              {c.collisionStatus === 'clean' ? (
-                                <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 font-sans">
-                                  <Check size={13} className="text-emerald-400 shrink-0" />
-                                  <span>Zero overlap collision with existing master rules.</span>
-                                </div>
-                              ) : (
-                                <div className="text-[11px] text-amber-300/90 font-sans bg-amber-500/10 p-2 rounded border border-amber-500/30">
-                                  <strong>Partition Note:</strong> {c.refinementNote}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Action Buttons */}
-                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
-                            <span className="text-[11px] text-slate-500 font-sans">
-                              Target: <strong className="text-slate-400 uppercase">{c.targetObjective}</strong>
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleDismissCandidate(c.id)}
-                                className="px-2.5 py-1.5 rounded text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition"
-                              >
-                                Dismiss
-                              </button>
-                              <button
-                                onClick={() => handleApproveCandidate(c)}
-                                className="px-3.5 py-1.5 rounded text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 flex items-center gap-1.5 transition"
-                              >
-                                <Check size={14} /> Approve & Add to Catalog
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()
-            )}
-          </div>
-        )}
-      </div>
 
       {/* Trigger Recommendations Table Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl space-y-4">
+        {/* Primary View Switcher: Core Triggers vs League Triggers */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setTriggersViewTab('core'); setRecommendationFilter('all'); }}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition border ${
+                triggersViewTab === 'core'
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-500/20'
+                  : 'bg-slate-950 text-slate-400 hover:text-white border-slate-800 hover:border-slate-700'
+              }`}
+            >
+              <span>🎯 Core Triggers</span>
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-900/80 font-mono font-semibold">
+                {coreRecommendationsCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setTriggersViewTab('leagues'); setRecommendationFilter('all'); }}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition border ${
+                triggersViewTab === 'leagues'
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-500/20'
+                  : 'bg-slate-950 text-slate-400 hover:text-white border-slate-800 hover:border-slate-700'
+              }`}
+            >
+              <span>🌍 League Triggers</span>
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-900/80 font-mono font-semibold">
+                {leagueRecommendationsCount}
+              </span>
+            </button>
+          </div>
+
+          <div className="text-[11px] text-slate-400 font-mono">
+            {triggersViewTab === 'core' ? (
+              <span>Showing <strong>{coreRecommendationsCount}</strong> core triggers (stats, odds, PHA, combos)</span>
+            ) : (
+              <span>All leagues default to <strong>+5 bonus</strong> (shift volatile leagues below)</span>
+            )}
+          </div>
+        </div>
+
+        {/* Dedicated League Triggers Management Banner */}
+        {triggersViewTab === 'leagues' && (
+          <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-white flex items-center gap-1.5">
+                  <Sparkles size={14} className="text-emerald-400" />
+                  🌍 All-Leagues +5 Bonus Engine & Volatility Controls
+                </span>
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono font-bold">
+                  Default: +5 pts Bonus
+                </span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Every league dynamically gets a +5 bonus. Penalized leagues remain locked as negative. Shift volatile leagues below.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] font-mono">
+              <span className="px-2.5 py-1 rounded bg-slate-900 text-slate-300 border border-slate-800">
+                Total: <strong className="text-white">{leagueRecommendationsCount}</strong>
+              </span>
+              <span className="px-2.5 py-1 rounded bg-emerald-950/50 text-emerald-400 border border-emerald-800/40">
+                Bonuses: <strong className="text-emerald-300">{leagueBonusCount}</strong>
+              </span>
+              <span className="px-2.5 py-1 rounded bg-rose-950/50 text-rose-400 border border-rose-800/40">
+                Penalties: <strong className="text-rose-300">{leaguePenaltyCount}</strong>
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="relative flex-1 min-w-[260px] max-w-md">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder={`Search ${effectiveRecommendations.length} master & custom triggers...`}
+              placeholder={triggersViewTab === 'core'
+                ? `Search ${coreRecommendationsCount} core master & custom triggers...`
+                : `Search ${leagueRecommendationsCount} league & country triggers...`
+              }
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
@@ -6019,12 +8139,10 @@ ${rulesCode}
 
           <div className="flex items-center gap-2">
             <Filter size={14} className="text-slate-400" />
-            {(['all', 'bonus', 'penalty', 'protected', 'mismatch', 'zero'] as const).map(f => {
+            {(['all', 'bonus', 'penalty', 'mismatch', 'zero'] as const).map(f => {
               const isSel = recommendationFilter === f;
               const label = f === 'mismatch'
                 ? `Mismatch (${mismatchCount})`
-                : f === 'protected'
-                ? `Protected (${protectedGuardsList.length})`
                 : f;
               return (
                 <button
@@ -6067,6 +8185,11 @@ ${rulesCode}
                 >
                   Recommended {sortField === 'recommended' && (sortDir === 'asc' ? '▲' : '▼')}
                 </th>
+                {triggersViewTab === 'leagues' && (
+                  <th className="py-3 px-2 text-center text-indigo-300 font-bold">
+                    Polarity & Shift
+                  </th>
+                )}
                 <th
                   onClick={() => {
                     if (sortField === 'hits') setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -6092,160 +8215,84 @@ ${rulesCode}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80 bg-slate-900/60">
-              {filteredRecommendations.length === 0 ? (
+              {paginatedRecommendations.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-500">
+                  <td colSpan={triggersViewTab === 'leagues' ? 10 : 9} className="py-8 text-center text-slate-500">
                     No triggers match the selected criteria.
                   </td>
                 </tr>
               ) : (
-                filteredRecommendations.map(row => {
-                  const isBonus = row.recommendedPoints > 0;
-                  const isPenalty = row.recommendedPoints < 0;
-                  const isDiff = row.recommendedPoints !== row.currentPoints;
-
-                  return (
-                    <tr key={row.description} className="hover:bg-slate-800/40 transition">
-                      <td className="py-2.5 px-3.5 font-medium text-slate-200">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            {isBonus ? (
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                            ) : isPenalty ? (
-                              <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
-                            ) : (
-                              <span className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
-                            )}
-                            <span className="truncate max-w-xs sm:max-w-sm">{row.description}</span>
-                            {isProtectedPenalty(row.description) && (
-                              <span
-                                className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0"
-                                title={`Protected Penalty Guard: Floor ≤ ${getProtectedFloor(row.description)} pts`}
-                              >
-                                <Shield size={10} className="text-amber-400" />
-                                <span>≤ {getProtectedFloor(row.description)}</span>
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            {isProtectedPenalty(row.description) ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  removeProtectedPenaltyGuard(row.description);
-                                  showToast(`Removed protected guard for "${row.description}".`);
-                                }}
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-amber-500/10 hover:bg-rose-500/20 text-amber-300 hover:text-rose-300 border border-amber-500/30 transition shrink-0"
-                                title="Click to remove protection guard"
-                              >
-                                <Shield size={10} /> Protected
-                              </button>
-                            ) : (row.currentPoints < 0 || row.recommendedPoints < 0) ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const floor = row.currentPoints < 0 ? row.currentPoints : row.recommendedPoints;
-                                  saveProtectedPenaltyGuard({
-                                    trigger: row.description,
-                                    floorPoints: floor,
-                                    reason: 'Protected from catalog table',
-                                    markedAt: new Date().toISOString()
-                                  });
-                                  showToast(`Protected "${row.description}" at floor ${floor} pts.`);
-                                }}
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-800/90 hover:bg-amber-500/20 text-slate-400 hover:text-amber-300 border border-slate-700/60 hover:border-amber-500/40 transition shrink-0"
-                                title="Lock as protected penalty guard (optimizer will not relax it)"
-                              >
-                                <Shield size={10} /> Protect
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() => setHistoryInspectTrigger(row.description)}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-800/90 hover:bg-indigo-950/90 text-slate-300 hover:text-indigo-300 border border-slate-700/60 hover:border-indigo-500/50 transition shrink-0"
-                              title="Inspect trigger across overall historical data (all days)"
-                            >
-                              <History size={11} className="text-indigo-400" />
-                              <span>Hist: {row.overallHits || 0}</span>
-                              <span className="text-slate-500">({(row.overallSafePct || 0).toFixed(0)}%)</span>
-                            </button>
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Current Points */}
-                      <td className="py-2.5 px-2 text-center font-mono font-semibold">
-                        <span className={`px-2 py-0.5 rounded text-[11px] ${
-                          row.currentPoints > 0
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            : row.currentPoints < 0
-                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                              : 'bg-slate-800 text-slate-400'
-                        }`}>
-                          {row.currentPoints > 0 ? `+${row.currentPoints}` : row.currentPoints}
-                        </span>
-                      </td>
-
-                      {/* Recommended Points */}
-                      <td className="py-2.5 px-2 text-center font-mono font-bold">
-                        <span className={`px-2.5 py-0.5 rounded text-[11px] shadow-sm ${
-                          isBonus
-                            ? 'bg-emerald-500 text-white font-black'
-                            : isPenalty
-                              ? 'bg-rose-500 text-white font-black'
-                              : 'bg-slate-800 text-slate-400 border border-slate-700'
-                        } ${isDiff ? 'ring-2 ring-indigo-400 ring-offset-1 ring-offset-slate-900' : ''}`}>
-                          {row.recommendedPoints > 0 ? `+${row.recommendedPoints}` : row.recommendedPoints}
-                        </span>
-                      </td>
-
-                      {/* Hits */}
-                      <td className="py-2.5 px-2 text-center font-mono font-bold text-slate-300">
-                        {row.totalHits}
-                      </td>
-
-                      {/* Mfav Hits */}
-                      <td className="py-2.5 px-2 text-center font-mono">
-                        <span className="text-emerald-400 font-bold">{row.mfavHits}</span>
-                        <span className="text-[10px] text-slate-500 ml-1">({row.mfavPct.toFixed(0)}%)</span>
-                      </td>
-
-                      {/* Draw Hits */}
-                      <td className="py-2.5 px-2 text-center font-mono">
-                        <span className="text-amber-400 font-bold">{row.drawHits}</span>
-                        <span className="text-[10px] text-slate-500 ml-1">({row.drawPct.toFixed(0)}%)</span>
-                      </td>
-
-                      {/* Underdog Hits */}
-                      <td className="py-2.5 px-2 text-center font-mono">
-                        <span className="text-rose-400 font-bold">{row.underdogHits}</span>
-                        <span className="text-[10px] text-slate-500 ml-1">({row.underdogPct.toFixed(0)}%)</span>
-                      </td>
-
-                      {/* Safe Conviction */}
-                      <td className="py-2.5 px-2 text-center font-mono font-bold">
-                        <span className={`px-2 py-0.5 rounded text-[11px] ${
-                          row.safePct >= 75
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : row.safePct >= 60
-                              ? 'bg-amber-500/20 text-amber-300'
-                              : 'bg-rose-500/20 text-rose-300'
-                        }`}>
-                          {row.totalHits > 0 ? `${row.safePct.toFixed(0)}%` : '0%'}
-                        </span>
-                      </td>
-
-                      {/* Rationale */}
-                      <td className="py-2.5 px-3 text-slate-400 text-[11px]">
-                        {row.rationale}
-                      </td>
-                    </tr>
-                  );
-                })
+                paginatedRecommendations.map(row => (
+                  <MemoizedTriggerTableRow
+                    key={row.description}
+                    row={row}
+                    isLeaguesView={triggersViewTab === 'leagues'}
+                    isUpsetsCat={activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only'}
+                    isLockedProUd={triggersViewTab === 'leagues' ? isLeagueLockedProUnderdog(row.description, activeCategory, selectedDay !== 'all' ? selectedDay : datasetDay) : false}
+                    categoryLabel={activeCategoryConfig.label}
+                    onInspectHistory={stableInspectHistory}
+                    onSetTriggerPoints={stableSetTriggerPoints}
+                    onToggleLeaguePolarity={stableToggleLeaguePolarity}
+                  />
+                ))
               )}
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Controls */}
+        {filteredRecommendations.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 px-1 text-xs text-slate-400">
+            <div className="flex items-center gap-2">
+              <span>
+                Showing <strong className="text-white">{tablePageSize > 0 ? (clampedTablePage * tablePageSize + 1) : 1}</strong>–<strong className="text-white">{tablePageSize > 0 ? Math.min(filteredRecommendations.length, (clampedTablePage + 1) * tablePageSize) : filteredRecommendations.length}</strong> of <strong className="text-white">{filteredRecommendations.length}</strong> triggers
+              </span>
+              <span className="text-slate-600">|</span>
+              <span className="text-slate-400">Rows per page:</span>
+              {([60, 120, 0] as const).map(sz => {
+                const isSel = tablePageSize === sz;
+                return (
+                  <button
+                    key={sz}
+                    type="button"
+                    onClick={() => setTablePageSize(sz)}
+                    className={`px-2 py-0.5 rounded font-mono text-[11px] font-semibold transition border ${
+                      isSel
+                        ? 'bg-indigo-600 text-white border-indigo-500'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border-slate-800'
+                    }`}
+                  >
+                    {sz === 0 ? 'All' : sz}
+                  </button>
+                );
+              })}
+            </div>
+
+            {tablePageSize > 0 && totalTablePages > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={clampedTablePage <= 0}
+                  onClick={() => setTablePage(p => Math.max(0, p - 1))}
+                  className="px-2.5 py-1 rounded bg-slate-950 hover:bg-slate-800 disabled:opacity-40 disabled:pointer-events-none text-slate-200 border border-slate-800 font-semibold transition"
+                >
+                  ← Prev
+                </button>
+                <span className="font-mono text-[11px] text-slate-300">
+                  Page <strong>{clampedTablePage + 1}</strong> of <strong>{totalTablePages}</strong>
+                </span>
+                <button
+                  type="button"
+                  disabled={clampedTablePage >= totalTablePages - 1}
+                  onClick={() => setTablePage(p => Math.min(totalTablePages - 1, p + 1))}
+                  className="px-2.5 py-1 rounded bg-slate-950 hover:bg-slate-800 disabled:opacity-40 disabled:pointer-events-none text-slate-200 border border-slate-800 font-semibold transition"
+                >
+                  Next →
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Copy Code Modal */}
@@ -6727,7 +8774,7 @@ ${rulesCode}
                 </p>
 
                 <div className="pt-1 text-[11px] text-slate-400 font-sans border-t border-slate-800/60">
-                  🛡️ <strong>Asymmetric Ratchet Guarantee:</strong> When the live match sample has fewer than 5 matches, the algorithm evaluates historical data across weekdays and all days. If historical evidence justifies a stronger conviction bonus or deeper trap penalty, it grants leeway to scale it up (max +25 bonus, max -40 penalty). Existing calibrated points are <strong>never reduced or weakened</strong> on small sample sizes.
+                  🛡️ <strong>Asymmetric Ratchet Guarantee:</strong> When the live match sample has fewer than 5 matches, the algorithm evaluates historical data across weekdays and all days. If historical evidence justifies a stronger conviction bonus or deeper trap penalty, it grants leeway to scale it up (max +25 bonus, max -30 penalty). Existing calibrated points are <strong>never reduced or weakened</strong> on small sample sizes.
                 </div>
               </div>
 
@@ -6744,8 +8791,284 @@ ${rulesCode}
           </div>
         );
       })()}
+
+      {/* Clean Target Matches & Trigger Points Verification Modal */}
+      {isCleanMatchesModalOpen && (() => {
+        const activeDayLabel = (selectedDay !== 'all' ? selectedDay : datasetDay).toUpperCase();
+        const rowsToShow = showAllRankedInCleanModal
+          ? cleanMatchesBreakdown.allRows
+          : (cleanMatchesBreakdown.firstTrap
+              ? [...cleanMatchesBreakdown.cleanMatches, cleanMatchesBreakdown.firstTrap]
+              : cleanMatchesBreakdown.cleanMatches);
+
+        const allExpanded = rowsToShow.length > 0 && rowsToShow.every(r => expandedCleanMatchIds.has(r.match.id || r.rank));
+
+        const toggleRowExpand = (id: string | number) => {
+          setExpandedCleanMatchIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+          });
+        };
+
+        const toggleExpandAll = () => {
+          if (allExpanded) {
+            setExpandedCleanMatchIds(new Set());
+          } else {
+            setExpandedCleanMatchIds(new Set(rowsToShow.map(r => r.match.id || r.rank)));
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-slate-950/80">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Eye size={18} className="text-indigo-400" />
+                    <h2 className="text-base font-bold text-white">
+                      Clean Target Matches & OPW Trigger Points Verification
+                    </h2>
+                    <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                      {activeCategoryConfig.label}
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                      {activeDayLabel}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Exact factual ranking computed directly from each match&apos;s Base PHA Weight + Active OPW Trigger Points (zero simulation).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCleanMatchesModalOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Summary Metrics Strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-5 py-3 bg-slate-950/50 border-b border-slate-800">
+                <div className="bg-slate-900/90 border border-emerald-500/30 rounded-lg p-2.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">Clean Targets Before Trap</span>
+                  <span className="text-lg font-mono font-bold text-emerald-400">
+                    {Math.max(deepCleanMatches, cleanMatchesBreakdown.cleanCount)} / {cleanMatchesBreakdown.totalTargets}
+                  </span>
+                </div>
+                <div className="bg-slate-900/90 border border-rose-500/30 rounded-lg p-2.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">First Trap Rank</span>
+                  <span className="text-lg font-mono font-bold text-rose-400">
+                    {cleanMatchesBreakdown.firstTrap ? `#${Math.max(deepFirstTrapRank, cleanMatchesBreakdown.firstTrapRank)}` : 'NONE (100%)'}
+                  </span>
+                  {cleanMatchesBreakdown.firstTrap && (
+                    <span className="text-[10px] text-rose-300 truncate block">
+                      {cleanMatchesBreakdown.firstTrap.teams}
+                    </span>
+                  )}
+                </div>
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">First Trap Total Score</span>
+                  <span className="text-lg font-mono font-bold text-amber-300">
+                    {cleanMatchesBreakdown.firstTrap ? `${cleanMatchesBreakdown.firstTrap.totalScore} PTS` : '—'}
+                  </span>
+                </div>
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">Clean Boundary Margin</span>
+                  <span className="text-lg font-mono font-bold text-cyan-400">
+                    {cleanMatchesBreakdown.cleanCount > 0 && cleanMatchesBreakdown.firstTrap
+                      ? `+${cleanMatchesBreakdown.marginToFirstTrap} PTS`
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Controls Bar */}
+              <div className="flex items-center justify-between flex-wrap gap-2 px-5 py-2.5 bg-slate-900 border-b border-slate-800 text-xs">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAllRankedInCleanModal(false)}
+                    className={`px-3 py-1 rounded-md font-semibold transition cursor-pointer ${
+                      !showAllRankedInCleanModal
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    Clean Matches + 1st Trap ({cleanMatchesBreakdown.cleanCount + (cleanMatchesBreakdown.firstTrap ? 1 : 0)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllRankedInCleanModal(true)}
+                    className={`px-3 py-1 rounded-md font-semibold transition cursor-pointer ${
+                      showAllRankedInCleanModal
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    All Ranked Matches ({cleanMatchesBreakdown.allRows.length})
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleExpandAll}
+                  className="px-3 py-1 rounded-md font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer"
+                >
+                  {allExpanded ? 'Collapse All Triggers' : 'Expand All Triggers'}
+                </button>
+              </div>
+
+              {/* Matches List */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+                {rowsToShow.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400 text-sm">
+                    No completed matches found in this category.
+                  </div>
+                ) : (
+                  rowsToShow.map(row => {
+                    const rowKey = row.match.id || row.rank;
+                    const isExpanded = expandedCleanMatchIds.has(rowKey);
+                    const isFirstTrap = cleanMatchesBreakdown.firstTrap && row.rank === cleanMatchesBreakdown.firstTrap.rank;
+
+                    return (
+                      <div
+                        key={rowKey}
+                        className={`rounded-lg border transition ${
+                          isFirstTrap
+                            ? 'bg-rose-950/35 border-rose-500/60 shadow-lg shadow-rose-950/30'
+                            : row.isTarget
+                            ? 'bg-slate-950/80 border-emerald-500/30 hover:border-emerald-500/50'
+                            : 'bg-rose-950/20 border-rose-500/30'
+                        }`}
+                      >
+                        <div
+                          onClick={() => toggleRowExpand(rowKey)}
+                          className="flex items-center justify-between flex-wrap gap-3 p-3 cursor-pointer"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className={`px-2 py-1 rounded font-mono text-xs font-bold ${
+                              isFirstTrap
+                                ? 'bg-rose-600 text-white'
+                                : row.isTarget
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            }`}>
+                              #{row.rank}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm text-white truncate">
+                                  {row.teams}
+                                </span>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  isFirstTrap
+                                    ? 'bg-rose-500/30 text-rose-200 border border-rose-400/50'
+                                    : row.isTarget
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                }`}>
+                                  {isFirstTrap
+                                    ? `⛔ FIRST TRAP (${row.outcome.toUpperCase()})`
+                                    : row.isTarget
+                                    ? `✅ CLEAN TARGET (${row.outcome.toUpperCase()})`
+                                    : `⚠️ TRAP (${row.outcome.toUpperCase()})`}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-3 text-[11px] text-slate-400 font-mono mt-0.5 flex-wrap">
+                                {row.date && <span>📅 {row.date}</span>}
+                                {row.league && <span>🏆 {row.league}</span>}
+                                <span>FT: <strong className="text-white">{row.result}</strong> ({row.actual})</span>
+                                <span>M.Fav: <strong className="text-indigo-300">{row.mFav}</strong></span>
+                                {row.odds && <span>Odds: {row.odds}</span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <div className="text-right font-mono">
+                              <div className="text-xs text-slate-400">
+                                Base <span className="text-slate-200 font-semibold">+{row.baseScore}</span>
+                                {' • '}
+                                Triggers ({row.rulesHit.length}):{' '}
+                                <span className={row.triggerScore >= 0 ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
+                                  {row.triggerScore >= 0 ? `+${row.triggerScore}` : row.triggerScore}
+                                </span>
+                              </div>
+                              <div className={`text-base font-bold ${
+                                isFirstTrap ? 'text-rose-300' : row.isTarget ? 'text-emerald-400' : 'text-amber-300'
+                              }`}>
+                                Total: {row.totalScore} PTS
+                              </div>
+                            </div>
+                            <div className="text-slate-400">
+                              {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Expandable Trigger Points Breakdown */}
+                        {isExpanded && (
+                          <div className="px-4 pb-3 pt-2 border-t border-slate-800/80 bg-slate-950/60">
+                            <div className="text-[11px] font-semibold text-slate-300 mb-2 flex items-center justify-between">
+                              <span>Active OPW Triggers Fired ({row.rulesHit.length}):</span>
+                              <span className="font-mono text-slate-400">
+                                {row.baseScore} (Base) + ({row.triggerScore}) (Triggers) = <strong className="text-white">{row.totalScore} PTS</strong>
+                              </span>
+                            </div>
+                            {row.rulesHit.length === 0 ? (
+                              <p className="text-xs text-slate-500 italic">No active catalog triggers fired on this match.</p>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                                {row.rulesHit.map((rule, rIdx) => (
+                                  <div
+                                    key={`${rule.description}_${rIdx}`}
+                                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-slate-900/90 border border-slate-800 text-xs"
+                                  >
+                                    <span className="text-slate-200 truncate" title={rule.description}>
+                                      {rule.description}
+                                    </span>
+                                    <span className={`font-mono font-bold px-1.5 py-0.5 rounded text-[11px] shrink-0 ${
+                                      rule.points > 0
+                                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                        : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                    }`}>
+                                      {rule.points > 0 ? `+${rule.points}` : rule.points} PTS
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex items-center justify-between px-5 py-3 border-t border-slate-800 bg-slate-950/80">
+                <span className="text-xs text-slate-400">
+                  Click any match card above to inspect its individual OPW triggers and points.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsCleanMatchesModalOpen(false)}
+                  className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white transition cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
 
+export const OPWAlgo = React.memo(OPWAlgoComponent);
 export default OPWAlgo;

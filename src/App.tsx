@@ -17,6 +17,31 @@ function withTimeout<T>(promise: PromiseLike<T> | Promise<T>, ms: number, name: 
   ]);
 }
 
+class SafeErrorBoundary extends React.Component<
+  { fallback: (error: Error, reset: () => void) => React.ReactNode; children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { fallback: (error: Error, reset: () => void) => React.ReactNode; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("App Root Error Caught by SafeErrorBoundary:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError && this.state.error) {
+      return this.props.fallback(this.state.error, () => this.setState({ hasError: false, error: null }));
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
@@ -44,7 +69,14 @@ function App() {
         try {
           await withTimeout(initStorageAndCacheCombined(), 10000, "initStorageAndCacheCombined");
           await withTimeout(loadFromSupabase(), 20000, "loadFromSupabase");
-          await withTimeout(cleanupStoredDuplicates(), 15000, "cleanupStoredDuplicates");
+          // Defer heavy deduplication & LZString compression so UI & Live Analysis mount smoothly without blocking
+          setTimeout(async () => {
+            try {
+              await withTimeout(cleanupStoredDuplicates(), 15000, "cleanupStoredDuplicates");
+            } catch (dupErr) {
+              console.warn("Deferred cleanup notice:", dupErr);
+            }
+          }, 6000);
         } catch (syncErr) {
           console.warn("Background data sync notice:", syncErr);
         }
@@ -308,11 +340,39 @@ function App() {
           <UserManagement currentUser={currentUser} />
         </div>
       ) : (
-        <MatchAnalysis
-          currentUser={currentUser}
-          onLogout={handleLogout}
-          onNavigateAdmin={() => setCurrentView('admin')}
-        />
+        <SafeErrorBoundary
+          fallback={(error, reset) => (
+            <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-[var(--color-background)] p-4 text-center">
+              <div className="grid h-16 w-16 place-items-center rounded-full bg-emerald-500/20 text-emerald-400 mb-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              </div>
+              <h1 className="text-xl font-bold text-white">Application Notice</h1>
+              <p className="text-slate-400 max-w-md text-sm">
+                A temporary error occurred while rendering the workspace. Click below to reload cleanly.
+              </p>
+              <div className="flex gap-3 mt-2">
+                <button
+                  onClick={reset}
+                  className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-500 transition-colors"
+                >
+                  Reload View
+                </button>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="rounded-lg bg-slate-800 px-5 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-700 transition-colors"
+                >
+                  Hard Refresh
+                </button>
+              </div>
+            </div>
+          )}
+        >
+          <MatchAnalysis
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            onNavigateAdmin={() => setCurrentView('admin')}
+          />
+        </SafeErrorBoundary>
       )}
     </MLMatrixProvider>
   );

@@ -24,6 +24,7 @@ export interface Match {
   date: string;
   time?: string;
   league?: string;
+  country?: string;
   
   // Parsed numerical values for calculations
   tsa?: number;
@@ -115,6 +116,7 @@ export interface Match {
   mandatory_hedge?: boolean;
   qualityAudit?: SelectionQuality;
   phaReliability?: string;
+  lockedOpwScores?: Record<string, any>;
   
   // PAA Stats for Filtering
   paaWin?: number;

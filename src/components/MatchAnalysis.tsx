@@ -32,10 +32,10 @@ import { useMatchStars } from '../utils/matchStars';
 import { evaluateMatchCategory, getMatchEvaluatorTags, MatchCategory, Priority } from '../utils/matchEvaluator';
 import PatternAudit from './PatternAudit';
 import { DEFAULT_WEIGHTS, getMatchScore, predictSeerDetailed, predictWithSeer } from '../utils/seerLogic';
-import { getOptimizedScoreDetailed, getMatchDayOfWeek, DayOfWeek } from '../utils/optimizedweights';
+import { getOptimizedScoreDetailed, getMatchDayOfWeek, DayOfWeek, clearOptimizedScoreCache, loadServerOpwRules } from '../utils/optimizedweights';
 import { generateSeerSlips } from '../utils/seerSlipSelection';
 import { generateSeerAiCognitiveSlips } from '../utils/seerAiSlipSelection';
-import { saveLockedSlip, SeerLockedSlip, getLockedSlip } from '../services/seerSlips';
+import { saveLockedSlip, SeerLockedSlip, getLockedSlip, preloadSeerSlipsBackground, removeMatchFromSeerSlipsAndReplace } from '../services/seerSlips';
 import AppShell from './AppShell';
 import { addTombstones, filterTombstoned, hydrateTombstones, removeTombstones } from '../services/matchTombstones';
 import { MachineLearningDashboard } from './MachineLearning/MachineLearningDashboard';
@@ -140,20 +140,33 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   const [archives, setArchives] = useState<{date: string, matches: Match[]}[]>([]); 
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSupabaseSynced, setIsSupabaseSynced] = useState(false);
+  const lastSavedUploadedRef = useRef<Match[] | null>(null);
+  const lastSavedLiveRef = useRef<Match[] | null>(null);
   
   useEffect(() => {
-    const loadLocalState = async () => {
-       const [up, lv, ar] = await Promise.all([
-           Storage.getUploadedMatchesAsync(),
-           Storage.getLiveMatchesAsync(),
-           Storage.getArchivesAsync()
-       ]);
-       setUploadedMatches(up || []);
-       setLiveMatches(lv || []);
-       setArchives(ar || []);
-       setIsLoaded(true);
-    };
-    loadLocalState();
+    // 1. Instantly hydrate live matches and archives from local cache (<10ms)
+    Storage.getLiveMatchesAsync().then(lv => {
+      if (lv && lv.length > 0) {
+        lastSavedLiveRef.current = lv;
+        setLiveMatches(lv);
+      }
+    }).catch(() => {});
+
+    Storage.getArchivesAsync().then(ar => {
+      if (ar && ar.length > 0) {
+        setArchives(ar);
+      }
+    }).catch(() => {});
+
+    // 2. Hydrate heavy historical universe in background
+    Storage.getUploadedMatchesAsync().then(up => {
+      const initialUp = up || [];
+      lastSavedUploadedRef.current = initialUp;
+      setUploadedMatches(initialUp);
+      setIsLoaded(true);
+    }).catch(() => {
+      setIsLoaded(true);
+    });
   }, []);
   
   const [selectedArchiveDate, setSelectedArchiveDate] = useState<string>('');
@@ -204,34 +217,39 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   }, []);
 
 
-  // Background synchronize uploaded & live matches from Supabase after local storage has loaded!
+  // Fast-track Live Analysis: Fetch authoritative live matches from database immediately on mount!
   useEffect(() => {
-    if (!isLoaded) return;
-
     let active = true;
-
-    // 1. Parallel fetch live matches (instant, ~1-2s)
-    const syncLive = async () => {
+    const syncLiveImmediate = async () => {
       try {
         const liveFromSupabase = await loadLiveMatchesFromSupabase();
         if (active && liveFromSupabase && liveFromSupabase.length > 0) {
           console.log(`Loaded ${liveFromSupabase.length} live matches from database.`);
+          lastSavedLiveRef.current = liveFromSupabase;
           setLiveMatches(liveFromSupabase);
-          Storage.saveLiveMatches(liveFromSupabase, true, false);
+          Storage.saveLiveMatches(liveFromSupabase, false, false);
         }
       } catch (liveSqlErr) {
-        console.warn("Failed background load of live matches:", liveSqlErr);
+        console.warn("Failed immediate load of live matches:", liveSqlErr);
       }
     };
+    syncLiveImmediate();
+    return () => { active = false; };
+  }, []);
 
-    // 2. Parallel fetch uploaded matches (historical universe)
+  // Background synchronize uploaded matches (historical universe) from Supabase after local storage has loaded!
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    let active = true;
     const syncUploaded = async () => {
       try {
         const uploadedFromSupabase = await loadUploadedMatchesFromSupabase();
         if (active && uploadedFromSupabase && uploadedFromSupabase.length > 0) {
           console.log(`Loaded ${uploadedFromSupabase.length} uploaded/analyzed matches.`);
+          lastSavedUploadedRef.current = uploadedFromSupabase;
           setUploadedMatches(uploadedFromSupabase);
-          Storage.saveUploadedMatches(uploadedFromSupabase, true, false);
+          Storage.saveUploadedMatches(uploadedFromSupabase, false, false);
         }
       } catch (uploadSqlErr) {
         console.warn("Failed background load of uploaded matches:", uploadSqlErr);
@@ -240,9 +258,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
       }
     };
 
-    // Run concurrently so live analysis never waits for historical universe
-    Promise.allSettled([syncLive(), syncUploaded()]);
-
+    syncUploaded();
     return () => { active = false; };
   }, [isLoaded]);
   
@@ -266,13 +282,56 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   const [weightsVersion, setWeightsVersion] = useState(0);
 
   useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const handleWeightsUpdate = () => {
-      setWeightsVersion(v => v + 1);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        clearOptimizedScoreCache();
+        setLiveMatches(prev => {
+          if (!prev.some(m => (m as any).lockedOpwScores || (m as any).lockedOpwScore)) {
+            return prev;
+          }
+          const nextArr = prev.map(m => {
+            if ((m as any).lockedOpwScores || (m as any).lockedOpwScore) {
+              const next = { ...m };
+              delete (next as any).lockedOpwScores;
+              delete (next as any).lockedOpwScore;
+              return next;
+            }
+            return m;
+          });
+          lastSavedLiveRef.current = nextArr;
+          return nextArr;
+        });
+        setUploadedMatches(prev => {
+          if (!prev.some(m => (m as any).lockedOpwScores || (m as any).lockedOpwScore)) {
+            return prev;
+          }
+          const nextArr = prev.map(m => {
+            if ((m as any).lockedOpwScores || (m as any).lockedOpwScore) {
+              const next = { ...m };
+              delete (next as any).lockedOpwScores;
+              delete (next as any).lockedOpwScore;
+              return next;
+            }
+            return m;
+          });
+          lastSavedUploadedRef.current = nextArr;
+          return nextArr;
+        });
+        setWeightsVersion(v => v + 1);
+      }, 60);
     };
     window.addEventListener('optimizedWeightsUpdated', handleWeightsUpdate);
+    window.addEventListener('opw-weights-updated', handleWeightsUpdate);
     window.addEventListener('seerLockedSlipsUpdated', handleWeightsUpdate);
+    loadServerOpwRules(false).then(days => {
+      if (days && days.length > 0) handleWeightsUpdate();
+    });
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       window.removeEventListener('optimizedWeightsUpdated', handleWeightsUpdate);
+      window.removeEventListener('opw-weights-updated', handleWeightsUpdate);
       window.removeEventListener('seerLockedSlipsUpdated', handleWeightsUpdate);
     };
   }, []);
@@ -436,29 +495,33 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         }
 
         const isValid = (v: any) => v !== undefined && v !== null && v !== '' && v !== '-' && v !== 'Unknown' && v !== 'NA';
+        const isValidResult = (v: any) => v !== undefined && v !== null && v !== '' && v !== '-' && v !== 'Unknown' && v !== 'pending';
 
-        const freshRating = isValid(nm.rating) ? nm.rating : existing.rating;
-        const freshPred1x2 = isValid(nm.pred1x2) ? nm.pred1x2 : existing.pred1x2;
-        const freshL10 = isValid(nm.l10) ? nm.l10 : existing.l10;
-        const freshLe = isValid(nm.le) ? nm.le : existing.le;
-        const freshMo = isValid(nm.mo) ? nm.mo : existing.mo;
-        const freshGs = isValid(nm.gs) ? nm.gs : existing.gs;
-        const freshGa = isValid(nm.ga) ? nm.ga : existing.ga;
+        const freshRating = isValid(existing.rating) ? existing.rating : (isValid(nm.rating) ? nm.rating : existing.rating);
+        const freshPred1x2 = isValid(existing.pred1x2) ? existing.pred1x2 : (isValid(nm.pred1x2) ? nm.pred1x2 : existing.pred1x2);
+        const freshL10 = isValid(existing.l10) ? existing.l10 : (isValid(nm.l10) ? nm.l10 : existing.l10);
+        const freshLe = isValid(existing.le) ? existing.le : (isValid(nm.le) ? nm.le : existing.le);
+        const freshMo = isValid(existing.mo) ? existing.mo : (isValid(nm.mo) ? nm.mo : existing.mo);
+        const freshGs = isValid(existing.gs) ? existing.gs : (isValid(nm.gs) ? nm.gs : existing.gs);
+        const freshGa = isValid(existing.ga) ? existing.ga : (isValid(nm.ga) ? nm.ga : existing.ga);
+        const freshResult = isValidResult(nm.result) ? nm.result : existing.result;
 
         if (
-            (isValid(nm.rating) && existing.rating !== nm.rating) ||
-            (isValid(nm.pred1x2) && existing.pred1x2 !== nm.pred1x2) ||
-            (isValid(nm.l10) && existing.l10 !== nm.l10) ||
-            (isValid(nm.le) && existing.le !== nm.le) ||
-            (isValid(nm.mo) && existing.mo !== nm.mo) ||
-            (isValid(nm.gs) && existing.gs !== nm.gs) ||
-            (isValid(nm.ga) && existing.ga !== nm.ga)
+            (!isValid(existing.rating) && isValid(nm.rating)) ||
+            (!isValid(existing.pred1x2) && isValid(nm.pred1x2)) ||
+            (!isValid(existing.l10) && isValid(nm.l10)) ||
+            (!isValid(existing.le) && isValid(nm.le)) ||
+            (!isValid(existing.mo) && isValid(nm.mo)) ||
+            (!isValid(existing.gs) && isValid(nm.gs)) ||
+            (!isValid(existing.ga) && isValid(nm.ga)) ||
+            (isValidResult(nm.result) && existing.result !== nm.result)
         ) {
             changed = true;
         }
 
         const updatedObj = {
             ...existing,
+            result: freshResult,
             isDaily: newIsDaily,
             isJackpot: newIsJackpot,
             jackpotIds: newJackpotIds,
@@ -526,6 +589,20 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
     scheduleViewPlaceholder();
     startViewTransition(() => {
       setViewMode('live');
+      // Reset filters so newly pushed matches (including pending matches without results) are immediately visible
+      userPickedDateRef.current = false;
+      setSelectedDate('all');
+      setSelectedStatus('all');
+      setShowFavWins(false);
+      setShowUnderdogWins(false);
+      setShowDrawWins(false);
+      setMatchTypeFilter('all');
+      setActivePriority('all');
+      setSelected1X2('all');
+      setSelectedPattern('all');
+      setSelectedPointsRange('all');
+      setSearchQuery('');
+      setSearchSubPattern('');
       if (nerdyMatches.some(m => m.isJackpot)) {
         setLiveViewType('jackpot');
         if (firstJackpotId) {
@@ -558,7 +635,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         const normalizedResult = nerdyMatch.result;
         if (lm.result !== normalizedResult) {
           updatedCount++;
-          return { ...lm, result: normalizedResult };
+          return { ...lm, result: normalizedResult, lockedOpwScores: (lm as any).lockedOpwScores };
         }
       }
       return lm;
@@ -655,14 +732,18 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
       if (changed) setLiveMatches(verified);
   }, []);
 
-  // Sync state to storage (Local and Supabase)
+  // Sync state to storage (Local and Supabase) ONLY when user actions mutate the array reference
   useEffect(() => {
     if (!isLoaded || !isSupabaseSynced) return;
+    if (lastSavedUploadedRef.current === uploadedMatches) return;
+    lastSavedUploadedRef.current = uploadedMatches;
     Storage.saveUploadedMatches(uploadedMatches);
   }, [uploadedMatches, isLoaded, isSupabaseSynced]);
 
   useEffect(() => {
     if (!isLoaded || !isSupabaseSynced) return;
+    if (lastSavedLiveRef.current === liveMatches) return;
+    lastSavedLiveRef.current = liveMatches;
     Storage.saveLiveMatches(liveMatches);
   }, [liveMatches, isLoaded, isSupabaseSynced]);
 
@@ -754,7 +835,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   useEffect(() => {
     let active = true;
     import('idb-keyval').then(({ get }) => {
-      get('prm_full_processed_history_cache_v2').then((cached) => {
+      get('prm_full_processed_history_cache_v5').then((cached) => {
         if (active && cached && Array.isArray(cached) && cached.length > 0) {
           setFullProcessedHistory(cached);
         }
@@ -768,7 +849,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
     if (rawMatches.length === 0) return '';
     const first = rawMatches[0]?.id || '';
     const last = rawMatches[rawMatches.length - 1]?.id || '';
-    return `${rawMatches.length}_${first}_${last}_${tombstoneVersion}`;
+    return `${rawMatches.length}_${first}_${last}_${tombstoneVersion}_ml_v5`;
   }, [uniqueMatchesMap, tombstoneVersion]);
 
   useEffect(() => {
@@ -781,32 +862,40 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           return;
       }
 
+      // Safety watchdog: ensure isHistoryProcessing is never stuck true for more than 8 seconds
+      const safetyTimer = setTimeout(() => {
+          if (!cancelled) {
+              setIsHistoryProcessing(false);
+          }
+      }, 8000);
+
       const processHistoryInChunks = async () => {
           // Only show skeleton if we have zero processed matches currently loaded
           if (fullProcessedHistory.length === 0) {
               setIsHistoryProcessing(true);
           }
-          await matchAlgorithm.trainChunked(rawMatches, 250, () => cancelled);
+          await matchAlgorithm.trainChunked(rawMatches, 500, () => cancelled);
           if (cancelled) return;
 
           const processed: Match[] = [];
-          const batchSize = 100;
+          const batchSize = 1000;
           for (let start = 0; start < rawMatches.length; start += batchSize) {
               if (cancelled) return;
               const batch = rawMatches.slice(start, start + batchSize).map((raw: Match) => {
-                  let processed = (raw as any).isPrecalculated && (raw as any).patternAnalysis ? { ...raw } : processMatch(raw, mlData);
-                  if (!processed.mlInfo) {
-                      processed.mlInfo = predictWithHybridML(processed, mlData);
+                  if ((raw as any).isPrecalculated && (raw as any).patternAnalysis && (raw as any).mlInfo) {
+                      return raw;
                   }
-                  return processed;
+                  let p = (raw as any).isPrecalculated && (raw as any).patternAnalysis ? { ...raw } : processMatch(raw, mlData);
+                  p.mlInfo = (raw as any).mlInfo || predictWithHybridML(p, mlData);
+                  return p;
               });
               processed.push(...batch);
-              if (rawMatches.length > 500) {
-                  await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-              }
+              // Yield to main event loop to ensure zero browser freeze
+              await new Promise<void>(resolve => setTimeout(resolve, 0));
           }
 
           if (!cancelled) {
+              clearTimeout(safetyTimer);
               lastProcessedFingerprintRef.current = rawFingerprint;
               React.startTransition(() => {
                   setFullProcessedHistory(processed);
@@ -814,18 +903,20 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
               });
               // Cache in IndexedDB for instant reload on next session
               import('idb-keyval').then(({ set }) => {
-                  set('prm_full_processed_history_cache_v2', processed).catch(() => {});
+                  set('prm_full_processed_history_cache_v5', processed).catch(() => {});
               }).catch(() => {});
           }
       };
 
       processHistoryInChunks().catch(err => {
           console.error('History processing failed:', err);
+          clearTimeout(safetyTimer);
           if (!cancelled) setIsHistoryProcessing(false);
       });
 
       return () => {
           cancelled = true;
+          clearTimeout(safetyTimer);
       };
   }, [uniqueMatchesMap, rawFingerprint, mlData]);
 
@@ -836,15 +927,38 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   }, [fullProcessedHistory, allHistory]);
 
   // 4. Calculate PHA Stats based on Full Processed History
+  // Extract the cutoff date first so switching between live/nerdy/opw_algo/seer does NOT recompute PHA over 19,000 matches!
+  const isArchiveMode = viewMode === 'archive';
+  const isAnalysisMode = viewMode === 'analysis';
+  const phaTargetDate = useMemo(() => {
+      let targetDate = isArchiveMode && selectedArchiveDate ? selectedArchiveDate : getAnalysisDateString();
+      if (!isArchiveMode && !isAnalysisMode && liveMatches && liveMatches.length > 0) {
+          const liveLogicalDates = liveMatches
+              .map(m => getLogicalDate(m.date || '', m.time))
+              .filter(d => Boolean(d));
+          if (liveLogicalDates.length > 0) {
+              const earliestLive = [...liveLogicalDates].sort()[0];
+              if (earliestLive && earliestLive < targetDate) {
+                  targetDate = earliestLive;
+              }
+          }
+      }
+      return targetDate;
+  }, [isArchiveMode, isAnalysisMode, selectedArchiveDate, liveMatches]);
+
   const phaStatsMap = useMemo(() => {
       const stats: Record<string, { total: number; paaTotal: number; correct: number; outcomes: { '1': number; 'X': number; '2': number }; favWin: number; draw: number; upsetWin: number }> = {};
-      
-      const targetDate = viewMode === 'archive' && selectedArchiveDate ? selectedArchiveDate : getAnalysisDateString();
+      const targetDate = phaTargetDate;
+      const liveIdSet = new Set((liveMatches || []).map(m => String(m.id)));
 
       fullProcessedHistory.forEach(m => {
-          // Prevent data leakage & slip drifting: exclude matches that happened on or after the date we are analyzing.
-          // This ensures that when today's results are updated, they don't alter the historical baseline used for today's predictions.
-          if (m.date && m.date >= targetDate) return;
+          // Prevent data leakage & slip drifting:
+          // 1. Exclude any match that is currently in the active live pool
+          if (liveIdSet.has(String(m.id))) return;
+
+          // 2. Exclude matches whose logical date or date is on or after targetDate (respecting 9:00 AM -> 8:59 AM day boundary)
+          const mLogDate = getLogicalDate(m.date || '', m.time);
+          if (mLogDate ? mLogDate >= targetDate : (m.date && m.date >= targetDate)) return;
 
           const sub = m.patternAnalysis?.subPattern;
           if (sub) {
@@ -869,7 +983,25 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           }
       });
       return stats;
-  }, [fullProcessedHistory, viewMode, selectedArchiveDate]);
+  }, [fullProcessedHistory, phaTargetDate, liveMatches]);
+
+  // Preload SEER Optimized Slips in background on App startup (at most once per dataset size)
+  const lastPreloadKeyRef = useRef<string>('');
+  useEffect(() => {
+    if (!isLoaded) return;
+    const preloadKey = `${liveMatches.length}_${uploadedMatches.length}`;
+    if (lastPreloadKeyRef.current === preloadKey) return;
+    const timer = setTimeout(() => {
+      lastPreloadKeyRef.current = preloadKey;
+      preloadSeerSlipsBackground({
+        liveMatches,
+        uploadedMatches,
+        phaStatsMap,
+        matchStars,
+      });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [isLoaded, liveMatches.length, uploadedMatches.length, phaStatsMap, matchStars]);
 
 
   // --- VIEW LOGIC ---
@@ -880,11 +1012,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
 
       return liveMatches.map(m => {
           const processed = { ...((m as any).isPrecalculated && (m as any).patternAnalysis ? m : processMatch(m, mlData)) };
-          if (!processed.mlInfo) {
-              processed.mlInfo = predictWithHybridML(processed, mlData);
-          }
-          processed.evaluatorTags = getMatchEvaluatorTags(processed, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
-          
+          processed.mlInfo = predictWithHybridML(processed, mlData);
           const sub = processed.patternAnalysis?.subPattern;
           if (sub && phaStatsMap[sub]) {
               const stats = phaStatsMap[sub];
@@ -910,6 +1038,8 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
               processed.paaWin = 0; processed.paaDraw = 0; processed.paaUpset = 0;
           }
 
+          processed.evaluatorTags = getMatchEvaluatorTags(processed, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+
           // Cache on source match
           m.evaluatorTags = processed.evaluatorTags;
           m.paaWin = processed.paaWin;
@@ -924,12 +1054,13 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
 
           return processed;
       });
-  }, [liveMatches, phaStatsMap, matchStars, liveViewType, mlData]);
+  }, [liveMatches, phaStatsMap, matchStars, liveViewType, mlData, weightsVersion]);
 
   const liveMatchDay = useMemo<DayOfWeek>(() => {
     const counts: Partial<Record<DayOfWeek, number>> = {};
-    if (taggedLiveMatches && taggedLiveMatches.length > 0) {
-      taggedLiveMatches.forEach(m => {
+    const pool = (taggedLiveMatches && taggedLiveMatches.length > 0) ? taggedLiveMatches : (liveMatches || []);
+    if (pool && pool.length > 0) {
+      pool.forEach(m => {
         if (m.date) {
           const d = getMatchDayOfWeek(m);
           counts[d] = (counts[d] || 0) + 1;
@@ -940,16 +1071,11 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
     }
     const map: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     return map[new Date().getDay()];
-  }, [taggedLiveMatches]);
+  }, [taggedLiveMatches, liveMatches]);
 
-  // 2. Memoize tagged historic matches
+  // 2. Memoize tagged historic matches (reuses savedProcessedHistory directly)
   const taggedHistoricMatches = useMemo(() => {
-        // Removed viewMode early return to prevent recalculating on tab switch
-
-      // Keep any match that is part of allHistory (which includes RAW, precalculated, uploaded, and archives)
-      const allHistoryIds = new Set(allHistory.map(m => m.id));
-      const historic = fullProcessedHistory.filter(m => allHistoryIds.has(m.id));
-      const unique = Array.from(new Map(historic.map(item => [item.id, item])).values());
+      const unique = Array.from(new Map(savedProcessedHistory.map(item => [item.id, item])).values());
       return unique.map(m => {
           if (m.paaWin !== undefined) {
               return m;
@@ -994,15 +1120,24 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
 
           return processed;
       });
-  }, [fullProcessedHistory, allHistory, phaStatsMap, matchStars, viewMode, savedProcessedHistory]);
+  }, [savedProcessedHistory, phaStatsMap]);
+
+  // Memoize fast lookup map for background calculated fields (like SEER) once when fullProcessedHistory updates
+  const fullHistoryMap = useMemo(() => {
+    return new Map<string | number, Match>(fullProcessedHistory.map(m => [m.id, m]));
+  }, [fullProcessedHistory]);
 
   useEffect(() => {
+    if (viewMode === 'nerdy') {
+      return;
+    }
+
     let sourceData: Match[] = [];
     if (viewMode === 'analysis') {
       sourceData = taggedHistoricMatches;
     } else if (viewMode === 'ai') {
       sourceData = taggedLiveMatches;
-    } else if (viewMode === 'live' || viewMode === 'perf' || viewMode === 'opw_comp') {
+    } else if (viewMode === 'live' || viewMode === 'perf' || viewMode === 'opw_comp' || viewMode === 'opw_algo') {
       if (liveViewType === 'jackpot') {
         sourceData = taggedLiveMatches.filter(m => m.isJackpot && (m.jackpotIds?.includes(activeJackpotId) || m.jackpotId === activeJackpotId));
       } else {
@@ -1021,17 +1156,12 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
               return processed;
           });
       }
-    } else if (viewMode === 'nerdy') {
-      sourceData = []; 
     }
     
-    // Create a fast lookup map for background calculated fields (like SEER)
-    const fullHistoryMap = new Map<string | number, Match>(fullProcessedHistory.map(m => [m.id, m]));
-
     // De-duplicate by ID if mixing sources, and merge background calculated fields
     const unique = Array.from(new Map<string | number, Match>(sourceData.map(item => {
         const historyMatch = fullHistoryMap.get(item.id);
-        const merged = historyMatch ? { 
+        const merged = historyMatch && (historyMatch.seerPrediction || historyMatch.seerScores) ? { 
             ...item, 
             seerPrediction: historyMatch.seerPrediction, 
             seerPrimaryPrediction: historyMatch.seerPrimaryPrediction, 
@@ -1040,8 +1170,9 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         } : item;
         return [item.id, merged];
       })).values());
-    React.startTransition(() => setProcessedMatches(deduplicateMatches(unique as Match[])));
-    }, [viewMode, taggedLiveMatches, taggedHistoricMatches, selectedArchiveDate, archives, liveViewType, activeJackpotId, phaStatsMap, matchStars, fullProcessedHistory]); 
+    const finalMatches = viewMode === 'analysis' ? (unique as Match[]) : deduplicateMatches(unique as Match[]);
+    React.startTransition(() => setProcessedMatches(finalMatches));
+    }, [viewMode, taggedLiveMatches, taggedHistoricMatches, selectedArchiveDate, archives, liveViewType, activeJackpotId, phaStatsMap, matchStars, fullHistoryMap]); 
   // Dependency on fullProcessedHistory ensures view updates if training model changes stats
 
   // Derived: Processed Live Matches (Subset of processedMatches that corresponds to Live Session)
@@ -1053,6 +1184,40 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
       }
       return filtered;
   }, [processedMatches, liveMatches, selectedDate]);
+
+  // Stabilized props for React.memo(OPWAlgo)
+  const opwAlgoMatches = useMemo(() => {
+    if (processedLiveMatches.length > 0) return processedLiveMatches;
+    if (selectedDate !== 'all') {
+      return taggedLiveMatches.filter(m => getLogicalDate(m.date || '', m.time) === selectedDate);
+    }
+    return taggedLiveMatches;
+  }, [processedLiveMatches, selectedDate, taggedLiveMatches]);
+
+  const opwAlgoInitialCategory = useMemo(() => {
+    switch (matchTypeFilter) {
+      case 'top12':
+      case 'top10':
+      case 'top20': return 'top_12_value';
+      case 'value_bets': return 'value_bets';
+      case 'best_bet': return 'best_bet';
+      case 'bankers_dlive': return 'bankers_dlive';
+      case 'bankers_jackpot': return 'bankers_jackpot';
+      case 'upsets': return 'upsets';
+      case 'botb_best': return 'botb_best';
+      default: return 'top_12_value';
+    }
+  }, [matchTypeFilter]);
+
+  const opwAlgoInitialDay = useMemo(() => {
+    return selectedDate && selectedDate !== 'all'
+      ? getMatchDayOfWeek({ date: selectedDate } as Match)
+      : liveMatchDay;
+  }, [selectedDate, liveMatchDay]);
+
+  const handleOpwAlgoBack = useCallback(() => {
+    navigateView('live');
+  }, [navigateView]);
 
   // Helper to map category to weights
   const getWeightsForCategory = (catId: string, hType: 'daily' | 'jackpot') => {
@@ -1484,7 +1649,9 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
             if (matchTypeFilter === 'pending' || matchTypeFilter === 'banned') {
                 return evaluateMatchCategory(m, matchTypeFilter, 'all', phaStatsMap, liveViewType === 'jackpot', true);
             }
-            const tags = m.evaluatorTags && m.evaluatorTags.length > 0 ? m.evaluatorTags : getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+            const tags = (m.evaluatorTags && m.evaluatorTags.length > 0)
+                ? m.evaluatorTags
+                : (m.evaluatorTags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars));
             if (matchTypeFilter === 'top12' || matchTypeFilter === 'top10') {
                 return tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'));
             }
@@ -1496,7 +1663,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                 case 'top12':
                 case 'top10': return 'top_12_value';
                 case 'top20': return 'high_confidence';
-                case 'value_bets': return 'value_picks';
+                case 'value_bets': return 'value_bets';
                 default: return filter === 'all' ? 'top_12_value' : filter;
             }
         };
@@ -1516,7 +1683,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                 else {
                     if (catId === 'top12' || catId === 'top10') catId = 'top_12_value';
                     if (catId === 'top20') catId = 'high_confidence';
-                    if (catId === 'value_bets') catId = 'value_picks';
+                    if (catId === 'value_bets') catId = 'value_bets';
                     if (catId === 'all') catId = 'top_12_value'; // fallback
                 }
                 const matchDay = getMatchDayOfWeek(m);
@@ -1550,7 +1717,9 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
 
         if (activePriority !== 'all') {
             filtered = filtered.filter(m => {
-                const tags = m.evaluatorTags && m.evaluatorTags.length > 0 ? m.evaluatorTags : getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+                const tags = (m.evaluatorTags && m.evaluatorTags.length > 0)
+                    ? m.evaluatorTags
+                    : (m.evaluatorTags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars));
                 if (matchTypeFilter === 'top12' || matchTypeFilter === 'top10') {
                     return tags.includes(`top12:${activePriority}`) || tags.includes(`top10:${activePriority}`);
                 }
@@ -1560,10 +1729,24 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                 return tags.includes(`${matchTypeFilter}:${activePriority}`);
             });
         }
-    } else if (activePriority !== 'all') {
-        // If a priority is selected but no specific category, we might want to apply it to all categories, 
-        // but usually priorities are category-specific. For now, if 'all' categories, we just return true.
-        // Or we could evaluate against all categories and see if it fits any. Let's just filter if category is selected.
+    } else if (selectedOpwSort !== 'none') {
+        let catId = 'top_12_value';
+        if (selectedOpwSort.startsWith('t12_')) catId = 'top_12_value';
+        else if (selectedOpwSort.startsWith('bb_')) catId = 'best_bet';
+        else if (selectedOpwSort.startsWith('bd_')) catId = 'bankers_dlive';
+        else if (selectedOpwSort.startsWith('ups_')) catId = 'upsets';
+        else if (selectedOpwSort.startsWith('bj_')) catId = 'bankers_jackpot';
+        else if (selectedOpwSort.startsWith('vp_')) catId = 'value_picks';
+
+        const matchesWithScores = filtered.map(m => {
+            const matchDay = getMatchDayOfWeek(m);
+            const sortScore = getOptimizedScoreDetailed(m, catId, phaStatsMap, matchDay).totalScore;
+            return { match: m, sortScore };
+        });
+
+        const isDesc = selectedOpwSort.endsWith('desc') || selectedOpwSort === 'desc';
+        matchesWithScores.sort((a, b) => isDesc ? b.sortScore - a.sortScore : a.sortScore - b.sortScore);
+        filtered = matchesWithScores.map(item => item.match);
     }
 
     // 3. Group Filter (Skip if activeTab is 'analysis' - patterns view, OR if filtering incomplete)
@@ -1613,39 +1796,34 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   }, [processedMatches, activeTab, selected1X2, selectedPattern, selectedPointsRange, selectedDate, searchQuery, searchSubPattern, viewMode, matchTypeFilter, liveViewType, activeJackpotId, phaStatsMap, selectedPaaWin, selectedPaaDraw, selectedPaaUpset, matchStars, showUnderdogWins, showDrawWins, showFavWins, activePriority, selectedOpwSort, weightsVersion]);
 
   const accuracyStats = useMemo(() => {
-      const completed = displayMatches.filter(m => getActualResult(m.result || '') !== 'pending');
-      const totalCompleted = completed.length;
-      
-      const correct = completed.filter(m => {
+      let totalCompleted = 0;
+      let correct = 0;
+      let seerCorrect = 0;
+      let paaCorrect = 0;
+      let algoCorrect = 0;
+      let mlCorrect = 0;
+
+      for (let i = 0; i < displayMatches.length; i++) {
+          const m = displayMatches[i];
           const actual = getActualResult(m.result || '');
+          if (actual === 'pending' || !actual) continue;
+          totalCompleted++;
+
           const pred = m.finalPrediction || m.rawPrediction || '1';
-          return matchesPrediction(pred, actual);
-      }).length;
-      
-      const seerCorrect = completed.filter(m => {
-          const actual = getActualResult(m.result || '');
-          const pred = predictWithSeer(m, DEFAULT_WEIGHTS, phaStatsMap, matchStars, 'all');
-          m.seerPrediction = pred;
-          return matchesPrediction(pred, actual);
-      }).length;
+          if (matchesPrediction(pred, actual)) correct++;
 
-      const paaCorrect = completed.filter(m => {
-          const actual = getActualResult(m.result || '');
-          const pred = m.paaPrediction || m.paaPrimaryPrediction || m.finalPrediction || m.rawPrediction || '1';
-          return matchesPrediction(pred, actual);
-      }).length;
+          const seerPred = m.seerPrediction || m.seerPrimaryPrediction || pred;
+          if (matchesPrediction(seerPred, actual)) seerCorrect++;
 
-      const algoCorrect = completed.filter(m => {
-          const actual = getActualResult(m.result || '');
-          const pred = m.algoReport?.prediction || m.calculatedPrediction || '1';
-          return matchesPrediction(pred, actual);
-      }).length;
-      
-      const mlCorrect = completed.filter(m => {
-          const actual = getActualResult(m.result || '');
-          const pred = m.mlInfo?.mlPrediction || m.finalPrediction || m.rawPrediction || '1';
-          return matchesPrediction(pred, actual);
-      }).length;
+          const paaPred = m.paaPrediction || m.paaPrimaryPrediction || pred;
+          if (matchesPrediction(paaPred, actual)) paaCorrect++;
+
+          const algoPred = m.algoReport?.prediction || m.calculatedPrediction || '1';
+          if (matchesPrediction(algoPred, actual)) algoCorrect++;
+
+          const mlPred = m.mlInfo?.mlPrediction || pred;
+          if (matchesPrediction(mlPred, actual)) mlCorrect++;
+      }
 
       const percentage = totalCompleted > 0 ? Math.round((correct / totalCompleted) * 100) : 0;
       const seerPercentage = totalCompleted > 0 ? Math.round((seerCorrect / totalCompleted) * 100) : 0;
@@ -1667,7 +1845,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           mlCorrect,
           mlPercentage
       };
-  }, [displayMatches, phaStatsMap, matchStars]);
+  }, [displayMatches]);
 
   const uniqueDates = useMemo(() => {
     return [...new Set(processedMatches.map(m => m.date ? getLogicalDate(m.date, m.time) : ''))]
@@ -1679,11 +1857,12 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   useEffect(() => {
     if (viewMode === 'live') {
       if (uniqueDates.length > 0) {
-        // Auto-select latest date if user hasn't explicitly chosen, or if selectedDate is stale (not in uniqueDates)
-        if (!userPickedDateRef.current || (selectedDate !== 'all' && !uniqueDates.includes(selectedDate))) {
-          setSelectedDate(uniqueDates[0]);
+        // If user picked a specific date that is no longer in uniqueDates, reset to 'all'
+        if (userPickedDateRef.current && selectedDate !== 'all' && !uniqueDates.includes(selectedDate)) {
+          setSelectedDate('all');
+          userPickedDateRef.current = false;
         }
-      } else if (selectedDate !== 'all' && !userPickedDateRef.current) {
+      } else if (selectedDate !== 'all') {
         setSelectedDate('all');
       }
     }
@@ -2182,25 +2361,39 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   };
 
    const handleDeleteMatch = async (id: number | string) => {
-      const matchToDelete = liveMatches.find(m => m.id === id) || uploadedMatches.find(m => m.id === id) || precalculatedMatches.find(m => m.id === id);
-      const stableId = matchToDelete ? getStableMatchId(matchToDelete) : String(id);
+      const strId = String(id);
+      const matchToDelete = liveMatches.find(m => String(m.id) === strId) || 
+                            uploadedMatches.find(m => String(m.id) === strId) || 
+                            precalculatedMatches.find(m => String(m.id) === strId) ||
+                            processedMatches.find(m => String(m.id) === strId);
+      const stableId = matchToDelete ? getStableMatchId(matchToDelete) : strId;
+
+      const newUploaded = uploadedMatches.filter(m => String(m.id) !== strId && getStableMatchId(m) !== stableId);
+      const newLive = liveMatches.filter(m => String(m.id) !== strId && getStableMatchId(m) !== stableId);
+      const newPrecalculated = precalculatedMatches.filter(m => String(m.id) !== strId && getStableMatchId(m) !== stableId);
 
       if (matchToDelete) {
           const dateStr = getLogicalDate(matchToDelete.date || new Date().toISOString().split('T')[0], matchToDelete.time);
           const coll = matchToDelete.isJackpot ? 'seer_jackpot_history' : 'seer_performance_history';
           removeMatchFromSeerSnapshot(id, dateStr, coll).catch(console.error);
-          if (stableId !== String(id)) {
+          if (stableId !== strId) {
               removeMatchFromSeerSnapshot(stableId, dateStr, coll).catch(console.error);
           }
+          await removeMatchFromSeerSlipsAndReplace(
+              matchToDelete.id,
+              matchToDelete.teams || '',
+              dateStr,
+              newLive,
+              phaStatsMap,
+              matchStars,
+              matchToDelete.isJackpot || false
+          );
       }
-
-      const newUploaded = uploadedMatches.filter(m => m.id !== id && getStableMatchId(m) !== stableId);
-      const newLive = liveMatches.filter(m => m.id !== id && getStableMatchId(m) !== stableId);
-      const newPrecalculated = precalculatedMatches.filter(m => m.id !== id && getStableMatchId(m) !== stableId);
 
       setUploadedMatches(newUploaded);
       setLiveMatches(newLive);
       setPrecalculatedMatches(newPrecalculated);
+      setProcessedMatches(prev => prev.filter(m => String(m.id) !== strId && getStableMatchId(m) !== stableId));
 
       // Save in background asynchronously without blocking UI
       (async () => {
@@ -2278,6 +2471,21 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           const today = getAnalysisDateString();
           const coll = liveViewType === 'jackpot' ? 'seer_jackpot_history' : 'seer_performance_history';
           await deleteDailySeerSnapshot(today, coll);
+
+          for (const m of displayMatches) {
+              const dStr = getLogicalDate(m.date || '', m.time);
+              if (dStr) {
+                  removeMatchFromSeerSlipsAndReplace(
+                      m.id,
+                      m.teams || '',
+                      dStr,
+                      newLive,
+                      phaStatsMap,
+                      matchStars,
+                      m.isJackpot || false
+                  ).catch(console.error);
+              }
+          }
       } catch (e) {
           console.error("Seer clear error in background:", e);
       } finally {
@@ -2667,69 +2875,80 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
 
              {/* LIVE VIEW CONTROLS */}
              {viewMode === 'live' && (
-               <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-                   <div className="flex flex-col gap-2">
-                       {/* View Toggle */}
-                       <div className="flex bg-gray-100 rounded-md p-1 self-start sm:self-auto">
-                            <button onClick={() => switchLiveViewType('daily')} className={`px-3 py-1.5 rounded text-xs font-bold ${liveViewType === 'daily' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Daily</button>
-                            <button onClick={() => switchLiveViewType('jackpot')} className={`px-3 py-1.5 rounded text-xs font-bold flex items-center gap-1 ${liveViewType === 'jackpot' ? 'bg-white shadow text-amber-600' : 'text-gray-500'}`}><Trophy size={12}/> Jackpot</button>
-                       </div>
-                       
-                       {/* Specific Jackpot Selection */}
-                       {liveViewType === 'jackpot' && (
-                           <select 
-                               value={activeJackpotId} 
+                <div className="flex flex-col gap-2 w-full md:w-auto">
+                    <div className="flex items-center justify-between sm:justify-start gap-2 flex-wrap">
+                        {/* View Toggle */}
+                        <div className="flex bg-gray-100 rounded-md p-1">
+                             <button onClick={() => switchLiveViewType('daily')} className={`px-3 py-1.5 rounded text-xs font-bold ${liveViewType === 'daily' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Daily</button>
+                             <button onClick={() => switchLiveViewType('jackpot')} className={`px-3 py-1.5 rounded text-xs font-bold flex items-center gap-1 ${liveViewType === 'jackpot' ? 'bg-white shadow text-amber-600' : 'text-gray-500'}`}><Trophy size={12}/> Jackpot</button>
+                        </div>
+                        
+                        {/* Specific Jackpot Selection */}
+                        {liveViewType === 'jackpot' && (
+                            <select 
+                                value={activeJackpotId} 
                                 onChange={(e) => runResponsiveUpdate(() => setActiveJackpotId(e.target.value), true)}
-                               className="text-xs font-bold border border-amber-200 rounded p-1 text-amber-800 bg-amber-50 outline-none focus:ring-1 focus:ring-amber-500 w-full"
-                           >
-                               {JACKPOT_OPTIONS.map(opt => (
-                                   <option key={opt.id} value={opt.id}>{opt.name}</option>
-                               ))}
-                           </select>
+                                className="text-xs font-bold border border-amber-200 rounded p-1 text-amber-800 bg-amber-50 outline-none focus:ring-1 focus:ring-amber-500 flex-1 sm:flex-none sm:w-auto"
+                            >
+                                {JACKPOT_OPTIONS.map(opt => (
+                                    <option key={opt.id} value={opt.id}>{opt.name}</option>
+                                ))}
+                            </select>
+                        )}
+
+                        {/* Primary computation actions on mobile */}
+                        <div className="flex sm:hidden items-center gap-1.5 ml-auto">
+                            <button onClick={() => runDebouncedAction('live-run-algo', handleRunAlgo)} disabled={!!algoProcessing} className="px-2.5 py-1.5 bg-indigo-600 text-white rounded-md font-bold text-xs shadow-sm hover:bg-indigo-700 flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50">
+                              {algoProcessing ? <Loader2 size={13} className="animate-spin"/> : <Cpu size={13}/>} Run Algo
+                            </button>
+                            <button onClick={() => runDebouncedAction('recalculate', handleRecalculatePredictions)} disabled={isActionLoading} className="px-2.5 py-1.5 bg-purple-600 text-white rounded-md font-bold text-xs shadow-sm hover:bg-purple-700 flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50">
+                              {isActionLoading ? <Loader2 size={13} className="animate-spin"/> : <RefreshCw size={13}/>} Recalc
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {/* Action buttons toolbar: swipeable on mobile, flex on desktop */}
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 w-full">
+                        <button onClick={() => runDebouncedAction('live-run-algo', handleRunAlgo)} disabled={!!algoProcessing} className="hidden sm:flex px-3 py-2 bg-indigo-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-indigo-700 items-center justify-center gap-2 whitespace-nowrap disabled:opacity-50">
+                          {algoProcessing ? <Loader2 size={14} className="animate-spin"/> : <Cpu size={14}/>} Run Algo
+                       </button>
+                        <button onClick={() => runDebouncedAction('recalculate', handleRecalculatePredictions)} disabled={isActionLoading} className="hidden sm:flex px-3 py-2 bg-purple-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-purple-700 items-center justify-center gap-2 whitespace-nowrap disabled:opacity-50">
+                          {isActionLoading ? <Loader2 size={14} className="animate-spin"/> : <RefreshCw size={14}/>} Recalculate
+                       </button>
+                       <button onClick={() => runResponsiveUpdate(() => { 
+                           setIsUpdatingResults(false); 
+                           setPasteInput(''); 
+                           setPendingFile(null); 
+                           setPendingSessionType(liveViewType); // Auto-select current view type
+                           setPendingJackpotId(activeJackpotId); 
+                           setShowDateModal(true); 
+                       })} className="flex-1 sm:flex-none px-3 py-1.5 sm:py-2 bg-blue-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-blue-700 flex items-center justify-center gap-1.5 whitespace-nowrap">
+                          + New
+                       </button>
+                       <button onClick={() => runResponsiveUpdate(() => { setIsUpdatingResults(true); setPasteInput(''); setShowPasteModal(true); })} className="flex-1 sm:flex-none px-3 py-1.5 sm:py-2 bg-amber-500 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-amber-600 flex items-center justify-center gap-1.5 whitespace-nowrap">
+                          <RefreshCw size={13}/> Update
+                       </button>
+                       <button onClick={() => runResponsiveUpdate(handleSyncLiveFromCloud)} disabled={isActionLoading} className="flex-1 sm:flex-none px-3 py-1.5 sm:py-2 bg-blue-500 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-blue-600 flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50">
+                          {isActionLoading ? <Loader2 size={13} className="animate-spin"/> : <Database size={13}/>} Sync Cloud
+                       </button>
+                       <button onClick={() => runDebouncedAction('save-session', () => saveSession(), 500)} className="flex-1 sm:flex-none px-3 py-1.5 sm:py-2 bg-emerald-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-emerald-700 flex items-center justify-center gap-1.5 whitespace-nowrap">
+                          <Save size={13}/> Save
+                       </button>
+                       <button onClick={() => runResponsiveUpdate(handleClearLiveSession)} className="flex-1 sm:flex-none px-3 py-1.5 sm:py-2 bg-gray-100 text-gray-600 rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-gray-200 border border-gray-200 flex items-center justify-center gap-1 whitespace-nowrap" title={`Clear ${liveViewType === 'jackpot' ? activeJackpotName : 'Daily'} Matches`}>
+                          <Trash2 size={13}/> <span>Clear</span>
+                       </button>
+                       {liveViewType === 'jackpot' && (
+                          <button 
+                            onClick={() => {
+                                setPerfInitialCategory('jackpot_slip');
+                                setPerfAutoRun(true);
+                                navigateView('perf');
+                            }}
+                            className="flex-1 sm:flex-none px-2 py-1.5 bg-amber-600/40 text-white/80 rounded-md font-bold text-[10px] shadow-sm hover:bg-amber-600/60 flex items-center justify-center gap-1 whitespace-nowrap border border-amber-500/20"
+                          >
+                            <Trophy size={11}/> Analysis
+                          </button>
                        )}
-                   </div>
-                   
-                   <div className="flex gap-2 items-start flex-wrap sm:flex-nowrap">
-                       <button onClick={() => runDebouncedAction('live-run-algo', handleRunAlgo)} disabled={!!algoProcessing} className="flex-1 sm:flex-none px-3 py-2 bg-indigo-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-indigo-700 flex items-center justify-center gap-2 whitespace-nowrap disabled:opacity-50">
-                         {algoProcessing ? <Loader2 size={14} className="animate-spin"/> : <Cpu size={14}/>} Run Algo
-                      </button>
-                       <button onClick={() => runDebouncedAction('recalculate', handleRecalculatePredictions)} disabled={isActionLoading} className="flex-1 sm:flex-none px-3 py-2 bg-purple-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-purple-700 flex items-center justify-center gap-2 whitespace-nowrap disabled:opacity-50">
-                         {isActionLoading ? <Loader2 size={14} className="animate-spin"/> : <RefreshCw size={14}/>} Recalculate
-                      </button>
-                      <button onClick={() => runResponsiveUpdate(() => { 
-                          setIsUpdatingResults(false); 
-                          setPasteInput(''); 
-                          setPendingFile(null); 
-                          setPendingSessionType(liveViewType); // Auto-select current view type
-                          setPendingJackpotId(activeJackpotId); 
-                          setShowDateModal(true); 
-                      })} className="flex-1 sm:flex-none px-3 py-2 bg-blue-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-blue-700 flex items-center justify-center gap-2 whitespace-nowrap">
-                         + New
-                      </button>
-                      <button onClick={() => runResponsiveUpdate(() => { setIsUpdatingResults(true); setPasteInput(''); setShowPasteModal(true); })} className="flex-1 sm:flex-none px-3 py-2 bg-amber-500 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-amber-600 flex items-center justify-center gap-2 whitespace-nowrap">
-                         <RefreshCw size={14}/> Update
-                      </button>
-                      <button onClick={() => runResponsiveUpdate(handleSyncLiveFromCloud)} disabled={isActionLoading} className="flex-1 sm:flex-none px-3 py-2 bg-blue-500 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-blue-600 flex items-center justify-center gap-2 whitespace-nowrap disabled:opacity-50">
-                         {isActionLoading ? <Loader2 size={14} className="animate-spin"/> : <Database size={14}/>} Sync Cloud
-                      </button>
-                      <button onClick={() => runDebouncedAction('save-session', () => saveSession(), 500)} className="flex-1 sm:flex-none px-3 py-2 bg-emerald-600 text-white rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-emerald-700 flex items-center justify-center gap-2 whitespace-nowrap">
-                         <Save size={14}/> Save
-                      </button>
-                      <button onClick={() => runResponsiveUpdate(handleClearLiveSession)} className="flex-1 sm:flex-none px-3 py-2 bg-gray-100 text-gray-600 rounded-md font-bold text-xs md:text-sm shadow-sm hover:bg-gray-200 border border-gray-200 flex items-center justify-center gap-1 whitespace-nowrap" title={`Clear ${liveViewType === 'jackpot' ? activeJackpotName : 'Daily'} Matches`}>
-                         <Trash2 size={14}/> <span>Clear</span>
-                      </button>
-                      {liveViewType === 'jackpot' && (
-                         <button 
-                           onClick={() => {
-                               setPerfInitialCategory('jackpot_slip');
-                               setPerfAutoRun(true);
-                               navigateView('perf');
-                           }}
-                           className="flex-1 sm:flex-none px-2 py-1 bg-amber-600/40 text-white/80 rounded-md font-bold text-[9px] md:text-[10px] shadow-sm hover:bg-amber-600/60 flex items-center justify-center gap-1 whitespace-nowrap border border-amber-500/20"
-                         >
-                           <Trophy size={10}/> Analysis
-                         </button>
-                      )}
                    </div>
                </div>
              )}
@@ -2811,7 +3030,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
               </div>
 
               {/* Row 2 — Category pill rail */}
-              <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-0.5">
+              <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-2 px-2 pb-1 scroll-smooth">
                 {[
                   { id: 'all', label: 'All' },
                   { id: 'best_bet', label: 'Best Bet' },
@@ -2830,7 +3049,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                   <button
                     key={cat.id}
                     onClick={() => runResponsiveUpdate(() => { setMatchTypeFilter(cat.id as MatchCategory); setActivePriority('all'); }, true)}
-                    className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap transition-all ${matchTypeFilter === cat.id ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground'}`}
+                    className={`px-3.5 py-1.5 sm:py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all min-h-[32px] sm:min-h-0 flex items-center justify-center ${matchTypeFilter === cat.id ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground'}`}
                   >
                     {cat.label}
                   </button>
@@ -2935,49 +3154,49 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           {(activeTab !== 'analysis' || matchTypeFilter === 'pending') && viewMode !== 'ai' && (
             <div className="px-3 py-2 bg-white flex flex-col gap-2 border-b border-gray-100">
               <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center w-full">
-                  <div className="relative flex-1 sm:w-64 sm:flex-none">
-                    <input type="text" placeholder="Search teams..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-8 py-2 border rounded-md focus:ring-2 focus:ring-primary focus:outline-none text-sm"/>
-                    <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
-                    {searchQuery && <button onClick={() => runResponsiveUpdate(() => setSearchQuery(''), true)} className="absolute right-2 top-2 text-gray-400 hover:text-red-500"><X size={16} /></button>}
+                  <div className="flex items-center gap-2 w-full sm:w-auto flex-1">
+                    <div className="relative flex-1 sm:w-64 sm:flex-none">
+                      <input type="text" placeholder="Search teams..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-8 py-2 border rounded-md focus:ring-2 focus:ring-primary focus:outline-none text-sm"/>
+                      <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
+                      {searchQuery && <button onClick={() => runResponsiveUpdate(() => setSearchQuery(''), true)} className="absolute right-2 top-2 text-gray-400 hover:text-red-500"><X size={16} /></button>}
+                    </div>
+                    <button onClick={() => runResponsiveUpdate(() => setShowFilters(!showFilters))} className="px-3.5 py-2 rounded-md font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 shadow-sm flex items-center justify-center gap-1.5 text-sm whitespace-nowrap shrink-0"><Filter size={16} /> Filters</button>
                   </div>
-                  <button onClick={() => runResponsiveUpdate(() => setShowFilters(!showFilters))} className="px-4 py-2 rounded-md font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 shadow-sm flex items-center justify-center gap-2 text-sm whitespace-nowrap"><Filter size={16} /> Filters</button>
                   {viewMode === 'live' && (
-                    <>
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar w-full sm:w-auto py-0.5">
                       <button 
                         onClick={() => {
                           setOpwCompInitialMode('aggregate');
                           navigateView('opw_comp');
                         }} 
-                        className="px-4 py-2 rounded-md font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 shadow-sm flex items-center justify-center gap-2 text-sm whitespace-nowrap"
+                        className="px-3 py-1.5 sm:px-4 sm:py-2 rounded-md font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 shadow-sm flex items-center justify-center gap-1.5 text-xs sm:text-sm whitespace-nowrap"
                         title="OPW Trigger Performance Breakdown (Aggregate)"
                       >
-                          <SlidersHorizontal size={16} /> OPW-Comp
+                          <SlidersHorizontal size={15} /> OPW-Comp
                       </button>
                       <button 
                         onClick={() => {
                           setOpwCompInitialMode('match_compare');
                           navigateView('opw_comp');
                         }} 
-                        className="px-3.5 py-2 rounded-md font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 shadow-sm flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                        className="px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-md font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 shadow-sm flex items-center justify-center gap-1.5 text-xs sm:text-sm whitespace-nowrap"
                         title="Compare OPW bonuses and penalties between two matches side-by-side"
                       >
-                          <Scale size={16} /> OPW Match Diff
+                          <Scale size={15} /> Diff
                       </button>
                       <button 
                         onClick={() => {
                           navigateView('opw_algo');
                         }} 
-                        className="px-3.5 py-2 rounded-md font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 shadow-sm flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                        className="px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-md font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 shadow-sm flex items-center justify-center gap-1.5 text-xs sm:text-sm whitespace-nowrap"
                         title="OPW Point Recommendations & Algorithm Optimization (OPW P-recom)"
                       >
-                          <Sparkles size={16} /> OPW P-recom
+                          <Sparkles size={15} /> OPW P-recom
                       </button>
-                    </>
-                  )}
-                  {viewMode === 'live' && (
-                      <button onClick={() => runResponsiveUpdate(() => setShowSubPattModal(true))} className="px-4 py-2 rounded-md font-medium bg-primary/10 text-primary hover:bg-primary/20 shadow-sm flex items-center justify-center gap-2 text-sm whitespace-nowrap">
-                          <BrainCircuit size={16} /> Sub Patt Recommendations
+                      <button onClick={() => runResponsiveUpdate(() => setShowSubPattModal(true))} className="px-3 py-1.5 sm:px-4 sm:py-2 rounded-md font-medium bg-primary/10 text-primary hover:bg-primary/20 shadow-sm flex items-center justify-center gap-1.5 text-xs sm:text-sm whitespace-nowrap">
+                          <BrainCircuit size={15} /> Sub Patt
                       </button>
+                    </div>
                   )}
               </div>
               
@@ -3117,7 +3336,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         )}
 
         {/* CONTENT */}
-        {(isViewPending || viewPlaceholder || (isHistoryProcessing && fullProcessedHistory.length === 0 && (viewMode === 'analysis' || viewMode === 'archive'))) ? (
+        {(isViewPending || viewPlaceholder || (isHistoryProcessing && fullProcessedHistory.length === 0 && processedMatches.length === 0 && (viewMode === 'analysis' || viewMode === 'archive'))) ? (
             <ViewSwitchSkeleton view={shellView} />
         ) : viewMode === 'sub_pattern_audit' ? (
             <PatternAudit 
@@ -3136,15 +3355,51 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         ) : activeTab === 'analysis' && !searchQuery.trim() && matchTypeFilter !== 'pending' ? (
           <Analysis matches={savedProcessedHistory} /> 
         ) : viewMode === 'live' ? (
-           <LivePredictions 
-                matches={displayMatches} 
-                expandedMatch={expandedMatch} 
-                setExpandedMatch={setExpandedMatch}
-                phaStatsMap={phaStatsMap}
-                title={matchTypeFilter === 'upsets' ? "Upset Predictions" : matchTypeFilter === 'bankers_jackpot' ? "Banker Predictions" : matchTypeFilter === 'pending' ? "Incomplete Matches" : liveViewType === 'jackpot' ? `${activeJackpotName} Predictions` : "Daily Predictions"}
-                onDelete={handleDeleteMatch}
-                matchStars={matchStars}
-           />
+           liveMatches.length === 0 && displayMatches.length === 0 ? (
+             <div className="flex flex-col items-center justify-center p-12 bg-white rounded-xl shadow-sm border border-slate-200 text-slate-500 my-6 animate-pulse">
+               <RefreshCw className="w-8 h-8 text-primary animate-spin mb-3" />
+               <p className="font-bold text-slate-700 text-base">Loading Live Analysis...</p>
+               <p className="text-xs text-slate-400 mt-1">Retrieving latest daily and jackpot predictions</p>
+             </div>
+           ) : (
+             <SafeErrorBoundary
+               fallback={(error, reset) => (
+                 <div className="p-8 max-w-xl mx-auto my-12 bg-slate-900 border border-emerald-500/40 rounded-xl text-center shadow-2xl">
+                   <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                     <AlertTriangle size={24} />
+                   </div>
+                   <h3 className="text-lg font-bold text-white mb-2">Live Analysis Temporary Notice</h3>
+                   <p className="text-xs text-slate-300 font-mono bg-slate-950/60 p-3 rounded border border-slate-800 mb-6 text-left overflow-auto max-h-36">
+                     {error.message || String(error)}
+                   </p>
+                   <div className="flex items-center justify-center gap-3">
+                     <button
+                       onClick={reset}
+                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold transition-all"
+                     >
+                       Reload Matches
+                     </button>
+                     <button
+                       onClick={() => window.location.reload()}
+                       className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-semibold transition-all"
+                     >
+                       Refresh Page
+                     </button>
+                   </div>
+                 </div>
+               )}
+             >
+               <LivePredictions 
+                    matches={displayMatches} 
+                    expandedMatch={expandedMatch} 
+                    setExpandedMatch={setExpandedMatch}
+                    phaStatsMap={phaStatsMap}
+                    title={matchTypeFilter === 'upsets' ? "Upset Predictions" : matchTypeFilter === 'bankers_jackpot' ? "Banker Predictions" : matchTypeFilter === 'pending' ? "Incomplete Matches" : liveViewType === 'jackpot' ? `${activeJackpotName} Predictions` : "Daily Predictions"}
+                    onDelete={handleDeleteMatch}
+                    matchStars={matchStars}
+               />
+             </SafeErrorBoundary>
+           )
         ) : viewMode === 'archive' ? (
            <Archives 
                 matches={displayMatches} 
@@ -3199,27 +3454,14 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                 )}
               >
                 <OPWAlgo
-                    matches={taggedLiveMatches}
+                    matches={opwAlgoMatches}
                     allMatches={fullProcessedHistory}
                     phaStatsMap={phaStatsMap}
                     matchStars={matchStars}
                     liveViewType={liveViewType}
-                    initialCategory={(() => {
-                        switch (matchTypeFilter) {
-                            case 'top12':
-                            case 'top10': return 'top_12_value';
-                            case 'top20': return 'top_12_value';
-                            case 'value_bets': return 'value_picks';
-                            case 'best_bet': return 'best_bet';
-                            case 'bankers_dlive': return 'bankers_dlive';
-                            case 'bankers_jackpot': return 'bankers_jackpot';
-                            case 'upsets': return 'upsets';
-                            case 'botb_best': return 'botb_best';
-                            default: return 'top_12_value';
-                        }
-                    })()}
-                    initialDay={selectedDate && selectedDate !== 'all' ? getMatchDayOfWeek({ date: selectedDate } as Match) : liveMatchDay}
-                    onBack={() => navigateView('live')}
+                    initialCategory={opwAlgoInitialCategory}
+                    initialDay={opwAlgoInitialDay}
+                    onBack={handleOpwAlgoBack}
                 />
               </SafeErrorBoundary>
          ) : viewMode === 'opw_comp' ? (
@@ -3235,7 +3477,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                          case 'top12':
                          case 'top10': return 'top_12_value';
                          case 'top20': return 'high_confidence';
-                         case 'value_bets': return 'value_picks';
+                         case 'value_bets': return 'value_bets';
                          case 'all': return 'top_12_value';
                          default: return matchTypeFilter;
                      }
@@ -3277,7 +3519,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
               />
             </SafeErrorBoundary>
         ) : viewMode === 'ml' ? (
-            <MachineLearningDashboard historicalMatches={uploadedMatches} liveMatches={liveMatches} />
+            <MachineLearningDashboard historicalMatches={taggedHistoricMatches} liveMatches={taggedLiveMatches} phaStatsMap={phaStatsMap} />
         ) : (
             <div className="space-y-2" key={activeTab}>
                 <div className="bg-white px-3 py-2 rounded-lg shadow-sm border border-gray-200 flex flex-wrap gap-3 justify-between items-center text-sm">
@@ -3307,11 +3549,11 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                               case 'top12':
                               case 'top10': return 'top_12_value';
                               case 'top20': return 'high_confidence';
-                              case 'value_bets': return 'value_picks';
+                              case 'value_bets': return 'value_bets';
                               default: return filter === 'all' ? 'top_12_value' : filter;
                           }
                       };
-                      return <MatchCard key={`${match.id}_${idx}`} match={match} expandedMatch={expandedMatch} setExpandedMatch={setExpandedMatch} phaStats={phaDisplay} phaStatsMap={phaStatsMap} onDelete={handleDeleteMatch} matchStars={matchStars} owCategory={mapFilterToOwCategory(matchTypeFilter)} />;
+                      return <MatchCard key={`${match.id}_${idx}_${weightsVersion}`} match={match} expandedMatch={expandedMatch} setExpandedMatch={setExpandedMatch} phaStats={phaDisplay} phaStatsMap={phaStatsMap} onDelete={handleDeleteMatch} matchStars={matchStars} owCategory={mapFilterToOwCategory(matchTypeFilter)} />;
                     })}
                     {visibleMatchCount < displayMatches.length && (
                         <div 
@@ -3415,7 +3657,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                          const k = normaliseTeams(m.teams);
                          if (updates.has(k)) {
                              // Reset precalc so downstream stars / correctness recompute
-                             return { ...m, result: updates.get(k)!, isPrecalculated: false };
+                             return { ...m, result: updates.get(k)!, isPrecalculated: false, lockedOpwScores: (m as any).lockedOpwScores };
                          }
                          return m;
                      };

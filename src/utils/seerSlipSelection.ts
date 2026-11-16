@@ -35,11 +35,22 @@ const hasAlgoConflictSignal = (m: Match, phaStatsMap: Record<string, any>): bool
 };
 
 const getOdds = (m: Match) => {
-    const moParts = (m.mo || "").split(",").map((s: string) => parseFloat(s.trim()));
-    const o1 = !isNaN(moParts[0]) && moParts[0] > 0 ? moParts[0] : 2.0;
-    const oX = !isNaN(moParts[1]) && moParts[1] > 0 ? moParts[1] : 3.0;
-    const o2 = !isNaN(moParts[2]) && moParts[2] > 0 ? moParts[2] : 2.5;
-    return { o1, oX, o2, favOdds: Math.min(o1, o2) };
+    let o1 = 0, oX = 0, o2 = 0;
+    if (m.mo) {
+        const parts = m.mo
+            .split(/[- ,/|]+|\s+/)
+            .map((s: string) => parseFloat(s.replace(/[^0-9.]/g, '').trim()))
+            .filter((n: number) => !isNaN(n));
+        if (parts.length >= 3) {
+            o1 = parts[0];
+            oX = parts[1];
+            o2 = parts[2];
+        } else if (parts.length === 1) {
+            o1 = parts[0];
+        }
+    }
+    const favOdds = (o1 > 0 && o2 > 0) ? Math.min(o1, o2) : (o1 > 0 ? o1 : o2);
+    return { o1, oX, o2, favOdds };
 };
 
 export const calculateMatchProbability = (m: Match, phaStatsMap: Record<string, any>): number => {
@@ -101,7 +112,7 @@ export const generateSeerSlips = (
     };
 
     const live: any = {
-        best_bet: [], top_10_value: [], high_confidence: [], botb_best: []
+        best_bet: [], top_12_value: [], top_10_value: [], high_confidence: [], botb_best: []
     };
 
     // Calculate probabilities for all matches
@@ -117,7 +128,7 @@ export const generateSeerSlips = (
           filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.3 && o.favOdds <= 1.6; } },
         
         { id: 'bankers_dlive', type: 'live', size: 10, hedgedSize: 10, 
-          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.5 && o.favOdds <= 1.99; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds > 1.5 && o.favOdds <= 1.8; } },
         
         { id: 'top_12_value', type: 'live', size: 12, hedgedSize: 12, 
           filter: (m: Match) => { 
@@ -130,10 +141,10 @@ export const generateSeerSlips = (
         
 
         { id: 'bankers_jackpot', type: 'spec', size: 5, hedgedSize: 0,
-          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.8 && o.favOdds <= 2.0; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds > 1.8 && o.favOdds <= 2.0; } },
         
         { id: 'value_bets', type: 'spec', size: 5, hedgedSize: 5,
-          filter: (m: Match) => { const o = getOdds(m); return o.o1 >= 2.5 && o.o2 >= 2.5; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 2.5 && o.o1 >= 2.5 && o.o2 >= 2.5 && o.o1 < 90 && o.o2 < 90; } },
         
         { id: 'value_picks', type: 'spec', size: 5, hedgedSize: 0,
           filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 2.0 && o.favOdds <= 2.5; } },
@@ -242,7 +253,8 @@ export const generateSeerSlips = (
                 
                 // All category slips must have the category specific evaluator tags
                 if (!hasPrimaryTag) return false;
-            } else if (!catDef.filter(sm.m)) {
+            }
+            if (catDef.filter && !catDef.filter(sm.m)) {
                 return false;
             }
 
@@ -251,21 +263,16 @@ export const generateSeerSlips = (
         
         if (['top_12_value', 'top_10_value', 'best_bet', 'bankers_dlive', 'botb_best', 'high_confidence', 'upsets', 'bankers_jackpot', 'value_picks', 'value_bets', 'banker_draws'].includes(catDef.id)) {
             // Pre-calculate optimized scores to avoid blocking the main thread during O(n log n) sorting evaluations
-            const optScoreMap = new Map<string | number, number>();
+            const optScoreMap = new Map<string, number>();
             qualifyingMatches.forEach(q => {
                 const matchDay = dayOverride || getMatchDayOfWeek(q.m);
-                optScoreMap.set(q.m.id, getOptimizedScore(q.m, catDef.id, phaStatsMap, matchDay));
+                optScoreMap.set(String(q.m.id), getOptimizedScore(q.m, catDef.id, phaStatsMap, matchDay));
             });
 
-            // Sort: prioritize positive OPW points (> 0) descending, followed by remaining qualified matches to fill required size
+            // Sort: prioritize OPW points descending (pure score separation), followed by probability if tied
             qualifyingMatches.sort((a, b) => {
-                const scoreA = optScoreMap.get(a.m.id) || 0;
-                const scoreB = optScoreMap.get(b.m.id) || 0;
-                
-                const posA = scoreA > 0;
-                const posB = scoreB > 0;
-                if (posA && !posB) return -1;
-                if (!posA && posB) return 1;
+                const scoreA = optScoreMap.get(String(a.m.id)) ?? 0;
+                const scoreB = optScoreMap.get(String(b.m.id)) ?? 0;
 
                 if (scoreA !== scoreB) {
                     return scoreB - scoreA;
@@ -359,7 +366,11 @@ export const generateSeerSlips = (
     live['high_confidence'] = [
         ...top12.slice(0, 10),
         ...uniqueBankers.slice(0, 10)
-    ].map(p => ({ ...p, category: 'high_confidence' }));
+    ].map(p => ({
+        ...p,
+        sourceCategory: p.sourceCategory || (p.category === 'top_10_value' ? 'top_12_value' : p.category),
+        category: 'high_confidence'
+    }));
 
     return { spec, live };
 

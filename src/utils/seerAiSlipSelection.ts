@@ -62,6 +62,7 @@ export const generateSeerAiCognitiveSlips = (
 
     const live: any = {
         best_bet: [],
+        top_12_value: [],
         top_10_value: [],
         high_confidence: [],
         botb_best: []
@@ -80,7 +81,7 @@ export const generateSeerAiCognitiveSlips = (
             mappedParent = 'banker';
         } else if (cat === 'upsets' || cat === 'value_bets') {
             mappedParent = 'upset';
-        } else if (cat === 'top_10_value') {
+        } else if (cat === 'top_12_value' || cat === 'top_10_value') {
             mappedParent = 'jackpot';
         }
 
@@ -195,7 +196,7 @@ export const generateSeerAiCognitiveSlips = (
     const getOdds = (m: Match) => {
         let o1 = 0, oX = 0, o2 = 0;
         if (m.mo) {
-            const parts = m.mo.split(/[- ,]+/).map(p => parseFloat(p.trim())).filter(p => !isNaN(p));
+            const parts = m.mo.split(/[- ,]+/).map(p => parseFloat(p.replace(/[^0-9.]/g, '').trim())).filter(p => !isNaN(p));
             if (parts.length >= 3) {
                 o1 = parts[0];
                 oX = parts[1];
@@ -459,9 +460,9 @@ export const generateSeerAiCognitiveSlips = (
           } },
         
         { id: 'bankers_dlive', tag: 'bankers_dlive', size: 10, hedgedSize: 0,
-          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.5 && o.favOdds <= 1.99; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds > 1.5 && o.favOdds <= 1.8; } },
         
-        { id: 'top_10_value', tag: 'top10', size: 12, hedgedSize: 12, 
+        { id: 'top_12_value', tag: 'top12', size: 12, hedgedSize: 12, 
           filter: (m: Match) => {
               const o = getOdds(m);
               return o.favOdds >= 2.0 && o.favOdds <= 2.5;
@@ -480,10 +481,10 @@ export const generateSeerAiCognitiveSlips = (
           } },
 
         { id: 'bankers_jackpot', tag: 'bankers_jackpot', size: 5, hedgedSize: 0,
-          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 1.8 && o.favOdds <= 2.0; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds > 1.8 && o.favOdds <= 2.0; } },
         
         { id: 'value_bets', tag: 'value_bets', size: 5, hedgedSize: 5,
-          filter: (m: Match) => { const o = getOdds(m); return o.o1 >= 2.5 && o.o2 >= 2.5; } },
+          filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 2.5 && o.o1 >= 2.5 && o.o2 >= 2.5 && o.o1 < 90 && o.o2 < 90; } },
         
         { id: 'value_picks', tag: 'value_picks', size: 5, hedgedSize: 0,
           filter: (m: Match) => { const o = getOdds(m); return o.favOdds >= 2.0 && o.favOdds <= 2.49; } },
@@ -496,11 +497,11 @@ export const generateSeerAiCognitiveSlips = (
     ];
 
     const processedCategories = isJackpot 
-        ? categories.filter(c => !['best_bet', 'top_10_value', 'botb_best', 'high_confidence'].includes(c.id))
+        ? categories.filter(c => !['best_bet', 'top_12_value', 'top_10_value', 'botb_best', 'high_confidence'].includes(c.id))
         : categories.slice().sort((a, b) => {
-            // Force top_10_value to be processed first so it is never restricted by cross-slip sharing limits
-            if (a.id === 'top_10_value') return -1;
-            if (b.id === 'top_10_value') return 1;
+            // Force top_12_value to be processed first so it is never restricted by cross-slip sharing limits
+            if (a.id === 'top_12_value' || a.id === 'top_10_value') return -1;
+            if (b.id === 'top_12_value' || b.id === 'top_10_value') return 1;
             return 0;
         });
 
@@ -510,10 +511,11 @@ export const generateSeerAiCognitiveSlips = (
             const tags = matchTagsMap.get(m.id.toString()) || [];
             
             // Primary check: specific tag
-            const hasPrimaryTag = tags.some(t => t.startsWith(tagPrefix + ':'));
+            const hasPrimaryTag = tags.some(t => t.startsWith(tagPrefix + ':')) || 
+                (tagPrefix === 'top12' && tags.some(t => t.startsWith('top10:')));
             
             // All category slips must have the category specific evaluator tags
-            if (!hasPrimaryTag && !['top_10_value', 'value_picks'].includes(catDef.id)) return false;
+            if (!hasPrimaryTag && catDef.id !== 'top_12_value' && catDef.id !== 'top_10_value') return false;
 
             // Strict Ban: Pattern T sub patterns are banned from all slip categories
             // Deprioritized instead of banned
@@ -716,8 +718,10 @@ export const generateSeerAiCognitiveSlips = (
             if (['best_bet', 'botb_best', 'bankers_dlive', 'bankers_jackpot'].includes(catDef.id)) {
                 score += getOptimizedScore(m, catDef.id, phaStatsMap);
             }
-            if (['top_10_value', 'value_picks'].includes(catDef.id)) {
+            if (catDef.id === 'top_10_value') {
                 score = getOptimizedScore(m, catDef.id, phaStatsMap);
+            } else if (catDef.id === 'value_picks') {
+                score = getOptimizedScore(m, 'value_picks', phaStatsMap);
             }
             
             return { m, score };
@@ -794,7 +798,7 @@ export const generateSeerAiCognitiveSlips = (
         }
 
         // Pass 3: Fallback across all targetMatches (excluding hard-banned matches) to fill remaining slots up to target count
-        if (selectedPicks.length < catDef.size && catDef.id !== 'top_10_value') {
+        if (selectedPicks.length < catDef.size && catDef.id !== 'top_12_value' && catDef.id !== 'top_10_value') {
             const fallbackPool = targetMatches.filter(m => {
                 const mainPat = (m.patternAnalysis?.mainPattern || '').toUpperCase();
                 const isPatternTSub = mainPat === 'T' && !!m.patternAnalysis?.subPattern;
@@ -803,7 +807,7 @@ export const generateSeerAiCognitiveSlips = (
                 const teams = (m.teams || '').toLowerCase();
                 const league = (m.league || '').toLowerCase();
                 const africanDomesticRegex = /tanzania|tanzanian|kenya|kenyan|uganda|ugandan|rwanda|rwandan|egypt|egyptian|morocco|moroccan|nigeria|nigerian|ghana|ghanaian|south africa|south african|zambia|zambian|senegal|senegalese|tunisia|tunisian|algeria|algerian|mali|cameroon|cameroonian|congo|angola|angolan|burundi|sudan|sudanese|somalia|ethiopia|ethiopian|suhul shire|caps united|triangle u|malawi|mozambique|botswana|namibia|zimbabwe|zimbabwean|lesotho|eswatini|madagascar|ivory coast|cote d'ivoire|guinea|burkina faso|benin|togo|mauritania|niger|chad|central african|gabon|equatorial|djibouti|eritrea|seychelles|comoros|mauritius|sao tome|sierra leone|liberia|gambia|cape verde|chemilil|sony sugar|jkt/i;
-                const isFavoriteCategory = ['best_bet', 'top_10_value', 'high_confidence', 'botb_best', 'bankers_dlive', 'bankers_jackpot', 'value_picks'].includes(catDef.id);
+                const isFavoriteCategory = ['best_bet', 'top_12_value', 'high_confidence', 'botb_best', 'bankers_dlive', 'bankers_jackpot', 'value_picks'].includes(catDef.id);
                 if (isFavoriteCategory && (africanDomesticRegex.test(teams) || africanDomesticRegex.test(league))) return false;
 
                 return true;
@@ -838,13 +842,25 @@ export const generateSeerAiCognitiveSlips = (
         if (isJackpot) {
             spec[catDef.id] = selectedPicks;
             spec[`${catDef.id}_backups`] = backups;
+            if (catDef.id === 'top_12_value') {
+                spec['top_10_value'] = selectedPicks;
+                spec['top_10_value_backups'] = backups;
+            }
         } else {
             if (live[catDef.id] !== undefined) {
                 live[catDef.id] = selectedPicks;
                 live[`${catDef.id}_backups`] = backups;
+                if (catDef.id === 'top_12_value') {
+                    live['top_10_value'] = selectedPicks;
+                    live['top_10_value_backups'] = backups;
+                }
             } else {
                 spec[catDef.id] = selectedPicks;
                 spec[`${catDef.id}_backups`] = backups;
+                if (catDef.id === 'top_12_value') {
+                    spec['top_10_value'] = selectedPicks;
+                    spec['top_10_value_backups'] = backups;
+                }
             }
         }
     });
@@ -923,7 +939,8 @@ export const hasCategoryTag = (
   const tags = getMatchEvaluatorTags(m, phaStatsMap, isJackpot, true, matchStars);
   const tagPrefixMap: Record<string, string[]> = {
     best_bet: ['best_bet:'],
-    top_10_value: ['top10:', 'top_10_value:'],
+    top_12_value: ['top12:', 'top_12_value:', 'top10:', 'top_10_value:'],
+    top_10_value: ['top12:', 'top_12_value:', 'top10:', 'top_10_value:'],
     bankers_dlive: ['bankers_dlive:'],
     botb_best: ['botb_best:'],
     high_confidence: ['top20:', 'high_confidence:'],

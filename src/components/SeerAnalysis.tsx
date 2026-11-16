@@ -30,7 +30,9 @@ import {
   Shield,
   BookOpen,
   Lightbulb,
+  Globe,
 } from "lucide-react";
+import { getMatchCountryAndLeague } from "../utils/opwCommon";
 import {
   getMatchEvaluatorTags,
   MatchCategory,
@@ -47,6 +49,7 @@ import {
 } from "../utils/seerLogic";
 import { predictWithHybridML } from "../utils/hybridMachineLearning";
 import { useMLMatrix } from "../context/MLMatrixContext";
+import { L10Display } from "../utils/l10Utils";
 
 import { getSeerWeights, saveSeerWeights } from "../services/storage";
 import { generateSeerSlips } from "../utils/seerSlipSelection";
@@ -64,15 +67,20 @@ import {
   getSeerPerformanceCache,
   saveSeerPerformanceCache,
 } from "../services/seerPerformance";
-import { OPTIMIZED_CATEGORY_SETTINGS, replaceAllOptimizedCategorySettings, getOptimizedScoreDetailed, getOptimizedScore, applyHedgingProtocol, getMatchDayOfWeek } from "../utils/optimizedweights";
+import { OPTIMIZED_CATEGORY_SETTINGS, replaceAllOptimizedCategorySettings, getOptimizedScoreDetailed, getOptimizedScore, applyHedgingProtocol, getMatchDayOfWeek, clearOptimizedScoreCache, loadServerOpwRules } from "../utils/optimizedweights";
 
 // At the top level inside SeerAnalysis, add this useEffect:
 import {
   getLockedSlip,
+  getLockedSlipsForDate,
   saveLockedSlip,
+  saveLockedSlipsBulk,
   deleteLockedSlip,
+  getCategoryAliases,
   SeerLockedSlip,
+  SESSION_SLIP_CACHE,
 } from "../services/seerSlips";
+export { SESSION_SLIP_CACHE };
 import { runAiOptimizer, OptimizationRecommendation } from "../utils/aiOptimizer";
 import { selectSlipsWithAI, runSelfLearnReflectiveCycle, SelfLearnLesson } from "./ai/GeminiEngine";
 import { generateSeerAiCognitiveSlips, ensureHedgedPrediction, hasCategoryTag } from "../utils/seerAiSlipSelection";
@@ -156,6 +164,108 @@ const _getAlgoPrediction = (m: Match): string => {
 
 const EMPTY_MATCHES: Match[] = [];
 
+const getCategoryShortLabel = (catId: string): string => {
+  switch (catId) {
+    case 'top_12_value':
+    case 'top_10_value':
+    case 'top12':
+    case 'top10':
+      return 'T12';
+    case 'best_bet':
+    case 'best':
+      return 'BB';
+    case 'bankers_dlive':
+    case 'banker':
+      return 'BD';
+    case 'botb_best':
+      return 'BOTB';
+    case 'high_confidence':
+    case 'top20':
+      return 'T20';
+    case 'bankers_jackpot':
+    case 'bankers':
+    case 'jackpot':
+      return 'BJ';
+    case 'banker_draws':
+    case 'bankers_draws':
+    case 'banker_draw':
+      return 'BDRAW';
+    case 'value_picks':
+    case 'sandbox_value_picks':
+      return 'VP';
+    case 'value_bets':
+    case 'value_bet':
+      return 'VB';
+    case 'upsets':
+    case 'upset':
+    case 'sandbox_upsets':
+      return 'UPS';
+    case 'ml_smart_override':
+      return 'ML:SO';
+    case 'ml_pivot':
+      return 'ML:PV';
+    case 'ml_ai_consensus':
+      return 'ML:AI';
+    case 'ml_chaos':
+      return 'ML:CH';
+    default:
+      return catId.toUpperCase();
+  }
+};
+
+const NON_UPSET_OPW_CATEGORIES: { tagPrefix: string; catId: string }[] = [
+  { tagPrefix: 'top12:', catId: 'top_12_value' },
+  { tagPrefix: 'top_12_value:', catId: 'top_12_value' },
+  { tagPrefix: 'top10:', catId: 'top_12_value' },
+  { tagPrefix: 'best_bet:', catId: 'best_bet' },
+  { tagPrefix: 'bankers_dlive:', catId: 'bankers_dlive' },
+  { tagPrefix: 'bankers_jackpot:', catId: 'bankers_jackpot' },
+  { tagPrefix: 'value_picks:', catId: 'value_picks' },
+  { tagPrefix: 'value_bets:', catId: 'value_bets' },
+];
+
+const resolveTop20SourceCat = (
+  match: any,
+  matchTags: string[],
+  idx: number,
+  baseCat: string
+): string => {
+  if (baseCat !== 'high_confidence' && baseCat !== 'top20') return baseCat;
+  const srcCat = match?.sourceCategory;
+  if (srcCat && srcCat !== 'high_confidence' && srcCat !== 'top20') {
+    return srcCat === 'top_10_value' ? 'top_12_value' : srcCat;
+  }
+  const hasTop12 = matchTags.some((t: string) => t.startsWith('top12:') || t.startsWith('top10:') || t.startsWith('top_12_value:'));
+  const hasBD = matchTags.some((t: string) => t.startsWith('bankers_dlive:'));
+  const hasBJ = matchTags.some((t: string) => t.startsWith('bankers_jackpot:'));
+  if (idx < 10 && hasTop12) return 'top_12_value';
+  if (hasBD) return 'bankers_dlive';
+  if (hasBJ) return 'bankers_jackpot';
+  if (hasTop12) return 'top_12_value';
+  return 'top_12_value';
+};
+
+const getHighestOtherOpwScore = (
+  match: Match,
+  matchTags: string[],
+  phaStatsMap: Record<string, any> | undefined,
+  matchDay?: string
+) => {
+  if (!phaStatsMap) return null;
+  const seenCatIds = new Set<string>();
+  let best: { catId: string; score: ReturnType<typeof getOptimizedScoreDetailed> } | null = null;
+  for (const { tagPrefix, catId } of NON_UPSET_OPW_CATEGORIES) {
+    if (seenCatIds.has(catId)) continue;
+    if (!matchTags.some((t: string) => t.startsWith(tagPrefix))) continue;
+    seenCatIds.add(catId);
+    const score = getOptimizedScoreDetailed(match, catId, phaStatsMap, matchDay);
+    if (score && (!best || score.totalScore > best.score.totalScore)) {
+      best = { catId, score };
+    }
+  }
+  return best;
+};
+
 export default function SeerAnalysis({
   historicalMatches,
   liveMatches,
@@ -185,7 +295,36 @@ export default function SeerAnalysis({
     [],
   );
   const [error, setError] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(getAnalysisDateString());
+  const [todayStr, setTodayStr] = useState<string>(() => getAnalysisDateString());
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const defaultDate = getAnalysisDateString();
+    if (liveMatches && liveMatches.length > 0) {
+      const hasDefaultDate = liveMatches.some(m => getLogicalDate(m.date, m.time) === defaultDate);
+      if (!hasDefaultDate) {
+        const validDates = Array.from(new Set(liveMatches.map(m => getLogicalDate(m.date, m.time)).filter(Boolean))).sort().reverse();
+        if (validDates.length > 0) return validDates[0];
+      }
+    }
+    return defaultDate;
+  });
+  const selectedDateRef = useRef(selectedDate);
+  useEffect(() => {
+    selectedDateRef.current = selectedDate;
+  }, [selectedDate]);
+
+  // If selectedDate is todayStr (no matches uploaded for today yet) while liveMatches are loaded for a recent date (e.g. yesterday's slate after 9:00 AM rollover), automatically align selectedDate to the active liveMatches date
+  useEffect(() => {
+    if (liveMatches && liveMatches.length > 0 && selectedDate === todayStr) {
+      const hasMatchesForSelected = liveMatches.some(m => getLogicalDate(m.date, m.time) === selectedDate);
+      if (!hasMatchesForSelected) {
+        const validDates = Array.from(new Set(liveMatches.map(m => getLogicalDate(m.date, m.time)).filter(Boolean))).sort().reverse();
+        if (validDates.length > 0 && validDates[0] !== selectedDate) {
+          setSelectedDate(validDates[0]);
+        }
+      }
+    }
+  }, [liveMatches, todayStr]);
+
   const currentDayOfWeek = useMemo(() => getMatchDayOfWeek({ date: selectedDate } as Match), [selectedDate]);
   const [historyType, setHistoryType] = useState<"daily" | "jackpot">("daily");
 
@@ -215,18 +354,84 @@ export default function SeerAnalysis({
   const setActiveLockedSlips = activeTab === "slips" ? setLockedAiSlips : setLockedSlips;
   const [reloadTrigger, setReloadTrigger] = useState(0);
   const [owModalMatch, setOwModalMatch] = useState<{ match: Match; catId: string; lockedScore?: any } | null>(null);
+  const [testMatchesPage, setTestMatchesPage] = useState(1);
+  const TEST_PAGE_SIZE = 30;
 
   useEffect(() => {
+    setTestMatchesPage(1);
+  }, [selectedCategory, searchQuery]);
+
+  useEffect(() => {
+    let updateTimer: any = null;
     const handleUpdate = (e?: any) => {
-      const savedWeights = getSeerWeights();
-      if (Object.keys(savedWeights).length > 0) {
-        setCategoryWeightsMap(savedWeights);
-      }
-      const updatedCat = e?.detail?.category;
-      if (updatedCat) {
-        const catsToPurge = (updatedCat === 'top_12_value' || updatedCat === 'top_10_value')
-          ? ['top_12_value', 'top_10_value']
-          : [updatedCat];
+      clearTimeout(updateTimer);
+      updateTimer = setTimeout(() => {
+        const savedWeights = getSeerWeights();
+        if (Object.keys(savedWeights).length > 0) {
+          setCategoryWeightsMap(savedWeights);
+        }
+
+        // Only purge/delete slips if explicitly requested via wipeSlips or purge flag
+        const isPurgeRequested = e?.detail?.wipeSlips === true || e?.detail?.purge === true;
+        (matches || []).forEach(m => { delete (m as any).lockedOpwScores; });
+        if (!isPurgeRequested) {
+          SESSION_SLIP_CACHE.clear();
+          clearOptimizedScoreCache();
+          if (e?.detail?.refreshLocked) {
+            const updatedCat = e?.detail?.category;
+            const catsToRefresh = (updatedCat && updatedCat !== 'all')
+              ? ((updatedCat === 'top_12_value' || updatedCat === 'top_10_value')
+                  ? ['top_12_value', 'top_10_value', 'botb_best', 'high_confidence']
+                  : (updatedCat === 'bankers_dlive' || updatedCat === 'bankers_jackpot')
+                  ? [updatedCat, 'botb_best', 'high_confidence']
+                  : (updatedCat === 'upsets' || updatedCat === 'upset')
+                  ? ['upsets', 'upset']
+                  : [updatedCat])
+              : null;
+            if (catsToRefresh && catsToRefresh.length > 0) {
+              setLockedSlips((prev) => {
+                const next = { ...prev };
+                catsToRefresh.forEach(c => delete next[c]);
+                return next;
+              });
+              setLockedAiSlips((prev) => {
+                const next = { ...prev };
+                catsToRefresh.forEach(c => delete next[c]);
+                return next;
+              });
+            }
+          }
+          setReloadTrigger((p) => p + 1);
+          return;
+        }
+
+        const updatedCat = e?.detail?.category;
+        const allCategoryIds = categoriesList.map(c => c.id).filter(c => c !== "all");
+        const catsToPurge = (updatedCat && updatedCat !== 'all')
+          ? ((updatedCat === 'top_12_value' || updatedCat === 'top_10_value')
+              ? ['top_12_value', 'top_10_value']
+              : (updatedCat === 'upsets' || updatedCat === 'upset')
+              ? ['upsets', 'upset']
+              : [updatedCat])
+          : allCategoryIds;
+
+        const targetDatesToPurge = new Set<string>();
+        if (e?.detail?.allDates && Array.isArray(e.detail.allDates)) {
+          e.detail.allDates.forEach((d: string) => targetDatesToPurge.add(d));
+        }
+        if (e?.detail?.targetDate) targetDatesToPurge.add(e.detail.targetDate);
+        if (e?.detail?.date) targetDatesToPurge.add(e.detail.date);
+        if (selectedDateRef.current) targetDatesToPurge.add(selectedDateRef.current);
+        if (todayStr) targetDatesToPurge.add(todayStr);
+
+        targetDatesToPurge.forEach(d => {
+          catsToPurge.forEach(c => {
+            deleteLockedSlip(d, c).catch(err => console.warn(`Error deleting locked slip for ${d} ${c}:`, err));
+          });
+          SESSION_SLIP_CACHE.delete(`${d}_daily`);
+          SESSION_SLIP_CACHE.delete(`${d}_jackpot`);
+        });
+
         setLockedSlips((prev) => {
           const next = { ...prev };
           catsToPurge.forEach(c => delete next[c]);
@@ -237,17 +442,26 @@ export default function SeerAnalysis({
           catsToPurge.forEach(c => delete next[c]);
           return next;
         });
-      } else {
-        setLockedSlips({});
-        setLockedAiSlips({});
-      }
-      setReloadTrigger((p) => p + 1);
+        clearOptimizedScoreCache();
+        setReloadTrigger((p) => p + 1);
+      }, 100);
     };
     window.addEventListener("seerLockedSlipsUpdated", handleUpdate);
     window.addEventListener("optimizedWeightsUpdated", handleUpdate);
+    window.addEventListener("opwProtectedGuardsUpdated", handleUpdate);
+    window.addEventListener("opw-weights-updated", handleUpdate);
+    loadServerOpwRules(false).then(days => {
+      if (days && days.length > 0) {
+        clearOptimizedScoreCache();
+        setReloadTrigger((p) => p + 1);
+      }
+    });
     return () => {
+      clearTimeout(updateTimer);
       window.removeEventListener("seerLockedSlipsUpdated", handleUpdate);
       window.removeEventListener("optimizedWeightsUpdated", handleUpdate);
+      window.removeEventListener("opwProtectedGuardsUpdated", handleUpdate);
+      window.removeEventListener("opw-weights-updated", handleUpdate);
     };
   }, []);
 
@@ -259,6 +473,7 @@ export default function SeerAnalysis({
 
   const liveMatchesRef = useRef(liveMatches);
   const historicalMatchesRef = useRef(historicalMatches);
+  const fallbackGeneratedSlipsRef = useRef<{ date: string; poolLength: number; slips: any } | null>(null);
   useEffect(() => {
     liveMatchesRef.current = liveMatches;
     historicalMatchesRef.current = historicalMatches;
@@ -277,10 +492,53 @@ export default function SeerAnalysis({
   useEffect(() => {
     let active = true;
     const fetchSlips = async () => {
-      setIsSlipsLoading(true);
-      // Clear locked slips immediately when date or historyType changes to prevent displaying stale slips from previous dates/modes
-      setLockedSlips({});
-      setLockedAiSlips({});
+      const cacheKey = `${selectedDate}_${historyType}`;
+      const memCached = SESSION_SLIP_CACHE.get(cacheKey);
+
+      if (memCached && Object.keys(memCached.slips).length > 0) {
+        // Fast synchronous cache hit (< 1ms) - render instantly with zero flicker
+        setLockedSlips(memCached.slips);
+        setLockedAiSlips(memCached.aiSlips);
+        setIsSlipsLoading(false);
+      } else {
+        // Synchronously check localStorage before showing any loading state
+        const allCats = categoriesList.map((c) => c.id).filter((c) => c !== "all");
+        const quickSlips: Record<string, SeerLockedSlip> = {};
+        const quickAiSlips: Record<string, SeerLockedSlip> = {};
+        if (typeof localStorage !== 'undefined') {
+          for (const cat of allCats) {
+            const regVal = localStorage.getItem(`local_locked_slip_${selectedDate}_${cat}`);
+            const aiVal = localStorage.getItem(`local_locked_slip_${selectedDate}_ai_${cat}`);
+            if (regVal) {
+              try {
+                const parsed = JSON.parse(regVal);
+                if (parsed && parsed.picks?.length > 0) quickSlips[cat] = parsed;
+              } catch (_) {}
+            }
+            if (aiVal) {
+              try {
+                const parsed = JSON.parse(aiVal);
+                if (parsed && parsed.picks?.length > 0) quickAiSlips[cat] = parsed;
+              } catch (_) {}
+            }
+          }
+        }
+
+        if (Object.keys(quickSlips).length > 0 || Object.keys(quickAiSlips).length > 0) {
+          setLockedSlips(quickSlips);
+          setLockedAiSlips(quickAiSlips);
+          SESSION_SLIP_CACHE.set(cacheKey, { slips: quickSlips, aiSlips: quickAiSlips, timestamp: Date.now() });
+          const cleanSelCat = selectedCategory.replace(/^ai_/, '').replace(/^sandbox_/, '');
+          const hasCurrentCat = selectedCategory === 'all' || !!(quickSlips[selectedCategory] || quickSlips[cleanSelCat] || quickAiSlips[selectedCategory] || quickAiSlips[cleanSelCat]);
+          if (hasCurrentCat) {
+            setIsSlipsLoading(false);
+          } else {
+            setIsSlipsLoading(true);
+          }
+        } else {
+          setIsSlipsLoading(true);
+        }
+      }
       
       const allCats = categoriesList
         .map((c) => c.id)
@@ -290,22 +548,35 @@ export default function SeerAnalysis({
         const newLocked: Record<string, SeerLockedSlip> = {};
         const newLockedAi: Record<string, SeerLockedSlip> = {};
 
-        // Concurrent batch fetch for instant response
-        const results = await Promise.all(
-          allCats.map(async (cat) => {
-            const slip = await getLockedSlip(selectedDate, cat);
-            const aiSlip = await getLockedSlip(selectedDate, `ai_${cat}`);
-            return { cat, slip, aiSlip };
-          })
-        );
+        // Fast single batch fetch for all categories (< 20ms)
+        const batchResults = await getLockedSlipsForDate(selectedDate, allCats);
 
-        const allKnown = [
-          ...(matchesToProcess || []),
-          ...(historicalMatches || []),
-          ...(historicalMatchesRef.current || []),
+        // Restrict matches for result hydration STRICTLY to matches belonging to selectedDate
+        const livePool = [
+          ...(liveMatchesRef.current || []),
           ...(liveMatches || []),
-          ...(liveMatchesRef.current || [])
-        ];
+          ...(matchesToProcess || [])
+        ].map((m: any) => (m.data && !m.teams) ? { ...m.data, ...m } : m)
+         .filter(m => getLogicalDate(m.date, m.time) === selectedDate);
+
+        // Index the live pool for rapid O(1) pick matching
+        const byIdFinalized = new Map<string, any>();
+        const byTeamFinalized = new Map<string, any>();
+        const byIdAny = new Map<string, any>();
+        const byTeamAny = new Map<string, any>();
+
+        for (const m of livePool) {
+          const mId = m.id?.toString() || "";
+          const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+          const hasResult = getActualResult(m.result) !== 'pending';
+
+          if (hasResult) {
+            if (mId && !byIdFinalized.has(mId)) byIdFinalized.set(mId, m);
+            if (normMTeam && !byTeamFinalized.has(normMTeam)) byTeamFinalized.set(normMTeam, m);
+          }
+          if (mId && !byIdAny.has(mId)) byIdAny.set(mId, m);
+          if (normMTeam && !byTeamAny.has(normMTeam)) byTeamAny.set(normMTeam, m);
+        }
 
         const hydrateSlip = (slipObj: SeerLockedSlip, catName: string): SeerLockedSlip => {
           let slipChanged = false;
@@ -313,27 +584,19 @@ export default function SeerAnalysis({
           const updatedPicks = slipObj.picks.map(p => {
             const pId = p.match_id?.toString() || "";
             const normPTeam = (p.team || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-            const matchingM = allKnown.find(m => {
-              const mId = m.id?.toString() || "";
-              const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-              const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-              const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-                normMTeam === normPTeam ||
-                normMTeam.includes(normPTeam) ||
-                normPTeam.includes(normMTeam)
-              );
-              return (isIdMatch || isTeamMatch) && getActualResult(m.result) !== 'pending';
-            }) || allKnown.find(m => {
-              const mId = m.id?.toString() || "";
-              const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-              const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-              const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-                normMTeam === normPTeam ||
-                normMTeam.includes(normPTeam) ||
-                normPTeam.includes(normMTeam)
-              );
-              return (isIdMatch || isTeamMatch);
-            });
+            
+            // 1. Prioritize match with finalized result on the same logical date
+            let matchingM = byIdFinalized.get(pId) || (normPTeam ? byTeamFinalized.get(normPTeam) : undefined);
+            if (!matchingM) {
+              matchingM = byIdAny.get(pId) || (normPTeam ? byTeamAny.get(normPTeam) : undefined);
+            }
+            if (!matchingM) {
+              matchingM = livePool.find(m => {
+                const mId = m.id?.toString() || "";
+                return mId && pId && (pId.startsWith(mId + "_") || mId.startsWith(pId + "_"));
+              });
+            }
+
             if (matchingM) {
               const actual = getActualResult(matchingM.result);
               if (actual && actual !== "pending") {
@@ -356,7 +619,30 @@ export default function SeerAnalysis({
           return slipObj;
         };
 
-        for (const { cat, slip, aiSlip } of results) {
+        for (const cat of allCats) {
+          let slip = batchResults.slips[cat];
+          let aiSlip = batchResults.aiSlips[cat];
+
+          // Check aliases if direct key was not present
+          if (!slip) {
+            const aliases = getCategoryAliases(cat);
+            for (const a of aliases) {
+              if (batchResults.slips[a]) {
+                slip = batchResults.slips[a];
+                break;
+              }
+            }
+          }
+          if (!aiSlip) {
+            const aliases = getCategoryAliases(cat);
+            for (const a of aliases) {
+              if (batchResults.aiSlips[a]) {
+                aiSlip = batchResults.aiSlips[a];
+                break;
+              }
+            }
+          }
+
           if (slip && (slip.type === historyType || (!slip.type && historyType === "daily"))) {
             const hydrated = hydrateSlip(slip, cat);
             newLocked[cat] = { ...hydrated, category: cat };
@@ -368,9 +654,112 @@ export default function SeerAnalysis({
           }
         }
 
+        // Strictly prevent regenerating or force-overwriting slips for past dates or completed slates!
+        // Historical slips are 100% immutable and must never have picks demoted, promoted, or altered.
+        const todayStr = getAnalysisDateString();
+        const isPastDate = selectedDate < todayStr;
+        const hasCompletedResults = livePool.some((m) => {
+          const res = getActualResult(m.result);
+          return res && res !== "pending";
+        });
+
+        // If any categories do not have a locked slip, generate them ONCE and lock them immediately for the active slate
+        const missingCats = allCats.filter((cat) => !newLocked[cat]);
+        if (!isPastDate && !hasCompletedResults && missingCats.length > 0 && livePool.length > 0) {
+          const cleanPool = livePool.filter((m) => !isBannedFromSeerSlips(m));
+          const dayOfWeek = getMatchDayOfWeek({ date: selectedDate } as Match);
+          const generatedSlips = generateSeerSlips(
+            cleanPool,
+            phaStatsMap,
+            matchStars,
+            historyType === "jackpot",
+            false,
+            dayOfWeek
+          );
+
+          const slipsToPersist: SeerLockedSlip[] = [];
+          for (const cat of missingCats) {
+            const picksData = generatedSlips.live[cat] || generatedSlips.spec[cat] || [];
+            if (picksData && picksData.length > 0) {
+              const picks = picksData.map((p: any) => ({
+                match_id: p.match_id,
+                team: p.team || "",
+                prediction: p.prediction || "1",
+                primaryPrediction: p.prediction || "1",
+                odds: p.odds || "1.0",
+                reason: p.reason || "Cognitive AI Algorithmic Selection",
+                confidence: p.confidence || "100%",
+                category: cat,
+                le: p.le || "",
+                l10: p.l10 || "",
+                rating: p.rating || "",
+                gs: p.gs || "",
+                ga: p.ga || "",
+                league: p.league || "",
+                evaluatorTags: p.evaluatorTags || [],
+                opwPoints: p.opwPoints,
+                opwRulesHit: p.opwRulesHit,
+                opwBaseInfo: p.opwBaseInfo,
+                isHprOverride: p.isHprOverride || false,
+              }));
+
+              const newSlip: SeerLockedSlip = {
+                id: `${selectedDate}_${cat}`,
+                date: selectedDate,
+                category: cat,
+                picks: picks,
+                backups: [],
+                weightsAtTime: categoryWeightsMap[cat] || DEFAULT_WEIGHTS,
+                createdAt: new Date().toISOString(),
+                type: historyType,
+              };
+
+              const hydrated = hydrateSlip(newSlip, cat);
+              newLocked[cat] = { ...hydrated, category: cat };
+              slipsToPersist.push(hydrated);
+            }
+          }
+
+          if (slipsToPersist.length > 0) {
+            // High-speed non-blocking background persistence to PostgreSQL & localStorage
+            saveLockedSlipsBulk(slipsToPersist, false).catch((e) =>
+              console.warn("Failed to auto-lock slips in bulk:", e)
+            );
+          }
+        }
+
         if (!active) return;
-        setLockedSlips(newLocked);
-        setLockedAiSlips(newLockedAi);
+        setLockedSlips((prev) => {
+          if (!newLocked || Object.keys(newLocked).length === 0) return prev;
+          const merged = { ...prev };
+          for (const [c, s] of Object.entries(newLocked)) {
+            if (s && s.picks && s.picks.length > 0) {
+              merged[c] = s;
+            }
+          }
+          return merged;
+        });
+        setLockedAiSlips((prev) => {
+          if (!newLockedAi || Object.keys(newLockedAi).length === 0) return prev;
+          const merged = { ...prev };
+          for (const [c, s] of Object.entries(newLockedAi)) {
+            if (s && s.picks && s.picks.length > 0) {
+              merged[c] = s;
+            }
+          }
+          return merged;
+        });
+
+        const cachedCurrent = SESSION_SLIP_CACHE.get(cacheKey) || { slips: {}, aiSlips: {} };
+        const mergedCacheSlips = { ...cachedCurrent.slips };
+        for (const [c, s] of Object.entries(newLocked)) {
+          if (s && s.picks && s.picks.length > 0) mergedCacheSlips[c] = s;
+        }
+        const mergedCacheAiSlips = { ...cachedCurrent.aiSlips };
+        for (const [c, s] of Object.entries(newLockedAi)) {
+          if (s && s.picks && s.picks.length > 0) mergedCacheAiSlips[c] = s;
+        }
+        SESSION_SLIP_CACHE.set(cacheKey, { slips: mergedCacheSlips, aiSlips: mergedCacheAiSlips, timestamp: Date.now() });
       } catch (err) {
         console.error("Error loading locked slips:", err);
       } finally {
@@ -398,7 +787,8 @@ export default function SeerAnalysis({
 
     const picks = matches.map((m) => {
       let isHprOverride = false;
-      const optDetail = phaStatsMap ? getOptimizedScoreDetailed(m, catId, phaStatsMap, currentDayOfWeek) : null;
+      const matchDay = getMatchDayOfWeek(m) || currentDayOfWeek;
+      const optDetail = phaStatsMap ? getOptimizedScoreDetailed(m, catId, phaStatsMap, matchDay) : null;
       let pred = (m as any).targetPrediction || m.seerPrediction || predictWithSeer(
         m,
         categoryWeightsMap[catId] || DEFAULT_WEIGHTS,
@@ -425,7 +815,7 @@ export default function SeerAnalysis({
         let hedgedBase = ['1X', 'X2', '12'].includes(pred)
           ? pred
           : (phaStatsMap ? getOptimalHedge(m, phaStatsMap) : ensureHedgedPrediction(pred, m, phaStatsMap));
-        const hprPred = applyHedgingProtocol(m, hedgedBase, catId, phaStatsMap, currentDayOfWeek);
+        const hprPred = applyHedgingProtocol(m, hedgedBase, catId, phaStatsMap, matchDay);
         if (hprPred && hprPred !== hedgedBase) {
           pred = hprPred;
           isHprOverride = true;
@@ -485,7 +875,18 @@ export default function SeerAnalysis({
     } catch (error) {
       console.warn("Supabase save failed for locked slip, updating local state only.", error);
     } finally {
-      setRelevantLockedSlips((prev) => ({ ...prev, [catId]: slip }));
+      setRelevantLockedSlips((prev) => {
+        const next = { ...prev, [catId]: slip };
+        const cacheKey = `${selectedDate}_${historyType}`;
+        const mem = SESSION_SLIP_CACHE.get(cacheKey) || { slips: {}, aiSlips: {}, timestamp: Date.now() };
+        if (isAiTab) {
+          mem.aiSlips[catId] = slip;
+        } else {
+          mem.slips[catId] = slip;
+        }
+        SESSION_SLIP_CACHE.set(cacheKey, mem);
+        return next;
+      });
       setIsLocking((prev) => ({ ...prev, [catId]: false }));
     }
   };
@@ -494,13 +895,21 @@ export default function SeerAnalysis({
     const isAiTab = activeTab === "slips";
     const targetCat = isAiTab ? `ai_${catId}` : catId;
 
-    if (!confirm("Delete and regenerate locked slip for this category? The newly propagated slip will lock and become sticky in the backend.")) return;
+    if (!confirm("Delete locked slip for this category? A fresh slip will be generated and locked immediately.")) return;
     setIsLocking((prev) => ({ ...prev, [catId]: true }));
-    autoLockOnPropagateRef.current[catId] = true;
+    autoLockOnPropagateRef.current[catId] = false;
     try {
       await deleteLockedSlip(selectedDate, targetCat);
+      await deleteLockedSlip(selectedDate, catId);
+      await deleteLockedSlip(selectedDate, `ai_${catId}`);
     } catch (error) {
       console.warn("Failed to delete from Supabase, deleting locally.", error);
+    }
+    const cacheKey = `${selectedDate}_${historyType}`;
+    const mem = SESSION_SLIP_CACHE.get(cacheKey);
+    if (mem) {
+      delete mem.slips[catId];
+      delete mem.aiSlips[catId];
     }
     setLockedSlips((prev) => {
       const next = { ...prev };
@@ -513,51 +922,11 @@ export default function SeerAnalysis({
       return next;
     });
 
-    // Immediately compute and lock the newly propagated slip for this category
-    try {
-      const basePool = (matchesToProcess && matchesToProcess.length > 0)
-        ? matchesToProcess
-        : (liveMatchesRef.current && liveMatchesRef.current.length > 0)
-          ? liveMatchesRef.current.filter((m: any) => historyType === "jackpot" ? m.isJackpot : m.isDaily)
-          : [];
-      const cleanPool = basePool.filter((m) => !isBannedFromSeerSlips(m));
-      const dayOfWeek = getMatchDayOfWeek({ date: selectedDate } as Match);
-      const slips = generateSeerSlips(cleanPool, phaStatsMap, matchStars, historyType === "jackpot", false, dayOfWeek);
-      const targetSlip = slips.live[catId] || slips.spec[catId] || [];
-
-      if (targetSlip && targetSlip.length > 0) {
-        const pickMap = new Map<string, any>();
-        targetSlip.forEach((p: any) => pickMap.set(p.match_id?.toString() || "", p));
-        const filtered = cleanPool
-          .filter((m) => pickMap.has(m.id.toString()))
-          .map((m) => {
-            const p = pickMap.get(m.id.toString());
-            return {
-              ...m,
-              seerPrediction: p?.prediction || m.seerPrediction,
-              targetPrediction: p?.prediction || (m as any).targetPrediction,
-              isHprOverride: p?.isHprOverride ?? (m as any).isHprOverride,
-            };
-          });
-        const sortedFreshMatches = filtered.sort((a, b) => {
-          const idxA = targetSlip.findIndex((p: any) => p.match_id?.toString() === a.id.toString());
-          const idxB = targetSlip.findIndex((p: any) => p.match_id?.toString() === b.id.toString());
-          return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
-        });
-
-        if (sortedFreshMatches.length > 0) {
-          autoLockOnPropagateRef.current[catId] = false;
-          await handleGlobalLockSlip(catId, sortedFreshMatches);
-        }
-      }
-    } catch (genErr) {
-      console.error("Error auto-locking propagated slip:", genErr);
-    } finally {
-      setIsLocking((prev) => ({ ...prev, [catId]: false }));
-      setReloadTrigger((p) => p + 1);
-      window.dispatchEvent(new Event("resetSeerAutomation"));
-      fetchPerformanceStats();
-    }
+    setIsLocking((prev) => ({ ...prev, [catId]: false }));
+    setReloadTrigger((p) => p + 1);
+    window.dispatchEvent(new Event("resetSeerAutomation"));
+    window.dispatchEvent(new Event("seerLockedSlipsUpdated"));
+    fetchPerformanceStats();
   };
 
   useEffect(() => {
@@ -580,9 +949,18 @@ export default function SeerAnalysis({
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
 
+  // Periodically refresh todayStr every 30 seconds so crossing 9:00 AM automatically rolls over
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const freshToday = getAnalysisDateString();
+      setTodayStr((prev) => (prev !== freshToday ? freshToday : prev));
+    }, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
   const availableDates = useMemo(() => {
     const dates = [];
-    const todayAnalysis = getAnalysisDateString();
+    const todayAnalysis = todayStr;
 
     // Parse the date to ensure we handle roll-over correctly
     const year = parseInt(todayAnalysis.split("-")[0]);
@@ -592,7 +970,7 @@ export default function SeerAnalysis({
     const baseDate = new Date(year, month, day);
 
     for (let i = 0; i < 57; i++) {
-      // Window of 10 historical days + today
+      // Window of historical days + today
       const d = new Date(baseDate);
       d.setDate(baseDate.getDate() - i);
       dates.push(
@@ -604,15 +982,13 @@ export default function SeerAnalysis({
       );
     }
     return dates;
-  }, []);
-
-  const todayStr = useMemo(() => getAnalysisDateString(), []);
+  }, [todayStr]);
 
   useEffect(() => {
     let active = true;
 
-    // Immediate synchronous load from available matches
-    const allAvailableMatches = [...liveMatchesRef.current, ...historicalMatchesRef.current];
+    // Immediate synchronous load from live uploaded matches strictly belonging to selectedDate
+    const allAvailableMatches = liveMatchesRef.current || [];
     const filteredLive = allAvailableMatches.filter((m) => {
       const matchesType = historyType === "jackpot"
         ? m.isJackpot
@@ -643,6 +1019,8 @@ export default function SeerAnalysis({
     const isToday = selectedDate === todayStr;
     const filteredLiveForDate = filteredLive.filter(m => getLogicalDate(m.date, m.time) === selectedDate);
     
+    // For TODAY: if no matches for today have been uploaded yet (filteredLive is empty),
+    // strictly render empty array [] so stale matches from yesterday never appear under Today.
     const initialMatches = isToday ? deduplicateMatches([...filteredLive]) : deduplicateMatches([
       ...filteredLiveForDate,
       ...localMatches.filter(
@@ -664,31 +1042,32 @@ export default function SeerAnalysis({
     getDailySeerSnapshot(selectedDate, collectionName)
       .then((snap) => {
         if (!active) return;
-        let matches = snap ? snap.matches : [];
+        let snapMatches = snap ? snap.matches : [];
         const liveIds = new Set(filteredLive.map((m) => m.id.toString()));
         const filteredLiveForDateDb = filteredLive.filter(m => getLogicalDate(m.date, m.time) === selectedDate);
-        matches = isToday ? deduplicateMatches([...filteredLive]) : deduplicateMatches([
+        
+        // For TODAY: only use filteredLive. Never pull yesterday's matches from snap into Today.
+        let matches = isToday ? deduplicateMatches([...filteredLive]) : deduplicateMatches([
           ...filteredLiveForDateDb,
-          ...matches.filter(
+          ...snapMatches.filter(
             (m) =>
               !liveIds.has(m.id.toString()) &&
               getLogicalDate(m.date, m.time) === selectedDate,
           ),
         ]);
 
-        const allKnown = [...liveMatches, ...historicalMatches];
+        // Result hydration: strictly check live matches belonging to selectedDate
+        const liveForDate = (liveMatches || []).filter(k => getLogicalDate(k.date, k.time) === selectedDate);
         matches = matches.map(m => {
           const act = getActualResult(m.result);
           if (!act || act === 'pending') {
             const mId = m.id?.toString() || "";
             const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-            const found = allKnown.find(k => {
+            const found = liveForDate.find(k => {
               const kId = k.id?.toString() || "";
               const normKTeam = (k.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
               const isIdMatch = kId === mId || mId.startsWith(kId + "_") || kId.startsWith(mId + "_");
-              const isTeamMatch = normMTeam.length > 0 && normKTeam.length > 0 && (
-                normMTeam === normKTeam || normMTeam.includes(normKTeam) || normKTeam.includes(normMTeam)
-              );
+              const isTeamMatch = normMTeam.length > 0 && normKTeam.length > 0 && normMTeam === normKTeam;
               return (isIdMatch || isTeamMatch) && getActualResult(k.result) !== 'pending';
             });
             if (found) {
@@ -698,9 +1077,7 @@ export default function SeerAnalysis({
           return m;
         });
 
-        if (matches.length > 0) {
-          setHistoricalSnapshot(matches);
-        }
+        setHistoricalSnapshot(matches);
         setError(null);
       })
       .catch((err) => {
@@ -718,7 +1095,7 @@ export default function SeerAnalysis({
     return () => {
       active = false;
     };
-  }, [selectedDate, historyType, liveMatches, historicalMatches]);
+  }, [selectedDate, historyType, liveMatches]);
 
   const fetchPerformanceStats = async () => {
     setIsFetchingStats(true);
@@ -1076,43 +1453,60 @@ export default function SeerAnalysis({
     }
 
     if (forSlips) {
-      // If we have a locked slip for this category, use its match IDs
-      if (activeLockedSlips[catId]) {
+      // If we have a locked slip for this category, resolve via direct key or alias
+      const resolvedLockedSlip = activeLockedSlips[catId] || (() => {
+        const aliases = getCategoryAliases(catId);
+        for (const a of aliases) {
+          if (activeLockedSlips[a]) return activeLockedSlips[a];
+        }
+        return null;
+      })();
+
+      if (resolvedLockedSlip) {
         const pool = [
-          ...(matches || []),
-          ...(historicalMatchesRef.current || []),
-          ...(liveMatchesRef.current || [])
+          ...(liveMatchesRef.current || []),
+          ...(liveMatches || []),
+          ...(historicalMatches || []),
+          ...(matches || [])
+        ].filter((m: any) => getLogicalDate(m.date, m.time) === selectedDate);
+
+        const allFallbackMatches = [
+          ...(liveMatchesRef.current || []),
+          ...(liveMatches || []),
+          ...(historicalMatches || []),
+          ...(matches || [])
         ];
 
-        // Ensure we preserve exact picks from the locked slip in order, resolving against pool
-        return activeLockedSlips[catId].picks
-          .filter((p: any) => !isBannedFromSeerSlips(p as any))
+        // Ensure we preserve exact picks from the locked slip in order, resolving scores against pool
+        return resolvedLockedSlip.picks
           .map((p: any) => {
             const pId = p.match_id?.toString() || "";
             const normPTeam = (p.team || "").toLowerCase().replace(/[^a-z0-9]/g, '');
 
-            const found = pool.find((m: any) => {
+            const matchFilter = (m: any) => {
               const mId = m.id?.toString() || "";
               const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
               const idMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
               const teamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-                normMTeam === normPTeam || normMTeam.includes(normPTeam) || normPTeam.includes(normMTeam)
-              );
-              return (idMatch || teamMatch) && getActualResult(m.result) !== 'pending';
-            }) || pool.find((m: any) => {
-              const mId = m.id?.toString() || "";
-              const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-              const idMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-              const teamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-                normMTeam === normPTeam || normMTeam.includes(normPTeam) || normPTeam.includes(normMTeam)
+                normMTeam === normPTeam ||
+                normMTeam.includes(normPTeam) ||
+                normPTeam.includes(normMTeam)
               );
               return idMatch || teamMatch;
-            });
+            };
+
+            const found = pool.find((m: any) => matchFilter(m) && getActualResult(m.result) !== 'pending') ||
+                          pool.find(matchFilter) ||
+                          allFallbackMatches.find((m: any) => matchFilter(m) && getActualResult(m.result) !== 'pending') ||
+                          allFallbackMatches.find(matchFilter);
+
+            const resolvedRes = (p.actualResult && getActualResult(p.actualResult) !== 'pending')
+              ? p.actualResult
+              : (found && getActualResult(found.result) !== 'pending')
+                ? found.result
+                : (p.actualResult && p.actualResult !== '-' ? p.actualResult : (found?.result || 'pending'));
 
             if (found) {
-              const resolvedRes = (getActualResult(found.result) !== 'pending')
-                ? found.result
-                : (p.actualResult && p.actualResult !== 'pending' ? p.actualResult : found.result);
               return {
                 ...found,
                 result: resolvedRes,
@@ -1134,7 +1528,109 @@ export default function SeerAnalysis({
             return {
               id: p.match_id,
               teams: p.team,
-              date: activeLockedSlips[catId].date,
+              date: resolvedLockedSlip.date,
+              time: '',
+              result: resolvedRes,
+              actualResult: resolvedRes,
+              seerPrediction: p.prediction,
+              finalPrediction: p.prediction,
+              rawPrediction: p.prediction,
+              mo: p.odds || '1.0',
+              le: p.le || '-',
+              l10: p.l10 || '-',
+              rating: p.rating || '-',
+              gs: p.gs || '',
+              ga: p.ga || '',
+              league: p.league || '',
+              evaluatorTags: p.evaluatorTags || [],
+              isHprOverride: p.isHprOverride || false,
+              isDaily: resolvedLockedSlip.type === 'daily',
+              isJackpot: resolvedLockedSlip.type === 'jackpot',
+              status: (resolvedRes && getActualResult(resolvedRes) !== 'pending') ? 'finished' : 'pending',
+              lockedOpwScore: p.opwPoints !== undefined ? {
+                totalScore: p.opwPoints,
+                rulesHit: p.opwRulesHit || [],
+                baseInfo: p.opwBaseInfo || { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: false },
+                optimizedPrediction: p.prediction,
+                activeHedgingProtocol: null
+              } : undefined
+            } as any as Match;
+          });
+      }
+
+      // If no locked slip exists in state yet, check if this is a past date or completed match slate
+      const todayStr = getAnalysisDateString();
+      const isPastDate = selectedDate < todayStr;
+      const hasCompleted = (matches || []).some((m) => {
+        const res = getActualResult(m.result);
+        return res && res !== "pending";
+      });
+
+      // Historical slips or completed slates must never have synthetic new picks generated
+      if (isPastDate || hasCompleted) {
+        return [];
+      }
+
+      // If live and pending, synchronously generate from live pool so the UI never flickers empty while locking completes
+      const fallbackPool = [
+        ...(liveMatchesRef.current || []),
+        ...(liveMatches || []),
+        ...(matches || [])
+      ].filter((m: any) => getLogicalDate(m.date, m.time) === selectedDate && !isBannedFromSeerSlips(m));
+
+      if (fallbackPool.length > 0) {
+        let generated: any;
+        if (
+          fallbackGeneratedSlipsRef.current &&
+          fallbackGeneratedSlipsRef.current.date === selectedDate &&
+          fallbackGeneratedSlipsRef.current.poolLength === fallbackPool.length
+        ) {
+          generated = fallbackGeneratedSlipsRef.current.slips;
+        } else {
+          const dayOfWeek = getMatchDayOfWeek({ date: selectedDate } as Match);
+          generated = generateSeerSlips(
+            fallbackPool,
+            phaStatsMap || {},
+            matchStars,
+            historyType === "jackpot",
+            false,
+            dayOfWeek
+          );
+          fallbackGeneratedSlipsRef.current = {
+            date: selectedDate,
+            poolLength: fallbackPool.length,
+            slips: generated
+          };
+        }
+        const picksData = generated.live[catId] || generated.spec[catId] || [];
+        if (picksData && picksData.length > 0) {
+          return picksData.map((p: any) => {
+            const pId = p.match_id?.toString() || "";
+            const normPTeam = (p.team || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+            const found = fallbackPool.find((m: any) => {
+              const mId = m.id?.toString() || "";
+              const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+              return mId === pId || (normPTeam.length > 0 && normMTeam === normPTeam);
+            });
+            if (found) {
+              return {
+                ...found,
+                seerPrediction: p.prediction,
+                targetPrediction: p.prediction,
+                isHprOverride: p.isHprOverride ?? found.isHprOverride,
+                lockedOpwScore: p.opwPoints !== undefined ? {
+                  totalScore: p.opwPoints,
+                  rulesHit: p.opwRulesHit || [],
+                  baseInfo: p.opwBaseInfo || { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: false },
+                  optimizedPrediction: p.prediction,
+                  activeHedgingProtocol: null
+                } : undefined
+              };
+            }
+            return {
+              id: p.match_id,
+              teams: p.team,
+              date: selectedDate,
               time: '',
               result: p.actualResult || 'pending',
               seerPrediction: p.prediction,
@@ -1149,8 +1645,8 @@ export default function SeerAnalysis({
               league: p.league || '',
               evaluatorTags: p.evaluatorTags || [],
               isHprOverride: p.isHprOverride || false,
-              isDaily: activeLockedSlips[catId].type === 'daily',
-              isJackpot: activeLockedSlips[catId].type === 'jackpot',
+              isDaily: historyType === 'daily',
+              isJackpot: historyType === 'jackpot',
               status: 'pending',
               lockedOpwScore: p.opwPoints !== undefined ? {
                 totalScore: p.opwPoints,
@@ -1161,37 +1657,10 @@ export default function SeerAnalysis({
               } : undefined
             } as any as Match;
           });
+        }
       }
 
-      // Use candidate match pool: prioritize matches passed into function (which match selected date/view)
-      const basePool = (matches && matches.length > 0)
-        ? matches
-        : (liveMatchesRef.current && liveMatchesRef.current.length > 0)
-          ? liveMatchesRef.current.filter((m: any) => historyType === "jackpot" ? m.isJackpot : m.isDaily)
-          : [];
-      const cleanPool = basePool.filter((m) => !isBannedFromSeerSlips(m));
-      const dayOfWeek = getMatchDayOfWeek({ date: selectedDate } as Match);
-      const slips = generateSeerSlips(cleanPool, phaStatsMap, matchStars, historyType === "jackpot", false, dayOfWeek); // generate candidate slips
-      const targetSlip = slips.live[catId] || slips.spec[catId] || [];
-      const pickMap = new Map<string, any>();
-      targetSlip.forEach((p: any) => pickMap.set(p.match_id?.toString() || "", p));
-      const filtered = cleanPool
-        .filter((m) => pickMap.has(m.id.toString()))
-        .map((m) => {
-          const p = pickMap.get(m.id.toString());
-          return {
-            ...m,
-            seerPrediction: p?.prediction || m.seerPrediction,
-            targetPrediction: p?.prediction || (m as any).targetPrediction,
-            isHprOverride: p?.isHprOverride ?? (m as any).isHprOverride,
-          };
-        });
-      // Preserve the rank order
-      return filtered.sort((a, b) => {
-        const idxA = targetSlip.findIndex((p: any) => p.match_id?.toString() === a.id.toString());
-        const idxB = targetSlip.findIndex((p: any) => p.match_id?.toString() === b.id.toString());
-        return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
-      });
+      return [];
     }
 
     // Default: for deep learn & performance audits, we must run the evaluation engine on ALL matches matching that category tag
@@ -1322,10 +1791,10 @@ export default function SeerAnalysis({
     setLearningStatus("Initializing AI Optimizer...");
     
     try {
-      // Use exact live matches loaded for analysis (e.g. 142 matches in Live Analysis)
+      // Use exact live matches loaded for analysis strictly matching selectedDate
       const targetMatches = (matchesToProcess && matchesToProcess.length > 0)
-        ? matchesToProcess
-        : (liveMatches && liveMatches.length > 0 ? liveMatches : []);
+        ? matchesToProcess.filter((m: any) => getLogicalDate(m.date, m.time) === selectedDate)
+        : (liveMatches && liveMatches.length > 0 ? liveMatches.filter((m: any) => getLogicalDate(m.date, m.time) === selectedDate) : []);
 
       const categoryName = categoriesList.find((c) => c.id === selectedCategory)?.label || selectedCategory;
 
@@ -1504,7 +1973,8 @@ export default function SeerAnalysis({
         const mTeam = (m.teams || "").toLowerCase().trim();
         return mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_") || (pTeam.length > 0 && mTeam === pTeam);
       });
-      const optScore = getOptimizedScoreDetailed(m, selectedCategory, phaStatsMap, currentDayOfWeek);
+      const matchDay = getMatchDayOfWeek(m) || currentDayOfWeek;
+      const optScore = getOptimizedScoreDetailed(m, selectedCategory, phaStatsMap, matchDay);
       let pred = lockedPick?.prediction || (m as any).targetPrediction || m.seerPrediction || optScore.optimizedPrediction || m.finalPrediction || '1';
 
       if (!lockedPick) {
@@ -1523,7 +1993,7 @@ export default function SeerAnalysis({
           let hedgedBase = ['1X', 'X2', '12'].includes(pred)
             ? pred
             : (phaStatsMap ? getOptimalHedge(m, phaStatsMap) : ensureHedgedPrediction(pred, m, phaStatsMap));
-          const hprPred = applyHedgingProtocol(m, hedgedBase, selectedCategory, phaStatsMap, currentDayOfWeek);
+          const hprPred = applyHedgingProtocol(m, hedgedBase, selectedCategory, phaStatsMap, matchDay);
           pred = (hprPred && hprPred !== hedgedBase) ? hprPred : hedgedBase;
         }
       }
@@ -1543,16 +2013,50 @@ export default function SeerAnalysis({
     };
   }, [liveTestMatches, currentWeights, selectedCategory, phaStatsMap, activeLockedSlips]);
 
-  useEffect(() => {
-    if (activeTab === "test" && selectedCategory !== "all") {
-      if (!activeLockedSlips[selectedCategory] && liveTestMatches.length > 0 && !isLocking[selectedCategory]) {
-        if (autoLockOnPropagateRef.current[selectedCategory]) {
-          autoLockOnPropagateRef.current[selectedCategory] = false;
-          handleGlobalLockSlip(selectedCategory, liveTestMatches);
-        }
-      }
+  const livePoolRef = liveMatchesRef.current || [];
+  const liveMatchesById = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const lm of (livePoolRef || [])) {
+      if (lm.id) map.set(lm.id.toString(), lm);
     }
-  }, [activeTab, selectedCategory, activeLockedSlips, liveTestMatches, isLocking]);
+    return map;
+  }, [livePoolRef]);
+
+  const liveMatchesByTeam = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const lm of (livePoolRef || [])) {
+      const norm = (lm.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (norm) map.set(norm, lm);
+    }
+    return map;
+  }, [livePoolRef]);
+
+  const activePicks = activeLockedSlips[selectedCategory]?.picks || [];
+  const activePicksById = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const p of activePicks) {
+      if (p.match_id) map.set(p.match_id.toString(), p);
+    }
+    return map;
+  }, [activePicks]);
+
+  const activePicksByTeam = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const p of activePicks) {
+      const norm = (p.team || "").toLowerCase().trim();
+      if (norm) map.set(norm, p);
+    }
+    return map;
+  }, [activePicks]);
+
+  const totalTestMatches = liveTestMatches.length;
+  const totalTestPages = Math.max(1, Math.ceil(totalTestMatches / TEST_PAGE_SIZE));
+  const paginatedTestMatches = useMemo(() => {
+    const start = (testMatchesPage - 1) * TEST_PAGE_SIZE;
+    return liveTestMatches.slice(start, start + TEST_PAGE_SIZE);
+  }, [liveTestMatches, testMatchesPage]);
+
+  // Auto-lock on propagate removed to keep locking strictly manual
 
   return (
     <div className="flex flex-col h-full bg-slate-50 relative">
@@ -1658,11 +2162,15 @@ export default function SeerAnalysis({
 
                           // Auto-propagate and lock fresh slips for all categories on this date
                           try {
+                            const filteredLiveForDate = (liveMatchesRef.current && liveMatchesRef.current.length > 0)
+                              ? liveMatchesRef.current.filter((m: any) => {
+                                  const matchesType = historyType === "jackpot" ? m.isJackpot : m.isDaily;
+                                  return matchesType && getLogicalDate(m.date, m.time) === selectedDate;
+                                })
+                              : [];
                             const basePool = (matchesToProcess && matchesToProcess.length > 0)
-                              ? matchesToProcess
-                              : (liveMatchesRef.current && liveMatchesRef.current.length > 0)
-                                ? liveMatchesRef.current.filter((m: any) => historyType === "jackpot" ? m.isJackpot : m.isDaily)
-                                : [];
+                              ? matchesToProcess.filter((m: any) => getLogicalDate(m.date, m.time) === selectedDate)
+                              : filteredLiveForDate;
                             const cleanPool = basePool.filter((m) => !isBannedFromSeerSlips(m));
                             const dayOfWeek = getMatchDayOfWeek({ date: selectedDate } as Match);
                             const slips = generateSeerSlips(cleanPool, phaStatsMap, matchStars, historyType === "jackpot", false, dayOfWeek);
@@ -2286,7 +2794,13 @@ export default function SeerAnalysis({
             </div>
 
             <div className="p-2 sm:p-2.5 flex-1">
-              {liveTestMatches.length === 0 ? (
+              {isSlipsLoading ? (
+                <div className="flex flex-col items-center justify-center p-12 text-gray-400">
+                  <RefreshCw size={28} className="mb-2 animate-spin text-indigo-500" />
+                  <p className="text-sm font-semibold text-gray-600">Loading SEER Optimized Slip...</p>
+                  <span className="text-xs text-gray-400 mt-1">Retrieving authoritative picks and results</span>
+                </div>
+              ) : liveTestMatches.length === 0 ? (
                 <div className="flex flex-col items-center justify-center p-8 text-gray-400">
                   <Target size={32} className="mb-2 opacity-50" />
                   <p>
@@ -2296,190 +2810,257 @@ export default function SeerAnalysis({
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
-                  {liveTestMatches.map((m, idx) => {
-                    // Use fresh live match object for consistent OPW scoring only when viewing today
-                    const isSelectedToday = selectedDate === todayStr;
-                    const freshM = isSelectedToday
-                      ? (liveMatchesRef.current?.find((lm: any) => lm.id?.toString() === m.id?.toString()) || m)
-                      : m;
-                    const lockedPick = activeLockedSlips[selectedCategory]?.picks?.find((p: any) => {
-                      const pId = p.match_id?.toString() || "";
-                      const mId = m.id.toString();
-                      const pTeam = (p.team || "").toLowerCase().trim();
-                      const mTeam = (m.teams || "").toLowerCase().trim();
-                      return mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_") || (pTeam.length > 0 && mTeam === pTeam);
-                    });
-                    const cleanCat = selectedCategory.replace(/^ai_/, '').replace(/^sandbox_/, '');
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
+                        {paginatedTestMatches.map((m, idx) => {
+                          const mId = m.id.toString();
+                          const mTeam = (m.teams || "").toLowerCase().trim();
+                          const lockedPick = activePicksById.get(mId) || activePicksByTeam.get(mTeam) || null;
 
-                    const optScore = (lockedPick?.opwPoints !== undefined)
-                      ? {
-                          totalScore: lockedPick.opwPoints,
-                          rulesHit: lockedPick.opwRulesHit || [],
-                          baseInfo: lockedPick.opwBaseInfo || { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: false },
-                          optimizedPrediction: lockedPick.prediction,
-                          activeHedgingProtocol: null
-                        }
-                      : (m as any).lockedOpwScore || getOptimizedScoreDetailed(freshM, selectedCategory, phaStatsMap, currentDayOfWeek);
+                          const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+                          const freshM = liveMatchesById.get(mId) || (normMTeam ? liveMatchesByTeam.get(normMTeam) : null) || m;
+                          const cleanCat = selectedCategory.replace(/^ai_/, '').replace(/^sandbox_/, '');
 
-                    let pred = lockedPick?.prediction || (m as any).targetPrediction || m.seerPrediction || optScore.optimizedPrediction || _predictWithSeer(m, currentWeights);
-                    let isHpr = lockedPick?.isHprOverride ?? (m as any).isHprOverride ?? false;
+                          const targetMatchForEval = freshM || m;
+                          const matchTags = (targetMatchForEval.evaluatorTags && targetMatchForEval.evaluatorTags.length > 0)
+                            ? targetMatchForEval.evaluatorTags
+                            : getMatchEvaluatorTags(targetMatchForEval, phaStatsMap || {}, targetMatchForEval.isJackpot || false, true, matchStars);
+                          const displayCat = resolveTop20SourceCat(m, matchTags, idx, cleanCat);
 
-                    if (!lockedPick) {
-                      if (cleanCat === 'upsets' || cleanCat === 'upset') {
-                        const stats = getMatchStats(m, phaStatsMap);
-                        pred = stats.moUnderdog === '1' ? '1X' : stats.moUnderdog === '2' ? 'X2' : '1X';
-                      } else if (cleanCat === 'value_picks' || cleanCat === 'bankers_jackpot') {
-                        const stats = getMatchStats(m, phaStatsMap);
-                        pred = stats.moFav === '1' ? '1X' : stats.moFav === '2' ? 'X2' : '1X';
-                      } else if (cleanCat === 'banker_draws') {
-                        const stats = getMatchStats(m, phaStatsMap);
-                        pred = stats.moFav === '1' ? '1X' : 'X2';
-                      } else if (optScore.activeHedgingProtocol) {
-                        pred = optScore.optimizedPrediction;
-                        isHpr = true;
-                      } else {
-                        let hedgedBase = ['1X', 'X2', '12'].includes(pred)
-                          ? pred
-                          : (phaStatsMap ? getOptimalHedge(m, phaStatsMap) : ensureHedgedPrediction(pred, m, phaStatsMap));
-                        const hprPred = applyHedgingProtocol(m, hedgedBase, selectedCategory, phaStatsMap, currentDayOfWeek);
-                        if (hprPred && hprPred !== hedgedBase) {
-                          pred = hprPred;
-                          isHpr = true;
-                        } else {
-                          pred = hedgedBase;
-                        }
-                      }
-                    }
+                          const matchDay = getMatchDayOfWeek(freshM || m);
+                          const liveOptScore = phaStatsMap ? getOptimizedScoreDetailed(freshM || m, displayCat, phaStatsMap, matchDay) : null;
+                          const optScore = liveOptScore || (lockedPick?.opwPoints !== undefined
+                            ? {
+                                totalScore: lockedPick.opwPoints,
+                                rulesHit: lockedPick.opwRulesHit || [],
+                                baseInfo: lockedPick.opwBaseInfo || { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: false },
+                                optimizedPrediction: lockedPick.prediction,
+                                activeHedgingProtocol: null
+                              }
+                            : (m as any).lockedOpwScore);
 
-                    // Seer predictions on the slip must strictly remain hedged (1X, X2, or 12)
-                    pred = ensureHedgedPrediction(pred, m, phaStatsMap);
-                    const resolvedRes = (m.result && getActualResult(m.result) !== 'pending')
-                      ? m.result
-                      : (lockedPick?.actualResult && getActualResult(lockedPick.actualResult) !== 'pending')
-                        ? lockedPick.actualResult
-                        : (freshM && getActualResult(freshM.result) !== 'pending')
-                          ? freshM.result
-                          : (m.result || lockedPick?.actualResult || "-");
-                    const actualResult = getActualResult(resolvedRes);
-                    const isCorrect =
-                      actualResult && isMatchCorrectForCategory(freshM || m, pred, actualResult, selectedCategory, phaStatsMap);
+                          const hasUpsetsTag = matchTags.some(t => t.startsWith('upsets:'));
+                          const isUpsetsCat = cleanCat === 'upsets' || cleanCat === 'upset' || cleanCat === 'sandbox_upsets';
+                          const upsetOptScore = (!isUpsetsCat && hasUpsetsTag && phaStatsMap)
+                            ? getOptimizedScoreDetailed(targetMatchForEval, 'upsets', phaStatsMap, matchDay)
+                            : null;
+                          const highestOtherOpw = (isUpsetsCat && phaStatsMap)
+                            ? getHighestOtherOpwScore(targetMatchForEval, matchTags, phaStatsMap, matchDay)
+                            : null;
 
-                    return (
-                      <div
-                        key={`${m.id}_${idx}`}
-                        className="border border-gray-200 rounded p-2.5 sm:p-3 flex flex-col gap-2 hover:shadow-sm transition-shadow"
-                      >
-                        <div className="text-xs text-gray-500 flex items-center gap-1.5 font-mono flex-wrap pb-0.5">
-                          <span className="bg-blue-50 px-1.5 py-0.5 rounded text-blue-700 font-bold border border-blue-100 italic text-[10px] shrink-0">
-                            MO: {m.mo || "-"}
-                          </span>
-                          <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
-                            LE: {m.le || "NA"}
-                          </span>
-                          <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
-                            L10: {m.l10 || "-"}
-                          </span>
-                          <span className="bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 text-amber-800 font-bold text-[10px] shrink-0" title="1X2 Rating">
-                            R: {(m.rating && m.rating !== "Unknown") ? m.rating : "-"}
-                          </span>
-                          {resolvedRes &&
-                          resolvedRes !== "pending" &&
-                          resolvedRes !== "?-?" &&
-                          resolvedRes !== "-" &&
-                          resolvedRes !== "Unknown" &&
-                          resolvedRes.toLowerCase() !== "unknown" &&
-                          actualResult !== "pending" && (
-                            <span
-                              className={`font-bold px-1.5 py-0.5 rounded shadow-sm text-[10px] shrink-0 ${isCorrect ? "bg-green-100 text-green-700 border border-green-200" : "bg-red-100 text-red-700 border border-red-200"}`}
+                          let pred = lockedPick?.prediction || (m as any).targetPrediction || m.seerPrediction || optScore?.optimizedPrediction || _predictWithSeer(m, currentWeights);
+                          let isHpr = lockedPick?.isHprOverride ?? (m as any).isHprOverride ?? false;
+
+                          if (!lockedPick) {
+                            if (cleanCat === 'upsets' || cleanCat === 'upset') {
+                              const stats = getMatchStats(m, phaStatsMap);
+                              pred = stats.moUnderdog === '1' ? '1X' : stats.moUnderdog === '2' ? 'X2' : '1X';
+                            } else if (cleanCat === 'value_picks' || cleanCat === 'bankers_jackpot') {
+                              const stats = getMatchStats(m, phaStatsMap);
+                              pred = stats.moFav === '1' ? '1X' : stats.moFav === '2' ? 'X2' : '1X';
+                            } else if (cleanCat === 'banker_draws') {
+                              const stats = getMatchStats(m, phaStatsMap);
+                              pred = stats.moFav === '1' ? '1X' : 'X2';
+                            } else if (optScore?.activeHedgingProtocol) {
+                              pred = optScore.optimizedPrediction;
+                              isHpr = true;
+                            } else {
+                              let hedgedBase = ['1X', 'X2', '12'].includes(pred)
+                                ? pred
+                                : (phaStatsMap ? getOptimalHedge(m, phaStatsMap) : ensureHedgedPrediction(pred, m, phaStatsMap));
+                              const hprPred = applyHedgingProtocol(m, hedgedBase, selectedCategory, phaStatsMap, matchDay);
+                              if (hprPred && hprPred !== hedgedBase) {
+                                pred = hprPred;
+                                isHpr = true;
+                              } else {
+                                pred = hedgedBase;
+                              }
+                            }
+                          }
+
+                          // Seer predictions on the slip must strictly remain hedged (1X, X2, or 12)
+                          pred = ensureHedgedPrediction(pred, m, phaStatsMap);
+                          const resolvedRes = (m.result && getActualResult(m.result) !== 'pending')
+                            ? m.result
+                            : (lockedPick?.actualResult && getActualResult(lockedPick.actualResult) !== 'pending')
+                              ? lockedPick.actualResult
+                              : (freshM && getActualResult(freshM.result) !== 'pending')
+                                ? freshM.result
+                                : (m.result || lockedPick?.actualResult || "-");
+                          const actualResult = getActualResult(resolvedRes);
+                          const isCorrect =
+                            actualResult && isMatchCorrectForCategory(freshM || m, pred, actualResult, selectedCategory, phaStatsMap);
+                          const cardIdx = (testMatchesPage - 1) * TEST_PAGE_SIZE + idx + 1;
+
+                          return (
+                            <div
+                              key={`${m.id}_${idx}`}
+                              className="border border-gray-200 rounded p-2.5 sm:p-3 flex flex-col gap-2 hover:shadow-sm transition-shadow bg-white"
                             >
-                              FT: {resolvedRes}
-                            </span>
-                          )}
-                          {actualResult && actualResult !== "pending" && !isCorrect && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOwModalMatch({
-                                  match: freshM || m,
-                                  catId: selectedCategory,
-                                  lockedScore: (lockedPick?.opwPoints !== undefined) ? {
-                                    totalScore: lockedPick.opwPoints,
-                                    rulesHit: lockedPick.opwRulesHit || [],
-                                    baseInfo: lockedPick.opwBaseInfo || { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: false },
-                                    optimizedPrediction: lockedPick.prediction,
-                                    activeHedgingProtocol: null
-                                  } : (m as any).lockedOpwScore
-                                });
-                              }}
-                              className="font-bold px-1.5 py-0.5 rounded shadow-xs text-[10px] shrink-0 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 flex items-center gap-1 cursor-pointer transition"
-                              title="Slip Upset: Click to view post-mortem and protect warning penalties."
-                            >
-                              <Shield size={10} className="text-amber-700" />
-                              <span>Post-Mortem</span>
-                            </button>
-                          )}
-                        </div>
-                        <div className="font-bold text-sm text-gray-800 flex items-center flex-wrap gap-2">
-                          {selectedCategory !== "all" && (
-                            <span className="text-xs bg-gray-900 text-white px-1.5 py-0.5 rounded shadow-sm opacity-90 truncate">
-                              #{idx + 1}
-                            </span>
-                          )}
-                          <span className="truncate">{m.teams}</span>
-                          {selectedCategory !== "all" && (
-                            <button 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                setOwModalMatch({ 
-                                  match: freshM, 
-                                  catId: selectedCategory,
-                                  lockedScore: (lockedPick?.opwPoints !== undefined) ? {
-                                    totalScore: lockedPick.opwPoints,
-                                    rulesHit: lockedPick.opwRulesHit || [],
-                                    baseInfo: lockedPick.opwBaseInfo || { points: 0, mFav: '1', phaPercentage: 0, isUnderdogBase: false },
-                                    optimizedPrediction: lockedPick.prediction,
-                                    activeHedgingProtocol: null
-                                  } : (m as any).lockedOpwScore
-                                }); 
-                              }}
-                              className="ml-auto text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
-                              title={`${optScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
-                              <Zap size={10} />
-                              {optScore.totalScore > 0 ? `+${optScore.totalScore}` : optScore.totalScore} PTS
-                            </button>
-                          )}
-                        </div>
-                          {optScore.activeHedgingProtocol && (
-                            <div className="mt-2 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-1 rounded font-bold uppercase tracking-wider flex items-center gap-1">
-                              <Zap size={10} />
-                              {optScore.activeHedgingProtocol}
+                              <div className="text-xs text-gray-500 flex items-center justify-between gap-1.5 font-mono flex-wrap">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="bg-blue-50 px-1.5 py-0.5 rounded text-blue-700 font-bold border border-blue-100 italic text-[10px] shrink-0">
+                                    MO: {m.mo || "-"}
+                                  </span>
+                                  <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
+                                    LE: {m.le || "NA"}
+                                  </span>
+                                  <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0 inline-flex items-baseline" title="Last 10 Matches (LDW:WDL)">
+                                    <L10Display l10={m.l10} showPrefix={true} />
+                                  </span>
+                                </div>
+                                <span className="bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 text-amber-800 font-bold text-[10px] shrink-0" title="1X2 Rating">
+                                  R: {(m.rating && m.rating !== "Unknown") ? m.rating : "-"}
+                                </span>
+                              </div>
+                              <div className="text-xs font-mono flex items-center justify-between gap-1.5 pb-0.5">
+                                <span className="bg-white border border-gray-300 text-gray-700 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm" title="1X2 Prediction">
+                                  1X2: {m.pred1x2 || "-"}
+                                </span>
+                                {resolvedRes &&
+                                resolvedRes !== "pending" &&
+                                resolvedRes !== "?-?" &&
+                                resolvedRes !== "-" &&
+                                resolvedRes !== "Unknown" &&
+                                resolvedRes.toLowerCase() !== "unknown" &&
+                                actualResult !== "pending" && (
+                                  <span
+                                    className={`font-bold px-1.5 py-0.5 rounded shadow-sm text-[10px] shrink-0 ${isCorrect ? "bg-green-100 text-green-700 border border-green-200" : "bg-red-100 text-red-700 border border-red-200"}`}
+                                  >
+                                    FT: {resolvedRes}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="font-bold text-sm text-gray-800 flex items-center flex-wrap gap-2">
+                                {selectedCategory !== "all" && (
+                                  <span className="text-xs bg-gray-900 text-white px-1.5 py-0.5 rounded shadow-sm opacity-90 truncate">
+                                    #{cardIdx}
+                                  </span>
+                                )}
+                                <span className="truncate">{m.teams}</span>
+                                {selectedCategory !== "all" && (optScore || upsetOptScore || highestOtherOpw) && (
+                                  <div className="ml-auto flex items-center gap-1 shrink-0">
+                                    {optScore && (
+                                      <button 
+                                        onClick={(e) => { 
+                                          e.stopPropagation(); 
+                                          setOwModalMatch({ 
+                                            match: freshM || m, 
+                                            catId: displayCat,
+                                            lockedScore: liveOptScore || undefined
+                                          }); 
+                                        }}
+                                        className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
+                                        title={`${optScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                                        <Zap size={10} />
+                                        {getCategoryShortLabel(displayCat)} {optScore.totalScore > 0 ? `+${optScore.totalScore}` : optScore.totalScore} PTS
+                                      </button>
+                                    )}
+                                    {upsetOptScore && (
+                                      <button 
+                                        onClick={(e) => { 
+                                          e.stopPropagation(); 
+                                          setOwModalMatch({ 
+                                            match: freshM || m, 
+                                            catId: 'upsets',
+                                            lockedScore: upsetOptScore
+                                          }); 
+                                        }}
+                                        className="text-[10px] bg-purple-100 text-purple-800 border border-purple-300 hover:bg-purple-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
+                                        title={`Underdog (UPS): ${upsetOptScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                                        <Zap size={10} />
+                                        UPS {upsetOptScore.totalScore > 0 ? `+${upsetOptScore.totalScore}` : upsetOptScore.totalScore} PTS
+                                      </button>
+                                    )}
+                                    {highestOtherOpw && (
+                                      <button 
+                                        onClick={(e) => { 
+                                          e.stopPropagation(); 
+                                          setOwModalMatch({ 
+                                            match: freshM || m, 
+                                            catId: highestOtherOpw.catId,
+                                            lockedScore: highestOtherOpw.score
+                                          }); 
+                                        }}
+                                        className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
+                                        title={`Highest other (${getCategoryShortLabel(highestOtherOpw.catId)}): ${highestOtherOpw.score.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                                        <Zap size={10} />
+                                        {getCategoryShortLabel(highestOtherOpw.catId)} {highestOtherOpw.score.totalScore > 0 ? `+${highestOtherOpw.score.totalScore}` : highestOtherOpw.score.totalScore} PTS
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              {optScore?.activeHedgingProtocol && (
+                                <div className="mt-2 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-1 rounded font-bold uppercase tracking-wider flex items-center gap-1">
+                                  <Zap size={10} />
+                                  {optScore.activeHedgingProtocol}
+                                </div>
+                              )}
+                              <div className="flex justify-between items-center mt-2 border-t pt-2">
+                                <div className="flex flex-col items-start gap-0.5">
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] font-bold text-gray-400 uppercase">
+                                      Legacy AI (Algo)
+                                    </span>
+                                    <span className="font-bold text-gray-600 px-2 py-0.5 bg-gray-100 rounded text-xs" title={m.algoReport?.prediction ? `Algo Prediction: ${m.algoReport.prediction}` : ""}>
+                                      {_getAlgoPrediction(m)}
+                                    </span>
+                                  </div>
+                                  {(() => {
+                                    const cInfo = getMatchCountryAndLeague(m);
+                                    if (!cInfo.display) return null;
+                                    return (
+                                      <span className="text-[10px] text-slate-500 font-semibold flex items-center gap-1" title={cInfo.display}>
+                                        <Globe size={10} className="text-indigo-500 shrink-0" />
+                                        <span>{cInfo.display}</span>
+                                      </span>
+                                    );
+                                  })()}
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className={`text-[10px] font-black uppercase tracking-tighter ${isHpr ? "text-purple-600" : "text-teal-600"}`}>
+                                    {isHpr ? "HPR PREDICTS" : "SEER PREDICTS"}
+                                  </span>
+                                  <span
+                                    className={`font-black text-white px-2 py-0.5 rounded text-xs shadow-sm ${isHpr ? "bg-purple-600" : "bg-gradient-to-r from-teal-500 to-indigo-600"} ${m.result ? (isCorrect ? "opacity-100" : "opacity-70") : ""}`}
+                                  >
+                                    {pred}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                          )}
-                          <div className="flex justify-between items-center mt-2 border-t pt-2">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[10px] font-bold text-gray-400 uppercase">
-                              Legacy AI (Algo)
-                            </span>
-                            <span className="font-bold text-gray-600 px-2 py-0.5 bg-gray-100 rounded text-xs" title={m.algoReport?.prediction ? `Algo Prediction: ${m.algoReport.prediction}` : ""}>
-                              {_getAlgoPrediction(m)}
-                            </span>
+                          );
+                        })}
+                      </div>
+
+                      {totalTestPages > 1 && (
+                        <div className="flex flex-col sm:flex-row items-center justify-between border-t border-gray-200 bg-white px-4 py-3 rounded-lg mt-2 gap-3 shadow-xs">
+                          <div className="text-xs text-gray-700 font-medium">
+                            Showing <span className="font-bold">{(testMatchesPage - 1) * TEST_PAGE_SIZE + 1}</span> to <span className="font-bold">{Math.min(testMatchesPage * TEST_PAGE_SIZE, totalTestMatches)}</span> of <span className="font-bold">{totalTestMatches}</span> matches
                           </div>
-                          <div className="flex items-center gap-1">
-                            <span className={`text-[10px] font-black uppercase tracking-tighter ${isHpr ? "text-purple-600" : "text-teal-600"}`}>
-                              {isHpr ? "HPR PREDICTS" : "SEER PREDICTS"}
-                            </span>
-                            <span
-                              className={`font-black text-white px-2 py-0.5 rounded text-xs shadow-sm ${isHpr ? "bg-purple-600" : "bg-gradient-to-r from-teal-500 to-indigo-600"} ${m.result ? (isCorrect ? "opacity-100" : "opacity-70") : ""}`}
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setTestMatchesPage((p) => Math.max(1, p - 1))}
+                              disabled={testMatchesPage <= 1}
+                              className="px-3 py-1.5 text-xs font-bold rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
-                              {pred}
+                              Previous
+                            </button>
+                            <span className="text-xs text-gray-600 font-bold px-2">
+                              Page {testMatchesPage} of {totalTestPages}
                             </span>
+                            <button
+                              onClick={() => setTestMatchesPage((p) => Math.min(totalTestPages, p + 1))}
+                              disabled={testMatchesPage >= totalTestPages}
+                              className="px-3 py-1.5 text-xs font-bold rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                            >
+                              Next
+                            </button>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      )}
+                    </div>
               )}
             </div>
           </div>
@@ -3016,7 +3597,7 @@ export default function SeerAnalysis({
           phaStatsMap={phaStatsMap}
           categoryId={owModalMatch.catId}
           lockedScore={owModalMatch.lockedScore}
-          dayOverride={currentDayOfWeek}
+          dayOverride={getMatchDayOfWeek(owModalMatch.match)}
         />
       )}
     </div>
@@ -3076,42 +3657,54 @@ function SeerSlipSuggester({
   searchQuery,
   setSearchQuery,
 }: any) {
+  const isToday = selectedDate === todayStr;
   const currentDayOfWeek = useMemo(() => getMatchDayOfWeek({ date: selectedDate } as Match), [selectedDate]);
+
+  const matchMapIndex = useMemo(() => {
+    const byIdFinalized = new Map<string, any>();
+    const byTeamFinalized = new Map<string, any>();
+    const byIdAny = new Map<string, any>();
+    const byTeamAny = new Map<string, any>();
+
+    const allSources = [
+      ...(matchesToProcess || []),
+      ...(liveMatches || [])
+    ].filter((m: any) => getLogicalDate(m.date, m.time) === selectedDate);
+
+    for (const m of allSources) {
+      const mId = m.id?.toString() || "";
+      const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+      const hasResult = getActualResult(m.result) !== 'pending';
+
+      if (hasResult) {
+        if (mId && !byIdFinalized.has(mId)) byIdFinalized.set(mId, m);
+        if (normMTeam && !byTeamFinalized.has(normMTeam)) byTeamFinalized.set(normMTeam, m);
+      }
+      if (mId && !byIdAny.has(mId)) byIdAny.set(mId, m);
+      if (normMTeam && !byTeamAny.has(normMTeam)) byTeamAny.set(normMTeam, m);
+    }
+
+    return { byIdFinalized, byTeamFinalized, byIdAny, byTeamAny, allSources };
+  }, [matchesToProcess, liveMatches, selectedDate]);
 
   const findMatchWithResult = (pId: string, pTeam: string, fallbackActual?: string) => {
     const normPTeam = (pTeam || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-    const allSources = [
-      ...(matchesToProcess || []),
-      ...(historicalMatches || []),
-      ...(liveMatches || [])
-    ];
 
-    // 1. Prioritize match with finalized result
-    let match = allSources.find((m: any) => {
-      const mId = m.id?.toString() || "";
-      const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-      const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-      const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-        normMTeam === normPTeam ||
-        normMTeam.includes(normPTeam) ||
-        normPTeam.includes(normMTeam)
-      );
-      const hasResult = getActualResult(m.result) !== 'pending';
-      return (isIdMatch || isTeamMatch) && hasResult;
-    });
+    // 1. Prioritize match with finalized result via Map lookup
+    let match = matchMapIndex.byIdFinalized.get(pId) || 
+      (normPTeam ? matchMapIndex.byTeamFinalized.get(normPTeam) : undefined);
 
-    // 2. Fallback to any matching match
+    // 2. Fallback to any matching match via Map lookup
     if (!match) {
-      match = allSources.find((m: any) => {
+      match = matchMapIndex.byIdAny.get(pId) || 
+        (normPTeam ? matchMapIndex.byTeamAny.get(normPTeam) : undefined);
+    }
+
+    // 3. Fallback for prefix composite IDs if any
+    if (!match) {
+      match = matchMapIndex.allSources.find((m: any) => {
         const mId = m.id?.toString() || "";
-        const normMTeam = (m.teams || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-        const isIdMatch = mId === pId || pId.startsWith(mId + "_") || mId.startsWith(pId + "_");
-        const isTeamMatch = normPTeam.length > 0 && normMTeam.length > 0 && (
-          normMTeam === normPTeam ||
-          normMTeam.includes(normPTeam) ||
-          normPTeam.includes(normMTeam)
-        );
-        return isIdMatch || isTeamMatch;
+        return mId && pId && (pId.startsWith(mId + "_") || mId.startsWith(pId + "_"));
       });
     }
 
@@ -3292,7 +3885,8 @@ function SeerSlipSuggester({
 
         let picks: AiPick[] = (selections || []).map((p: any) => {
           const matchingMatch = matchesToProcess.find((m: any) => m.id?.toString() === p.match_id?.toString());
-          const optScore = (matchingMatch && phaStatsMap) ? getOptimizedScoreDetailed(matchingMatch, cat.id, phaStatsMap, currentDayOfWeek) : null;
+          const matchDay = matchingMatch ? (getMatchDayOfWeek(matchingMatch) || currentDayOfWeek) : currentDayOfWeek;
+          const optScore = (matchingMatch && phaStatsMap) ? getOptimizedScoreDetailed(matchingMatch, cat.id, phaStatsMap, matchDay) : null;
           const hedgedPred = ensureHedgedPrediction(p.prediction, matchingMatch, phaStatsMap);
           const actual = matchingMatch ? getActualResult(matchingMatch.result) : undefined;
           const isFinished = actual && actual !== "pending";
@@ -3474,14 +4068,14 @@ function SeerSlipSuggester({
   const handleUnlockSlip = async (catId: string) => {
     if (
       !confirm(
-        "Delete and regenerate locked slip for this category? The new slip will immediately lock and become sticky in the backend.",
+        "Delete locked slip for this category? A fresh slip will be generated and locked immediately.",
       )
     )
       return;
 
-    const targetCatId = `ai_${catId}`;
     try {
-      await deleteLockedSlip(selectedDate, targetCatId);
+      await deleteLockedSlip(selectedDate, catId);
+      await deleteLockedSlip(selectedDate, `ai_${catId}`);
     } catch (error) {
       console.warn("Failed to delete from Supabase, deleting locally.", error);
     }
@@ -3497,81 +4091,8 @@ function SeerSlipSuggester({
       return next;
     });
 
-    // Auto-propagate and lock fresh candidate slip
-    try {
-      const basePool = (matchesToProcess && matchesToProcess.length > 0)
-        ? matchesToProcess
-        : (liveMatches && liveMatches.length > 0)
-          ? liveMatches.filter((m: any) => historyType === "jackpot" ? m.isJackpot : m.isDaily)
-          : [];
-      const cleanPool = basePool.filter((m) => !isBannedFromSeerSlips(m));
-      const dayOfWeek = getMatchDayOfWeek({ date: selectedDate } as Match);
-      const slips = generateSeerSlips(cleanPool, phaStatsMap, matchStars, historyType === "jackpot", false, dayOfWeek);
-      const targetSlip = slips.live[catId] || slips.spec[catId] || [];
-
-      if (targetSlip && targetSlip.length > 0) {
-        const pickMap = new Map<string, any>();
-        targetSlip.forEach((p: any) => pickMap.set(p.match_id?.toString() || "", p));
-        const filtered = cleanPool
-          .filter((m) => pickMap.has(m.id.toString()))
-          .map((m) => {
-            const p = pickMap.get(m.id.toString());
-            return {
-              ...m,
-              seerPrediction: p?.prediction || m.seerPrediction,
-              targetPrediction: p?.prediction || (m as any).targetPrediction,
-              isHprOverride: p?.isHprOverride ?? m.isHprOverride,
-            };
-          });
-        const sortedFreshMatches = filtered.sort((a, b) => {
-          const idxA = targetSlip.findIndex((p: any) => p.match_id?.toString() === a.id.toString());
-          const idxB = targetSlip.findIndex((p: any) => p.match_id?.toString() === b.id.toString());
-          return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
-        });
-
-        if (sortedFreshMatches.length > 0) {
-          const freshPicks = sortedFreshMatches.map(m => {
-            const p = pickMap.get(m.id.toString());
-            const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, catId, phaStatsMap, dayOfWeek) : null;
-            const pred = ensureHedgedPrediction(p?.prediction || (m as any).targetPrediction || m.seerPrediction, m, phaStatsMap);
-            const actual = getActualResult(m.result);
-            const isFinished = actual && actual !== "pending";
-            const displayScore = (m.result && m.result.includes(':')) ? m.result : actual;
-            const outcome: "Pending" | "Correct" | "Incorrect" = isFinished
-              ? (isMatchCorrectForCategory(m, pred, actual, catId, phaStatsMap) ? "Correct" : "Incorrect")
-              : "Pending";
-            return {
-              match_id: m.id,
-              team: m.teams,
-              prediction: pred,
-              actualResult: isFinished ? displayScore : undefined,
-              outcome,
-              odds: m.mo?.split(",")[0] || "1.0",
-              reason: m.isHprOverride ? `HPR: Hedging Protocol Override (${(m as any).targetPrediction})` : "Cognitive selected",
-              confidence: "100%",
-              category: catId,
-              le: m.le || '',
-              l10: m.l10 || '',
-              rating: m.rating || '',
-              gs: m.gs || '',
-              ga: m.ga || '',
-              league: m.league || '',
-              evaluatorTags: m.evaluatorTags || [],
-              opwPoints: p?.opwPoints !== undefined ? p.opwPoints : optScore?.totalScore,
-              opwRulesHit: p?.opwRulesHit || optScore?.rulesHit,
-              opwBaseInfo: p?.opwBaseInfo || optScore?.baseInfo,
-              isHprOverride: p?.isHprOverride ?? m.isHprOverride ?? false,
-            };
-          });
-          await handleLockSlip(catId, freshPicks);
-        }
-      }
-    } catch (genErr) {
-      console.error("Error auto-locking propagated slip in handleUnlockSlip:", genErr);
-    } finally {
-      window.dispatchEvent(new Event("resetSeerAutomation"));
-      window.dispatchEvent(new Event("seerLockedSlipsUpdated"));
-    }
+    window.dispatchEvent(new Event("resetSeerAutomation"));
+    window.dispatchEvent(new Event("seerLockedSlipsUpdated"));
   };
 
   const getWeightsForCategory = (catId: string) => {
@@ -3653,7 +4174,7 @@ function SeerSlipSuggester({
     const baseCatId = cat.id;
     const catWeights = getWeightsForCategory(baseCatId);
 
-    if (isSlipsLoading) {
+    if (isSlipsLoading || !isLocked) {
       return (
         <div
           key={cat.id}
@@ -3673,85 +4194,56 @@ function SeerSlipSuggester({
       );
     }
 
-    let matchesToShow: any[] = [];
-
-    if (isLocked) {
-      matchesToShow = lockedData.picks.map((p: any) => {
-        const pId = p.match_id?.toString() || "";
-        const pTeam = p.team || "";
-        const matchingMatch = findMatchWithResult(pId, pTeam, p.actualResult);
-        const lockedOpwScore = p.opwPoints !== undefined ? {
-          totalScore: p.opwPoints,
-          rulesHit: p.opwRulesHit || [],
-          baseInfo: p.opwBaseInfo || { points: 0, mFav: '', phaPercentage: 0, isUnderdogBase: false }
-        } : (matchingMatch?.lockedOpwScore || undefined);
-        
-        if (matchingMatch) {
-          const act = getActualResult(matchingMatch.result);
-          const finalResult = (act && act !== 'pending') ? matchingMatch.result : (p.actualResult || matchingMatch.result || "-");
-          return {
-            ...matchingMatch,
-            result: finalResult,
-            targetPrediction: p.prediction,
-            aiReason: p.reason,
-            aiConfidence: p.confidence,
-            le: matchingMatch.le || p.le || '',
-            l10: matchingMatch.l10 || p.l10 || '',
-            rating: matchingMatch.rating || p.rating || '',
-            isHprOverride: p.isHprOverride || false,
-            gs: matchingMatch.gs || p.gs || '',
-            ga: matchingMatch.ga || p.ga || '',
-            league: matchingMatch.league || p.league || '',
-            evaluatorTags: matchingMatch.evaluatorTags || p.evaluatorTags || [],
-            lockedOpwScore,
-          };
-        }
+    const matchesToShow = (lockedData?.picks || []).map((p: any) => {
+      const pId = p.match_id?.toString() || "";
+      const pTeam = p.team || "";
+      const matchingMatch = findMatchWithResult(pId, pTeam, p.actualResult);
+      const lockedOpwScore = p.opwPoints !== undefined ? {
+        totalScore: p.opwPoints,
+        rulesHit: p.opwRulesHit || [],
+        baseInfo: p.opwBaseInfo || { points: 0, mFav: '', phaPercentage: 0, isUnderdogBase: false }
+      } : (matchingMatch?.lockedOpwScore || undefined);
+      
+      if (matchingMatch) {
+        const act = getActualResult(matchingMatch.result);
+        const finalResult = (act && act !== 'pending') ? matchingMatch.result : (p.actualResult || matchingMatch.result || "-");
         return {
-          id: p.match_id,
-          teams: p.team,
-          mo: p.odds,
-          result: p.actualResult || "-",
+          ...matchingMatch,
+          result: finalResult,
           targetPrediction: p.prediction,
           aiReason: p.reason,
           aiConfidence: p.confidence,
-          le: p.le || "-",
-          l10: p.l10 || "-",
-          rating: p.rating || "-",
+          le: matchingMatch.le || p.le || '',
+          l10: matchingMatch.l10 || p.l10 || '',
+          rating: matchingMatch.rating || p.rating || '',
           isHprOverride: p.isHprOverride || false,
-          isStub: true,
-          gs: p.gs || '',
-          ga: p.ga || '',
-          league: p.league || '',
-          evaluatorTags: p.evaluatorTags || [],
+          gs: matchingMatch.gs || p.gs || '',
+          ga: matchingMatch.ga || p.ga || '',
+          league: matchingMatch.league || p.league || '',
+          evaluatorTags: matchingMatch.evaluatorTags || p.evaluatorTags || [],
           lockedOpwScore,
         };
-      });
-    } else {
-      // Unlocked: load candidate matches from algorithmic selection so user can inspect and lock new selections
-      const candidateMatches = getMatchesForCategory(matchesToProcess, baseCatId, true);
-      matchesToShow = candidateMatches.slice(0, cat.maxPicks || 10).map((m: any) => {
-        const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null;
-        let pred = (m as any).targetPrediction || m.seerPrediction || optScore?.optimizedPrediction || predictWithSeer(m, catWeights, phaStatsMap, matchStars, baseCatId);
-        let isHpr = m.isHprOverride || false;
-        if (optScore?.activeHedgingProtocol) {
-          pred = optScore.optimizedPrediction;
-          isHpr = true;
-        } else {
-          const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, currentDayOfWeek);
-          if (hprPred && hprPred !== pred) {
-            pred = hprPred;
-            isHpr = true;
-          }
-        }
-        return {
-          ...m,
-          targetPrediction: pred,
-          aiReason: (optScore as any)?.reason || "Algorithmic candidate selection",
-          aiConfidence: optScore?.totalScore ? `${Math.round(optScore.totalScore)}%` : "100%",
-          isHprOverride: isHpr,
-        };
-      });
-    }
+      }
+      return {
+        id: p.match_id,
+        teams: p.team,
+        mo: p.odds,
+        result: p.actualResult || "-",
+        targetPrediction: p.prediction,
+        aiReason: p.reason,
+        aiConfidence: p.confidence,
+        le: p.le || "-",
+        l10: p.l10 || "-",
+        rating: p.rating || "-",
+        isHprOverride: p.isHprOverride || false,
+        isStub: true,
+        gs: p.gs || '',
+        ga: p.ga || '',
+        league: p.league || '',
+        evaluatorTags: p.evaluatorTags || [],
+        lockedOpwScore,
+      };
+    });
 
     return (
       <div
@@ -3785,13 +4277,13 @@ function SeerSlipSuggester({
                   completedCount++;
                   const rawPred = m.targetPrediction || m.mlInfo?.mlPrediction || m.finalPrediction || m.rawPrediction || "1";
                   let pred = ensureHedgedPrediction(rawPred, m, phaStatsMap);
-                  const optScore = (m as any).lockedOpwScore
-                    ? (m as any).lockedOpwScore
-                    : (phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null);
+                  const matchDay = getMatchDayOfWeek(m);
+                  const liveOptScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, matchDay) : null;
+                  const optScore = liveOptScore || (m as any).lockedOpwScore;
                   if (optScore?.activeHedgingProtocol) {
                     pred = optScore.optimizedPrediction;
                   } else {
-                    const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, currentDayOfWeek);
+                    const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, matchDay);
                     if (hprPred && hprPred !== pred) {
                       pred = hprPred;
                     }
@@ -3884,14 +4376,26 @@ function SeerSlipSuggester({
               const rawPred = m.targetPrediction || m.mlInfo?.mlPrediction || m.finalPrediction || m.rawPrediction || "1";
               let pred = ensureHedgedPrediction(rawPred, m, phaStatsMap);
               let isHpr = m.isHprOverride || false;
-              const optScore = (m as any).lockedOpwScore
-                ? (m as any).lockedOpwScore
-                : (phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null);
+              const matchDay = getMatchDayOfWeek(m);
+              const matchTags = (m.evaluatorTags && m.evaluatorTags.length > 0)
+                ? m.evaluatorTags
+                : getMatchEvaluatorTags(m, phaStatsMap || {}, m.isJackpot || false, true, matchStars);
+              const displayCat = resolveTop20SourceCat(m, matchTags, idx, baseCatId);
+              const liveOptScore = phaStatsMap ? getOptimizedScoreDetailed(m, displayCat, phaStatsMap, matchDay) : null;
+              const optScore = liveOptScore || (m as any).lockedOpwScore;
+              const hasUpsetsTag = matchTags.some((t: string) => t.startsWith('upsets:'));
+              const isUpsetsCat = baseCatId === 'upsets' || baseCatId === 'upset' || baseCatId === 'sandbox_upsets';
+              const upsetOptScore = (!isUpsetsCat && hasUpsetsTag && phaStatsMap)
+                ? getOptimizedScoreDetailed(m, 'upsets', phaStatsMap, matchDay)
+                : null;
+              const highestOtherOpw = (isUpsetsCat && phaStatsMap)
+                ? getHighestOtherOpwScore(m, matchTags, phaStatsMap, matchDay)
+                : null;
               if (optScore?.activeHedgingProtocol) {
                 pred = optScore.optimizedPrediction;
                 isHpr = true;
               } else {
-                const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, currentDayOfWeek);
+                const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, matchDay);
                 if (hprPred && hprPred !== pred) {
                   pred = hprPred;
                   isHpr = true;
@@ -3913,18 +4417,25 @@ function SeerSlipSuggester({
                         : "bg-slate-50 border-slate-100 hover:border-indigo-200"
                   }`}
                 >
-                  <div className="text-xs text-gray-500 flex items-center gap-1.5 font-mono flex-wrap pb-0.5">
-                    <span className="bg-blue-50 px-1.5 py-0.5 rounded text-blue-700 font-bold border border-blue-100 italic text-[10px] shrink-0">
-                      MO: {m.mo || "-"}
-                    </span>
-                    <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
-                      LE: {m.le || "-"}
-                    </span>
-                    <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
-                      L10: {m.l10 || "-"}
-                    </span>
+                  <div className="text-xs text-gray-500 flex items-center justify-between gap-1.5 font-mono flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="bg-blue-50 px-1.5 py-0.5 rounded text-blue-700 font-bold border border-blue-100 italic text-[10px] shrink-0">
+                        MO: {m.mo || "-"}
+                      </span>
+                      <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
+                        LE: {m.le || "-"}
+                      </span>
+                      <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0 inline-flex items-baseline" title="Last 10 Matches (LDW:WDL)">
+                        <L10Display l10={m.l10} showPrefix={true} />
+                      </span>
+                    </div>
                     <span className="bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 text-amber-800 font-bold text-[10px] shrink-0" title="1X2 Rating">
                       R: {(m.rating && m.rating !== "Unknown") ? m.rating : "-"}
+                    </span>
+                  </div>
+                  <div className="text-xs font-mono flex items-center justify-between gap-1.5 pb-0.5">
+                    <span className="bg-white border border-gray-300 text-gray-700 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm" title="1X2 Prediction">
+                      1X2: {m.pred1x2 || "-"}
                     </span>
                     {isCompleted && (
                       <span
@@ -3937,19 +4448,6 @@ function SeerSlipSuggester({
                         FT: {m.result}
                       </span>
                     )}
-                    {isCompleted && !isCorrect && isLocked && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOwModalMatch({ match: m, catId: baseCatId, lockedScore: (m as any).lockedOpwScore });
-                        }}
-                        className="font-bold px-1.5 py-0.5 rounded shadow-xs text-[10px] shrink-0 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 flex items-center gap-1 cursor-pointer transition"
-                        title="Slip Upset: Click to view post-mortem and protect warning penalties."
-                      >
-                        <Shield size={10} className="text-amber-700" />
-                        <span>Post-Mortem</span>
-                      </button>
-                    )}
                   </div>
                   <div className="font-bold text-sm text-gray-800 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 truncate">
@@ -3958,14 +4456,36 @@ function SeerSlipSuggester({
                       </span>
                       <span className="truncate">{m.teams}</span>
                     </div>
-                    {optScore && (
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: baseCatId, lockedScore: (m as any).lockedOpwScore }); }}
-                        className="ml-auto text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer shrink-0" 
-                        title={`${optScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
-                        <Zap size={10} />
-                        {optScore.totalScore > 0 ? `+${optScore.totalScore}` : optScore.totalScore} PTS
-                      </button>
+                    {(optScore || upsetOptScore || highestOtherOpw) && (
+                      <div className="ml-auto flex items-center gap-1 shrink-0">
+                        {optScore && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: displayCat, lockedScore: liveOptScore || (m as any).lockedOpwScore }); }}
+                            className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer shrink-0" 
+                            title={`${optScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                            <Zap size={10} />
+                            {getCategoryShortLabel(displayCat)} {optScore.totalScore > 0 ? `+${optScore.totalScore}` : optScore.totalScore} PTS
+                          </button>
+                        )}
+                        {upsetOptScore && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: 'upsets', lockedScore: upsetOptScore }); }}
+                            className="text-[10px] bg-purple-100 text-purple-800 border border-purple-300 hover:bg-purple-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer shrink-0" 
+                            title={`Underdog (UPS): ${upsetOptScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                            <Zap size={10} />
+                            UPS {upsetOptScore.totalScore > 0 ? `+${upsetOptScore.totalScore}` : upsetOptScore.totalScore} PTS
+                          </button>
+                        )}
+                        {highestOtherOpw && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: highestOtherOpw.catId, lockedScore: highestOtherOpw.score }); }}
+                            className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer shrink-0" 
+                            title={`Highest other (${getCategoryShortLabel(highestOtherOpw.catId)}): ${highestOtherOpw.score.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                            <Zap size={10} />
+                            {getCategoryShortLabel(highestOtherOpw.catId)} {highestOtherOpw.score.totalScore > 0 ? `+${highestOtherOpw.score.totalScore}` : highestOtherOpw.score.totalScore} PTS
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -3980,14 +4500,26 @@ function SeerSlipSuggester({
                     </div>
                   )}
 
-                  <div className="flex justify-between items-center mt-2 border-t pt-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase">
-                        Legacy AI (Algo)
-                      </span>
-                      <span className="font-bold text-gray-600 px-2 py-0.5 bg-gray-100 rounded text-xs">
-                        {_getAlgoPrediction(m)}
-                      </span>
+                  <div className="flex justify-between items-center mt-2 border-t pt-2 flex-wrap gap-2">
+                    <div className="flex flex-col items-start gap-0.5">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">
+                          Legacy AI (Algo)
+                        </span>
+                        <span className="font-bold text-gray-600 px-2 py-0.5 bg-gray-100 rounded text-xs">
+                          {_getAlgoPrediction(m)}
+                        </span>
+                      </div>
+                      {(() => {
+                        const cInfo = getMatchCountryAndLeague(m);
+                        if (!cInfo.display) return null;
+                        return (
+                          <span className="text-[10px] text-slate-500 font-semibold flex items-center gap-1" title={cInfo.display}>
+                            <Globe size={10} className="text-indigo-500 shrink-0" />
+                            <span className="truncate max-w-[180px] sm:max-w-none">{cInfo.display}</span>
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-1">
                       <span className={`text-[10px] font-black uppercase tracking-tighter ${isHpr ? "text-purple-600" : "text-teal-600"}`}>
@@ -4026,7 +4558,7 @@ function SeerSlipSuggester({
     const baseCatId = activeCat.id;
     const catWeights = getWeightsForCategory(baseCatId);
 
-    if (isSlipsLoading) {
+    if (isSlipsLoading || !isLocked) {
       return (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col p-8 items-center justify-center text-center">
           <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-3" />
@@ -4035,85 +4567,56 @@ function SeerSlipSuggester({
       );
     }
 
-    let matchesToShow: any[] = [];
-
-    if (isLocked) {
-      matchesToShow = lockedData.picks.map((p: any) => {
-        const pId = p.match_id?.toString() || "";
-        const pTeam = p.team || "";
-        const matchingMatch = findMatchWithResult(pId, pTeam, p.actualResult);
-        const lockedOpwScore = p.opwPoints !== undefined ? {
-          totalScore: p.opwPoints,
-          rulesHit: p.opwRulesHit || [],
-          baseInfo: p.opwBaseInfo || { points: 0, mFav: '', phaPercentage: 0, isUnderdogBase: false }
-        } : (matchingMatch?.lockedOpwScore || undefined);
-        
-        if (matchingMatch) {
-          const act = getActualResult(matchingMatch.result);
-          const finalResult = (act && act !== 'pending') ? matchingMatch.result : (p.actualResult || matchingMatch.result || "-");
-          return {
-            ...matchingMatch,
-            result: finalResult,
-            targetPrediction: p.prediction,
-            aiReason: p.reason,
-            aiConfidence: p.confidence,
-            le: matchingMatch.le || p.le || '',
-            l10: matchingMatch.l10 || p.l10 || '',
-            rating: matchingMatch.rating || p.rating || '',
-            isHprOverride: p.isHprOverride || false,
-            gs: matchingMatch.gs || p.gs || '',
-            ga: matchingMatch.ga || p.ga || '',
-            league: matchingMatch.league || p.league || '',
-            evaluatorTags: matchingMatch.evaluatorTags || p.evaluatorTags || [],
-            lockedOpwScore,
-          };
-        }
+    let matchesToShow = (lockedData?.picks || []).map((p: any) => {
+      const pId = p.match_id?.toString() || "";
+      const pTeam = p.team || "";
+      const matchingMatch = findMatchWithResult(pId, pTeam, p.actualResult);
+      const lockedOpwScore = p.opwPoints !== undefined ? {
+        totalScore: p.opwPoints,
+        rulesHit: p.opwRulesHit || [],
+        baseInfo: p.opwBaseInfo || { points: 0, mFav: '', phaPercentage: 0, isUnderdogBase: false }
+      } : (matchingMatch?.lockedOpwScore || undefined);
+      
+      if (matchingMatch) {
+        const act = getActualResult(matchingMatch.result);
+        const finalResult = (act && act !== 'pending') ? matchingMatch.result : (p.actualResult || matchingMatch.result || "-");
         return {
-          id: p.match_id,
-          teams: p.team,
-          mo: p.odds,
-          result: p.actualResult || "-",
+          ...matchingMatch,
+          result: finalResult,
           targetPrediction: p.prediction,
           aiReason: p.reason,
           aiConfidence: p.confidence,
-          le: p.le || "-",
-          l10: p.l10 || "-",
-          rating: p.rating || "-",
+          le: matchingMatch.le || p.le || '',
+          l10: matchingMatch.l10 || p.l10 || '',
+          rating: matchingMatch.rating || p.rating || '',
           isHprOverride: p.isHprOverride || false,
-          isStub: true,
-          gs: p.gs || '',
-          ga: p.ga || '',
-          league: p.league || '',
-          evaluatorTags: p.evaluatorTags || [],
+          gs: matchingMatch.gs || p.gs || '',
+          ga: matchingMatch.ga || p.ga || '',
+          league: matchingMatch.league || p.league || '',
+          evaluatorTags: matchingMatch.evaluatorTags || p.evaluatorTags || [],
           lockedOpwScore,
         };
-      });
-    } else {
-      // Unlocked: load candidate matches from algorithmic selection so user can inspect and lock new selections
-      const candidateMatches = getMatchesForCategory(matchesToProcess, baseCatId, true);
-      matchesToShow = candidateMatches.slice(0, activeCat.maxPicks || 10).map((m: any) => {
-        const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null;
-        let pred = (m as any).targetPrediction || m.seerPrediction || optScore?.optimizedPrediction || predictWithSeer(m, catWeights, phaStatsMap, matchStars, baseCatId);
-        let isHpr = m.isHprOverride || false;
-        if (optScore?.activeHedgingProtocol) {
-          pred = optScore.optimizedPrediction;
-          isHpr = true;
-        } else {
-          const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, currentDayOfWeek);
-          if (hprPred && hprPred !== pred) {
-            pred = hprPred;
-            isHpr = true;
-          }
-        }
-        return {
-          ...m,
-          targetPrediction: pred,
-          aiReason: (optScore as any)?.reason || "Algorithmic candidate selection",
-          aiConfidence: optScore?.totalScore ? `${Math.round(optScore.totalScore)}%` : "100%",
-          isHprOverride: isHpr,
-        };
-      });
-    }
+      }
+      return {
+        id: p.match_id,
+        teams: p.team,
+        mo: p.odds,
+        result: p.actualResult || "-",
+        targetPrediction: p.prediction,
+        aiReason: p.reason,
+        aiConfidence: p.confidence,
+        le: p.le || "-",
+        l10: p.l10 || "-",
+        rating: p.rating || "-",
+        isHprOverride: p.isHprOverride || false,
+        isStub: true,
+        gs: p.gs || '',
+        ga: p.ga || '',
+        league: p.league || '',
+        evaluatorTags: p.evaluatorTags || [],
+        lockedOpwScore,
+      };
+    });
 
     if (searchQuery && searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -4133,11 +4636,12 @@ function SeerSlipSuggester({
         completedCount++;
         const rawPred = m.targetPrediction || m.mlInfo?.mlPrediction || m.finalPrediction || m.rawPrediction || "1";
         let pred = ensureHedgedPrediction(rawPred, m, phaStatsMap);
-        const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null;
+        const matchDay = getMatchDayOfWeek(m) || currentDayOfWeek;
+        const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, matchDay) : null;
         if (optScore?.activeHedgingProtocol) {
           pred = optScore.optimizedPrediction;
         } else {
-          const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, currentDayOfWeek);
+          const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, matchDay);
           if (hprPred && hprPred !== pred) {
             pred = hprPred;
           }
@@ -4190,7 +4694,8 @@ function SeerSlipSuggester({
             ) : (
               <button
                 onClick={() => handleLockSlip(activeCat.id, matchesToShow.map(m => {
-                  const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null;
+                  const matchDay = getMatchDayOfWeek(m) || currentDayOfWeek;
+                  const optScore = phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, matchDay) : null;
                   return {
                     match_id: m.id,
                     team: m.teams,
@@ -4253,8 +4758,14 @@ function SeerSlipSuggester({
           ) : matchesToShow.length === 0 ? (
             <div className="col-span-full flex flex-col items-center justify-center py-20 text-center text-slate-400 italic bg-slate-50 border border-dashed border-slate-200 rounded-xl">
               <Target size={32} className="mb-2 opacity-40 mx-auto text-slate-400" />
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">No matches found</p>
-              <p className="text-[10px] text-slate-400 mt-1">There are no candidate matches in this category for {selectedDate}.</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                {isToday ? "No matches uploaded for today yet" : "No matches found"}
+              </p>
+              <p className="text-[10px] text-slate-400 mt-1">
+                {isToday 
+                  ? "Today's prediction day runs from 9:00 AM to 8:59 AM tomorrow. Upload or fetch today's matches to generate slips." 
+                  : `There are no candidate matches in this category for ${selectedDate}.`}
+              </p>
             </div>
           ) : (
             matchesToShow.slice(0, activeCat.maxPicks || 10).map((m: any, idx: number) => {
@@ -4262,15 +4773,27 @@ function SeerSlipSuggester({
               const isCompleted = actual && actual !== "pending" && !!m.result && m.result !== "Unknown" && m.result.toLowerCase() !== "unknown";
               const rawPred = m.targetPrediction || m.mlInfo?.mlPrediction || m.finalPrediction || m.rawPrediction || "1";
               let pred = ensureHedgedPrediction(rawPred, m, phaStatsMap);
-              const optScore = (m as any).lockedOpwScore
-                ? (m as any).lockedOpwScore
-                : (phaStatsMap ? getOptimizedScoreDetailed(m, baseCatId, phaStatsMap, currentDayOfWeek) : null);
+              const matchDay = getMatchDayOfWeek(m);
+              const matchTags = (m.evaluatorTags && m.evaluatorTags.length > 0)
+                ? m.evaluatorTags
+                : getMatchEvaluatorTags(m, phaStatsMap || {}, m.isJackpot || false, true, matchStars);
+              const displayCat = resolveTop20SourceCat(m, matchTags, idx, baseCatId);
+              const liveOptScore = phaStatsMap ? getOptimizedScoreDetailed(m, displayCat, phaStatsMap, matchDay) : null;
+              const optScore = liveOptScore || (m as any).lockedOpwScore;
+              const hasUpsetsTag = matchTags.some((t: string) => t.startsWith('upsets:'));
+              const isUpsetsCat = baseCatId === 'upsets' || baseCatId === 'upset' || baseCatId === 'sandbox_upsets';
+              const upsetOptScore = (!isUpsetsCat && hasUpsetsTag && phaStatsMap)
+                ? getOptimizedScoreDetailed(m, 'upsets', phaStatsMap, matchDay)
+                : null;
+              const highestOtherOpw = (isUpsetsCat && phaStatsMap)
+                ? getHighestOtherOpwScore(m, matchTags, phaStatsMap, matchDay)
+                : null;
               let isHpr = m.isHprOverride || false;
               if (optScore?.activeHedgingProtocol) {
                 pred = optScore.optimizedPrediction;
                 isHpr = true;
               } else {
-                const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, currentDayOfWeek);
+                const hprPred = applyHedgingProtocol(m, pred, baseCatId, phaStatsMap, matchDay);
                 if (hprPred && hprPred !== pred) {
                   pred = hprPred;
                   isHpr = true;
@@ -4292,18 +4815,25 @@ function SeerSlipSuggester({
                         : "bg-slate-50 border-slate-100 hover:border-indigo-200"
                   }`}
                 >
-                  <div className="text-xs text-gray-500 flex items-center gap-1.5 font-mono flex-wrap pb-0.5">
-                    <span className="bg-blue-50 px-1.5 py-0.5 rounded text-blue-700 font-bold border border-blue-100 italic text-[10px] shrink-0">
-                      MO: {m.mo || "-"}
-                    </span>
-                    <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
-                      LE: {m.le || "-"}
-                    </span>
-                    <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
-                      L10: {m.l10 || "-"}
-                    </span>
+                  <div className="text-xs text-gray-500 flex items-center justify-between gap-1.5 font-mono flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="bg-blue-50 px-1.5 py-0.5 rounded text-blue-700 font-bold border border-blue-100 italic text-[10px] shrink-0">
+                        MO: {m.mo || "-"}
+                      </span>
+                      <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0">
+                        LE: {m.le || "-"}
+                      </span>
+                      <span className="bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 text-gray-600 text-[10px] shrink-0 inline-flex items-baseline" title="Last 10 Matches (LDW:WDL)">
+                        <L10Display l10={m.l10} showPrefix={true} />
+                      </span>
+                    </div>
                     <span className="bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 text-amber-800 font-bold text-[10px] shrink-0" title="1X2 Rating">
                       R: {(m.rating && m.rating !== "Unknown") ? m.rating : "-"}
+                    </span>
+                  </div>
+                  <div className="text-xs font-mono flex items-center justify-between gap-1.5 pb-0.5">
+                    <span className="bg-white border border-gray-300 text-gray-700 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm" title="1X2 Prediction">
+                      1X2: {m.pred1x2 || "-"}
                     </span>
                     {isCompleted && (
                       <span
@@ -4323,13 +4853,37 @@ function SeerSlipSuggester({
                       #{idx + 1}
                     </span>
                     <span className="truncate">{m.teams}</span>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: baseCatId, lockedScore: (m as any).lockedOpwScore }); }}
-                      className="ml-auto text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
-                      title={`${optScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
-                      <Zap size={10} />
-                      {optScore.totalScore > 0 ? `+${optScore.totalScore}` : optScore.totalScore} PTS
-                    </button>
+                    {(optScore || upsetOptScore || highestOtherOpw) && (
+                      <div className="ml-auto flex items-center gap-1 shrink-0">
+                        {optScore && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: displayCat, lockedScore: liveOptScore || (m as any).lockedOpwScore }); }}
+                            className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
+                            title={`${optScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                            <Zap size={10} />
+                            {getCategoryShortLabel(displayCat)} {optScore.totalScore > 0 ? `+${optScore.totalScore}` : optScore.totalScore} PTS
+                          </button>
+                        )}
+                        {upsetOptScore && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: 'upsets', lockedScore: upsetOptScore }); }}
+                            className="text-[10px] bg-purple-100 text-purple-800 border border-purple-300 hover:bg-purple-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
+                            title={`Underdog (UPS): ${upsetOptScore.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                            <Zap size={10} />
+                            UPS {upsetOptScore.totalScore > 0 ? `+${upsetOptScore.totalScore}` : upsetOptScore.totalScore} PTS
+                          </button>
+                        )}
+                        {highestOtherOpw && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setOwModalMatch({ match: m, catId: highestOtherOpw.catId, lockedScore: highestOtherOpw.score }); }}
+                            className="text-[10px] bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm font-black whitespace-nowrap cursor-pointer" 
+                            title={`Highest other (${getCategoryShortLabel(highestOtherOpw.catId)}): ${highestOtherOpw.score.rulesHit?.length || 0} rules applied. Click to view breakdown.`}>
+                            <Zap size={10} />
+                            {getCategoryShortLabel(highestOtherOpw.catId)} {highestOtherOpw.score.totalScore > 0 ? `+${highestOtherOpw.score.totalScore}` : highestOtherOpw.score.totalScore} PTS
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {isLocked && m.aiReason && (
@@ -4342,14 +4896,26 @@ function SeerSlipSuggester({
                     </div>
                   )}
 
-                  <div className="flex justify-between items-center mt-2 border-t pt-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase">
-                        Legacy AI (Algo)
-                      </span>
-                      <span className="font-bold text-gray-600 px-2 py-0.5 bg-gray-100 rounded text-xs">
-                        {_getAlgoPrediction(m)}
-                      </span>
+                  <div className="flex justify-between items-center mt-2 border-t pt-2 flex-wrap gap-2">
+                    <div className="flex flex-col items-start gap-0.5">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">
+                          Legacy AI (Algo)
+                        </span>
+                        <span className="font-bold text-gray-600 px-2 py-0.5 bg-gray-100 rounded text-xs">
+                          {_getAlgoPrediction(m)}
+                        </span>
+                      </div>
+                      {(() => {
+                        const cInfo = getMatchCountryAndLeague(m);
+                        if (!cInfo.display) return null;
+                        return (
+                          <span className="text-[10px] text-slate-500 font-semibold flex items-center gap-1" title={cInfo.display}>
+                            <Globe size={10} className="text-indigo-500 shrink-0" />
+                            <span className="truncate max-w-[180px] sm:max-w-none">{cInfo.display}</span>
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-1">
                       <span className={`text-[10px] font-black uppercase tracking-tighter ${isHpr ? "text-purple-600" : "text-teal-600"}`}>
@@ -4401,77 +4967,78 @@ function SeerSlipSuggester({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="flex items-center gap-1.5 bg-slate-800/80 rounded border border-slate-700 px-2 py-1 mr-1">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full md:w-auto">
+            <div className="flex items-center gap-1.5 bg-slate-800/80 rounded border border-slate-700 px-2 py-1 flex-1 sm:flex-none">
               <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider hidden sm:inline">AI ENGINE:</span>
               <select
                 value={selectedAiModel}
                 onChange={(e) => setSelectedAiModel(e.target.value)}
                 disabled={isGeneratingAi || isSelfLearning}
-                className="bg-transparent text-[10px] font-bold text-teal-400 focus:outline-none cursor-pointer border-none p-0 pr-1 select-none"
+                className="bg-transparent text-[10px] font-bold text-teal-400 focus:outline-none cursor-pointer border-none p-0 pr-1 select-none w-full sm:w-auto"
               >
                 <option value="gemini-3.8-flash" className="bg-slate-900 text-white">Gemini 3.8 Flash High</option>
                 <option value="gemini-3.1-pro-preview" className="bg-slate-900 text-white">Gemini 3.1 PRO</option>
               </select>
             </div>
 
-            <button
-              onClick={handleGenerateSlipsWithAI}
-              disabled={isGeneratingAi || isSelfLearning}
-              className={`px-3 py-1.5 rounded text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 shadow transition-all ${
-                isGeneratingAi
-                  ? "bg-teal-700/50 text-teal-300 cursor-not-allowed"
-                  : "bg-teal-500 hover:bg-teal-600 text-slate-950 hover:scale-105 cursor-pointer"
-              }`}
-            >
-              {isGeneratingAi ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" /> GEN...
-                </>
-              ) : (
-                <>
-                  <Sparkles size={12} /> Gen Slips
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-1.5 w-full sm:w-auto flex-wrap">
+              <button
+                onClick={handleGenerateSlipsWithAI}
+                disabled={isGeneratingAi || isSelfLearning}
+                className={`flex-1 sm:flex-none px-3 py-1.5 min-h-[32px] rounded text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 shadow transition-all ${
+                  isGeneratingAi
+                    ? "bg-teal-700/50 text-teal-300 cursor-not-allowed"
+                    : "bg-teal-500 hover:bg-teal-600 text-slate-950 hover:scale-105 cursor-pointer"
+                }`}
+              >
+                {isGeneratingAi ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" /> GEN...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={12} /> Gen Slips
+                  </>
+                )}
+              </button>
 
-            <button
-              onClick={handleSelfLearn}
-              disabled={isGeneratingAi || isSelfLearning}
-              title="Performs post-match reflective audits, comparing accuracy and compiling lessons learned."
-              className={`px-3 py-1.5 rounded text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 border transition-all ${
-                isSelfLearning
-                  ? "bg-indigo-950/50 text-indigo-300 border-indigo-800 cursor-not-allowed"
-                  : "border-indigo-500 bg-indigo-950/40 hover:bg-indigo-900 text-indigo-300 hover:scale-105 cursor-pointer"
-              }`}
-            >
-              {isSelfLearning ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" /> REF...
-                </>
-              ) : (
-                <>
-                  <Brain size={12} /> Learn
-                </>
-              )}
-            </button>
+              <button
+                onClick={handleSelfLearn}
+                disabled={isGeneratingAi || isSelfLearning}
+                title="Performs post-match reflective audits, comparing accuracy and compiling lessons learned."
+                className={`flex-1 sm:flex-none px-3 py-1.5 min-h-[32px] rounded text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 border transition-all ${
+                  isSelfLearning
+                    ? "bg-indigo-950/50 text-indigo-300 border-indigo-800 cursor-not-allowed"
+                    : "border-indigo-500 bg-indigo-950/40 hover:bg-indigo-900 text-indigo-300 hover:scale-105 cursor-pointer"
+                }`}
+              >
+                {isSelfLearning ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" /> REF...
+                  </>
+                ) : (
+                  <>
+                    <Brain size={12} /> Learn
+                  </>
+                )}
+              </button>
 
-            <button
-              onClick={() => setShowLessonsPanel(!showLessonsPanel)}
-              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-            >
-              <BookOpen size={12} />
+              <button
+                onClick={() => setShowLessonsPanel(!showLessonsPanel)}
+                className="flex-1 sm:flex-none px-2.5 py-1.5 min-h-[32px] bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <BookOpen size={12} />
+                Logs ({lessonsList.length})
+              </button>
 
-              Logs ({lessonsList.length})
-            </button>
-
-            <button
-              onClick={handleWipeAndSync}
-              disabled={isGeneratingAi || isWiping}
-              className="px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900 text-red-400 hover:text-red-300 border border-red-900/30 rounded text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-            >
-              <Trash2 size={12} /> Wipe AI
-            </button>
+              <button
+                onClick={handleWipeAndSync}
+                disabled={isGeneratingAi || isWiping}
+                className="flex-1 sm:flex-none px-2.5 py-1.5 min-h-[32px] bg-red-950/40 hover:bg-red-900 text-red-400 hover:text-red-300 border border-red-900/30 rounded text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <Trash2 size={12} /> Wipe AI
+              </button>
+            </div>
           </div>
         </div>
 
@@ -4641,7 +5208,7 @@ function SeerSlipSuggester({
           phaStatsMap={phaStatsMap}
           categoryId={owModalMatch.catId}
           lockedScore={owModalMatch.lockedScore}
-          dayOverride={currentDayOfWeek}
+          dayOverride={getMatchDayOfWeek(owModalMatch.match)}
         />
       )}
     </div>

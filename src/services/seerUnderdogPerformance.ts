@@ -170,6 +170,12 @@ export const syncSeerData = async (
                   }
                 );
                 if (matchingM) {
+                  if (matchingM.l10 && matchingM.l10 !== p.l10) { p.l10 = matchingM.l10; slipChanged = true; }
+                  if (matchingM.gs && matchingM.gs !== p.gs) { p.gs = matchingM.gs; slipChanged = true; }
+                  if (matchingM.ga && matchingM.ga !== p.ga) { p.ga = matchingM.ga; slipChanged = true; }
+                  if (matchingM.le && matchingM.le !== p.le) { p.le = matchingM.le; slipChanged = true; }
+                  if (matchingM.mo && matchingM.mo !== p.odds) { p.odds = matchingM.mo; slipChanged = true; }
+                  if (matchingM.rating && matchingM.rating !== p.rating) { p.rating = matchingM.rating; slipChanged = true; }
                   const actual = getActualResult(matchingM.result);
                   if (actual && actual !== "pending") {
                     const outcome: "Pending" | "Correct" | "Incorrect" = isMatchCorrectForCategory(matchingM, p.prediction, actual, catId) ? "Correct" : "Incorrect";

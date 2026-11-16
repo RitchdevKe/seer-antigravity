@@ -7,9 +7,6 @@ const SYNC_KEYS = [
   'prm_match_stars',
   'prm_deleted_match_ids',
   'local_supreme_weights_map',
-  'optimized_weights_settings',
-  'daily_optimized_weights_settings_v5',
-  'daily_optimized_weights_meta_v5',
   'local_supreme_custom_weights'
 ];
 
@@ -170,8 +167,15 @@ export const loadFromSupabase = async (force: boolean = false) => {
         const key = row.key;
         const value = row.value;
         try {
-          // Skip stale user_storage restoration for supreme weights or heavy match blob keys
-          if (key === 'local_supreme_custom_weights' || key === 'local_supreme_weights_map' || isHeavyRedundantKey(key)) {
+          // Skip stale user_storage restoration for supreme weights, OPW calibrations, or heavy match blob keys
+          if (
+            key === 'local_supreme_custom_weights' || 
+            key === 'local_supreme_weights_map' || 
+            key === 'optimized_weights_settings' ||
+            key.startsWith('daily_optimized_weights_') ||
+            key.startsWith('seer_opw_') ||
+            isHeavyRedundantKey(key)
+          ) {
             return;
           }
 

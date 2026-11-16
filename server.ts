@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
+import * as fsSync from "fs";
 import { exec } from "child_process";
 import axios from "axios";
 import * as cheerio from "cheerio";
@@ -13,7 +14,9 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import cors from 'cors';
-import dbApi from './src/server/dbApi.js';
+import dbApi, { pgPool } from './src/server/dbApi.js';
+import { canonicalizeLeagueName, TOURNAMENT_STAGE_SUFFIX_RE } from "./src/utils/opwCommon";
+import { registerDiscoveredLeagueTrigger, BASELINE_20_LEAGUES } from "./src/utils/opwCatalog";
 
 // Support both ESM and CJS for path resolution
 // @ts-ignore
@@ -98,17 +101,27 @@ const getMatchSimilarity = (match1: string, match2: string) => {
 
 let jar = new CookieJar();
 const cookieFile = path.join(process.cwd(), 'nerdy_cookies.json');
-(async () => {
-  try {
-    const cookieData = await fs.readFile(cookieFile, 'utf-8');
+try {
+  if (fsSync.existsSync(cookieFile)) {
+    const cookieData = fsSync.readFileSync(cookieFile, 'utf-8');
     if (cookieData) {
       jar = CookieJar.fromJSON(cookieData);
-      console.log('[NERDY TIPS] Loaded saved session cookies.');
+      console.log('[NERDY TIPS] Loaded saved session cookies synchronously.');
     }
-  } catch (e) {
-    console.log('[NERDY TIPS] No saved session cookies found, starting fresh.');
   }
-})();
+} catch (e: any) {
+  console.log('[NERDY TIPS] No saved session cookies found, starting fresh:', e.message);
+}
+
+// Ensure East Africa Time (UTC+3, offset +180 min) and decimal odds cookies are ALWAYS active
+try {
+  jar.setCookieSync('tz_offset_v2=180; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+  jar.setCookieSync('timezone=Africa%2FNairobi; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+  jar.setCookieSync('timezone_manual=1; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+  jar.setCookieSync('odds_format=decimal; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+} catch (err: any) {
+  console.warn('[NERDY TIPS] Could not pre-seed timezone cookies:', err.message);
+}
 const client = wrapper(axios.create({ jar }));
 
 function getNerdyTipsDateString(targetDateStr: string): string {
@@ -149,27 +162,144 @@ interface RawScrapedMatchRow {
   gs: string;
   trust: string;
   targetDate: string;
+  league?: string;
+  country?: string;
+}
+
+function sanitizeMatchOdds(mo?: string | null): string {
+  if (!mo || mo === 'Unknown' || mo === '-') return 'Unknown';
+  const parts = String(mo)
+    .split(/[- ,]+/)
+    .map(s => s.replace(/[^0-9.]/g, '').trim())
+    .filter(s => s.length > 0 && !isNaN(parseFloat(s)) && parseFloat(s) > 0);
+  return parts.length > 0 ? parts.join(',') : 'Unknown';
+}
+
+function formatDomesticLeagueName(league?: string, country?: string, teams?: string): string {
+  if (!league) return '';
+  const canon = canonicalizeLeagueName(league, country, teams);
+  return canon.canonicalLeague;
+}
+
+let persistLeagueQueue: Promise<any> = Promise.resolve();
+
+async function persistDiscoveredLeagueTrigger(triggerName: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    persistLeagueQueue = persistLeagueQueue.then(async () => {
+      try {
+        const res = await _doPersistDiscoveredLeagueTrigger(triggerName);
+        resolve(res);
+      } catch (err: any) {
+        console.error(`[DISCOVERED LEAGUE ERROR] Failed to persist league trigger ${triggerName}:`, err.message);
+        resolve(false);
+      }
+    });
+  });
+}
+
+async function _doPersistDiscoveredLeagueTrigger(triggerName: string): Promise<boolean> {
+  if (!triggerName.startsWith("Match belongs to ") && !triggerName.startsWith("Match belong to ")) return false;
+  if (triggerName.toLowerCase().includes("unknown") || triggerName.toLowerCase().includes("leagues")) return false;
+
+  const dataDir = path.join(process.cwd(), "data");
+  const rulesFilePath = path.join(dataDir, "opw_rules.json");
+  if (!fsSync.existsSync(rulesFilePath)) return false;
+
+  try {
+    const raw = await fs.readFile(rulesFilePath, "utf-8");
+    const allRulesData = JSON.parse(raw);
+    if (!allRulesData.rules) allRulesData.rules = {};
+
+    let modified = false;
+    const isPremier = /^match belongs? to (?:english\s+)?premier\s+league$/i.test(triggerName.trim());
+    const isBaseline = BASELINE_20_LEAGUES.has(triggerName);
+
+    const mfavPts = isPremier ? 40 : (isBaseline ? 30 : 5);
+    const upsetsPts = isPremier ? 40 : (isBaseline ? 30 : 5);
+
+    const mfavCategories = ['top_12_value', 'best_bet', 'bankers_dlive', 'bankers_jackpot', 'value_picks', 'botb_best', 'top_10_value', 'top12', 'top10', 'banker', 'bankers'];
+    const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+    for (const day of days) {
+      if (!allRulesData.rules[day]) {
+        allRulesData.rules[day] = { savedAt: new Date().toISOString(), categories: {} };
+      }
+      const cats = allRulesData.rules[day].categories || {};
+
+      for (const mfavCat of mfavCategories) {
+        if (cats[mfavCat]) {
+          if (Array.isArray(cats[mfavCat].rules)) {
+            if (!cats[mfavCat].rules.some((r: any) => r.description === triggerName)) {
+              cats[mfavCat].rules.push({ description: triggerName, points: mfavPts });
+              modified = true;
+            }
+          } else if (cats[mfavCat][triggerName] === undefined) {
+            cats[mfavCat][triggerName] = mfavPts;
+            modified = true;
+          }
+        }
+      }
+
+      const upsetCats = ['upsets', 'underdog_upsets', 'underdog_only', 'upset'];
+      for (const uCat of upsetCats) {
+        if (cats[uCat]) {
+          if (Array.isArray(cats[uCat].rules)) {
+            if (!cats[uCat].rules.some((r: any) => r.description === triggerName)) {
+              cats[uCat].rules.push({ description: triggerName, points: upsetsPts });
+              modified = true;
+            }
+          } else if (cats[uCat][triggerName] === undefined) {
+            cats[uCat][triggerName] = upsetsPts;
+            modified = true;
+          }
+        }
+      }
+    }
+
+    if (modified) {
+      const tempPath = `${rulesFilePath}.tmp.${Date.now()}.${Math.random().toString(36).substring(2)}`;
+      await fs.writeFile(tempPath, JSON.stringify(allRulesData, null, 2), "utf-8");
+      await fs.rename(tempPath, rulesFilePath);
+      console.log(`[DISCOVERED LEAGUE] Persisted "${triggerName}" with Mfav: ${mfavPts}, Upsets: ${upsetsPts} to opw_rules.json`);
+    }
+    return true;
+  } catch (err: any) {
+    console.error(`[DISCOVERED LEAGUE ERROR] Failed to persist league trigger ${triggerName}:`, err.message);
+    return false;
+  }
+}
+
+function getTodayEATString(): string {
+  const now = new Date();
+  const eatDate = new Date(now.getTime() + (3 * 3600 * 1000));
+  return eatDate.toISOString().split('T')[0];
+}
+
+function getDayOffsetEAT(targetDateStr: string): number {
+  const todayEatStr = getTodayEATString();
+  const [ty, tm, td] = todayEatStr.split('-').map(Number);
+  const todayEatUtc = new Date(Date.UTC(ty, tm - 1, td));
+  const [y, m, d] = targetDateStr.split('-').map(Number);
+  const targetUtc = new Date(Date.UTC(y, m - 1, d));
+  return Math.round((targetUtc.getTime() - todayEatUtc.getTime()) / (1000 * 3600 * 24));
 }
 
 function getDayOffset(targetDateStr: string): number {
-  const now = new Date();
-  const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const [y, m, d] = targetDateStr.split('-').map(Number);
-  const targetUtc = new Date(Date.UTC(y, m - 1, d));
-  return Math.round((targetUtc.getTime() - todayUtc.getTime()) / (1000 * 3600 * 24));
+  return getDayOffsetEAT(targetDateStr);
 }
 
 async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promise<RawScrapedMatchRow[]> {
   const offset = getDayOffset(targetDate);
-  const pageUrl = offset !== 0 
-    ? `https://nerdytips.com/all-matches?d=${offset}`
-    : `https://nerdytips.com/all-matches`;
+  const pageUrl = `https://nerdytips.com/all-matches?d=${offset}`;
 
   console.log(`[NERDY SCRAPER] Fetching page ${pageUrl} for date ${targetDate} (offset ${offset})...`);
   let pageRes;
   try {
     pageRes = await client.get(pageUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Cookie': 'tz_offset_v2=180; timezone=Africa%2FNairobi; timezone_manual=1; odds_format=decimal'
+      }
     });
   } catch (e: any) {
     console.error(`[NERDY SCRAPER] Failed to load ${pageUrl}:`, e.message);
@@ -177,27 +307,107 @@ async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promi
   }
 
   const $ = cheerio.load(pageRes.data);
-  const initialRows = $('a[href*="/match-details/"]').toArray();
-  const groupKeys: string[] = [];
-  $('[data-lg-k]').each((_, el) => {
-    const k = $(el).attr('data-lg-k');
-    if (k) groupKeys.push(k);
+
+  // Check rendered timezone offset on html[data-server-tz]
+  const serverTzAttr = $('html').attr('data-server-tz');
+  const serverTzMinutes = serverTzAttr ? parseInt(serverTzAttr, 10) : 180;
+  const tzDiffHours = (180 - (isNaN(serverTzMinutes) ? 180 : serverTzMinutes)) / 60;
+
+  // Map every group key to its league and country from the page headers
+  const groupMeta: Record<string, { league: string; country: string }> = {};
+
+  interface ScrapedEntry {
+    html: string;
+    league?: string;
+    country?: string;
+  }
+  const allRowEntries: ScrapedEntry[] = [];
+  const seenInitialUrls = new Set<string>();
+
+  // 1. Iterate over every .group container on the page (excluding promotional containers like #lg-free)
+  $('.group').each((_, el) => {
+    const groupEl = $(el);
+    if (groupEl.closest('#lg-free').length > 0 || groupEl.is('#lg-free')) return;
+
+    const k = groupEl.attr('data-lg-k') || groupEl.find('[data-lg-k]').attr('data-lg-k');
+    let league = groupEl.find('.lgl .text-heading, .lgl h3, [data-lg-head] .text-heading, .league-title, .competition-title').first().text().trim();
+    let country = groupEl.find('.lgl .text-muted, [data-lg-head] .text-muted, .country-name').first().text().trim();
+    if (!country) {
+      const flagSrc = groupEl.find('img[src*="flags"]').attr('src') || '';
+      const flagM = flagSrc.match(/flags\/([^\/.]+)\.svg/i);
+      if (flagM) country = decodeURIComponent(flagM[1]).replace(/_/g, ' ');
+    }
+    if (!league) {
+      league = groupEl.find('.lgl').first().text().trim();
+    }
+    if (!country && league) {
+      if (league.includes(':')) {
+        const parts = league.split(':');
+        country = parts[0].trim();
+        league = parts.slice(1).join(':').trim();
+      } else if (league.includes(' - ')) {
+        const parts = league.split(' - ');
+        const rightSide = parts.slice(1).join(' - ').trim();
+        if (!TOURNAMENT_STAGE_SUFFIX_RE.test(rightSide)) {
+          country = parts[0].trim();
+          league = rightSide;
+        }
+      }
+    }
+
+    if (league.toLowerCase().includes("free prediction")) return;
+
+    if (k) {
+      groupMeta[k] = { league, country };
+    }
+
+    groupEl.find('a[href*="/match-details/"]').each((_, matchEl) => {
+      const u = $(matchEl).attr('href');
+      if (u) seenInitialUrls.add(u);
+      allRowEntries.push({
+        html: $.html(matchEl),
+        league: league || undefined,
+        country: country || undefined
+      });
+    });
   });
 
-  const allRowHtmlList: string[] = initialRows.map(el => $.html(el));
+  // Also catch any standalone [data-lg-k] elements that may not have used .group
+  $('[data-lg-k]').each((_, el) => {
+    const k = $(el).attr('data-lg-k');
+    if (!k || groupMeta[k]) return;
+    const groupEl = $(el).closest('.group').length ? $(el).closest('.group') : $(el).parent();
+    let league = groupEl.find('.lgl .text-heading, .lgl h3, [data-lg-head] .text-heading, .league-title, .competition-title').first().text().trim();
+    let country = groupEl.find('.lgl .text-muted, [data-lg-head] .text-muted, .country-name').first().text().trim();
+    if (league) groupMeta[k] = { league, country };
+  });
+
+  // Include any initial match-details outside .group containers
+  $('a[href*="/match-details/"]').each((_, el) => {
+    if ($(el).closest('#lg-free').length > 0) return;
+    const u = $(el).attr('href');
+    if (u && !seenInitialUrls.has(u)) {
+      seenInitialUrls.add(u);
+      const parentGroup = $(el).closest('.group, [data-lg-head], section');
+      const pLeague = parentGroup.find('.lgl .text-heading, .text-heading').first().text().trim() || undefined;
+      const pCountry = parentGroup.find('.lgl .text-muted, .text-muted').first().text().trim() || undefined;
+      allRowEntries.push({ html: $.html(el), league: pLeague, country: pCountry });
+    }
+  });
+
+  const groupKeys: string[] = Object.keys(groupMeta);
 
   if (groupKeys.length > 0) {
     const chunkPromises = [];
-    for (let i = 0; i < groupKeys.length; i += 40) {
-      const chunk = groupKeys.slice(i, i + 40);
-      const rowsUrl = offset !== 0
-        ? `https://nerdytips.com/all-matches/rows?d=${offset}&g=${encodeURIComponent(chunk.join(','))}`
-        : `https://nerdytips.com/all-matches/rows?g=${encodeURIComponent(chunk.join(','))}`;
+    for (let i = 0; i < groupKeys.length; i += 20) {
+      const chunk = groupKeys.slice(i, i + 20);
+      const rowsUrl = `https://nerdytips.com/all-matches/rows?d=${offset}&g=${encodeURIComponent(chunk.join(','))}`;
 
       chunkPromises.push(client.get(rowsUrl, {
         headers: {
           'X-Requested-With': 'XMLHttpRequest',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Cookie': 'tz_offset_v2=180; timezone=Africa%2FNairobi; timezone_manual=1; odds_format=decimal'
         }
       }).catch((err: any) => {
         console.error(`[NERDY SCRAPER] Failed rows chunk:`, err.message);
@@ -209,29 +419,64 @@ async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promi
     for (const cRes of chunkResults) {
       if (cRes?.data?.groups) {
         for (const gk of Object.keys(cRes.data.groups)) {
+          const meta = groupMeta[gk] || { league: '', country: '' };
           const $g = cheerio.load(cRes.data.groups[gk]);
           $g('a[href*="/match-details/"]').each((_, el) => {
-            allRowHtmlList.push($g.html(el));
+            allRowEntries.push({
+              html: $g.html(el),
+              league: meta.league || undefined,
+              country: meta.country || undefined
+            });
           });
         }
       }
     }
   }
 
-  console.log(`[NERDY SCRAPER] Date ${targetDate}: Collected ${allRowHtmlList.length} total matches from NerdyTips`);
+  console.log(`[NERDY SCRAPER] Date ${targetDate}: Collected ${allRowEntries.length} total matches from NerdyTips`);
+
+  // Deduplicate row entries, strictly prioritizing entries that have explicit league metadata
+  const entriesByUrl = new Map<string, ScrapedEntry>();
+  for (const rowEntry of allRowEntries) {
+    const $row = cheerio.load(rowEntry.html);
+    const u = $row('a').first().attr('href') || '';
+    if (!u) continue;
+    const existing = entriesByUrl.get(u);
+    if (!existing || (!existing.league && rowEntry.league)) {
+      entriesByUrl.set(u, rowEntry);
+    }
+  }
 
   const results: RawScrapedMatchRow[] = [];
   const seenUrls = new Set<string>();
 
-  for (const rawHtml of allRowHtmlList) {
+  for (const rowEntry of entriesByUrl.values()) {
+    const rawHtml = rowEntry.html;
     const $row = cheerio.load(rawHtml);
     const root = $row('a').first();
     const matchUrl = root.attr('href') || '';
     if (matchUrl && seenUrls.has(matchUrl)) continue;
     if (matchUrl) seenUrls.add(matchUrl);
 
-    const time = root.find('.tb-mrow__date [data-time], .nt-time [data-time]').text().trim() || 
-                 root.find('.tb-mrow__date, .nt-time').text().trim().replace(/[^0-9:]/g, '');
+    // True kickoff time on root data-kick attribute, converted to EAT (UTC+3)
+    let dataKick = (root.attr('data-kick') || root.find('[data-kick]').attr('data-kick') || '').trim();
+    if (dataKick && dataKick.includes(':') && tzDiffHours !== 0) {
+      try {
+        const [dh, dm] = dataKick.split(':').map(Number);
+        if (!isNaN(dh) && !isNaN(dm)) {
+          let adjustedH = Math.round(dh + tzDiffHours);
+          adjustedH = (adjustedH % 24 + 24) % 24;
+          dataKick = `${adjustedH.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
+        }
+      } catch (e) {}
+    }
+
+    const time = (dataKick && dataKick.includes(':'))
+      ? dataKick
+      : (root.find('.tb-mrow__date [data-time], .nt-time [data-time]').attr('data-time') ||
+         root.find('.tb-mrow__date [data-time], .nt-time [data-time]').text().trim() || 
+         root.find('.tb-mrow__date, .nt-time').text().trim().replace(/[^0-9:]/g, ''));
+
     const teamLines = root.find('.tb-teamline, .nt-tl');
     let teamA = $row(teamLines[0]).find('.tb-tname, .nt-nm-l, .nt-nm-x').first().text().trim();
     if (!teamA) teamA = $row(teamLines[0]).find('.nt-nm').first().text().trim();
@@ -240,19 +485,34 @@ async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promi
     if (!teamB) teamB = $row(teamLines[1]).find('.nt-nm').first().text().trim();
     if (!teamA || !teamB) continue;
 
-    const scoreH = $row(teamLines[0]).find('.tb-hs, .nt-sc').text().trim();
-    const scoreA = $row(teamLines[1]).find('.tb-hs, .nt-sc').text().trim();
+    let scoreH = root.find('[data-score-h]').first().text().trim() || $row(teamLines[0]).find('.tb-hs, .nt-sc, .tb-score, .score').first().text().trim();
+    let scoreA = root.find('[data-score-a]').first().text().trim() || $row(teamLines[1]).find('.tb-hs, .nt-sc, .tb-score, .score').first().text().trim();
+    if (!scoreH || !scoreA) {
+      const rowScoreMatch = root.text().match(/\b(\d+)\s*[-:]\s*(\d+)\b/);
+      if (rowScoreMatch && (root.text().includes('FT') || root.find('.tb-ft, .is-ft').length > 0)) {
+        scoreH = rowScoreMatch[1];
+        scoreA = rowScoreMatch[2];
+      }
+    }
     let result = "";
     if (scoreH && scoreA) result = `${scoreH}:${scoreA}`;
 
-    const odds = root.find('.tb-odd__pill, .tb-odd').map((_, o) => $row(o).text().trim().replace(/[▴▾]/g, '')).toArray();
+    const cleanOdd = (raw: string): string => {
+      const cleaned = String(raw || '').replace(/[^0-9.]/g, '').trim();
+      const n = parseFloat(cleaned);
+      return (!isNaN(n) && n > 0) ? cleaned : '';
+    };
+    const odds = root.find('.tb-odd__pill, .tb-odd').map((_, o) => cleanOdd($row(o).text())).toArray().filter(Boolean);
     const [odd1, oddX, odd2] = odds;
     const mo = [odd1, oddX, odd2].filter(Boolean).join(',') || "Unknown";
 
     // 1X2 pick & confidence/rating on the match row
     const pickScoreEl = root.find('.tbm-pickscore');
     const pickCells = root.find('.tb-mcell__pick').map((_, c) => $row(c).text().trim()).toArray();
-    let pred1x2Raw = pickScoreEl.find('.tb-mcell__pick').text().trim() || pickCells[0] || root.find('.tb-tip').text().trim();
+    let pred1x2Raw = pickScoreEl.find('.tb-mcell__pick').text().trim() ||
+                     pickScoreEl.find('.tb-mcell__val').text().trim() ||
+                     pickScoreEl.text().trim() ||
+                     pickCells[0] || root.find('.tb-tip').text().trim();
     let pred1x2 = normalize1x2(pred1x2Raw, teamA, teamB) || "";
 
     let rating1x2 = "Unknown";
@@ -270,19 +530,32 @@ async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promi
       }
     }
 
-    // Check best tip cell if 1X2 is still empty
+    // Check best tip cell if 1X2 is still empty or contains double chance tip
+    const bestTipEl = root.find('.tbm-besttip');
+    const bestTipPick = bestTipEl.find('.tb-mcell__pick').text().trim();
+    const normBest = normalize1x2(bestTipPick, teamA, teamB);
+    const bestTipTt = bestTipEl.attr('data-tt') || "";
+    const bestTtMatch = bestTipTt.match(/best tip is ([^\s]+) with (?:a )?trust of ([0-9.]+)\/10/i) || bestTipTt.match(/best tip is ([^\s]+) with/i);
+    const normBestTt = bestTtMatch ? normalize1x2(bestTtMatch[1], teamA, teamB) : null;
+    const bestRatingVal = bestTtMatch && bestTtMatch[2] ? `${bestTtMatch[2]}/10` : "Unknown";
+
     if (!pred1x2) {
-      const bestTipEl = root.find('.tbm-besttip');
-      const bestTipPick = bestTipEl.find('.tb-mcell__pick').text().trim();
-      const normBest = normalize1x2(bestTipPick, teamA, teamB);
       if (normBest) {
         pred1x2 = normBest;
-      } else {
-        const bestTipTt = bestTipEl.attr('data-tt') || "";
-        const bestTtMatch = bestTipTt.match(/best tip is ([^\s]+) with/i);
-        if (bestTtMatch) {
-          const normBestTt = normalize1x2(bestTtMatch[1], teamA, teamB);
-          if (normBestTt) pred1x2 = normBestTt;
+        if (rating1x2 === "Unknown" && bestRatingVal !== "Unknown") rating1x2 = bestRatingVal;
+      } else if (normBestTt) {
+        pred1x2 = normBestTt;
+        if (rating1x2 === "Unknown" && bestRatingVal !== "Unknown") rating1x2 = bestRatingVal;
+      }
+    }
+
+    // Check all pick cells in the row for 1X or X2 double chance if 1X2 is still empty
+    if (!pred1x2) {
+      for (const cellText of pickCells) {
+        const normCell = normalize1x2(cellText, teamA, teamB);
+        if (normCell) {
+          pred1x2 = normCell;
+          break;
         }
       }
     }
@@ -292,6 +565,12 @@ async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promi
 
     const trustVal = root.find('.tb-trust__val').first().text().trim() || root.find('.am-meta__conf').first().text().trim();
     const trust = trustVal ? `${trustVal}/10` : (root.find('.tb-trust, .tb-conf').text().trim().replace(/Confidence/g, '').trim() || "Unknown");
+
+    let rowLeague = rowEntry.league;
+    let rowCountry = rowEntry.country;
+    if (rowLeague) {
+      rowLeague = formatDomesticLeagueName(rowLeague, rowCountry);
+    }
 
     results.push({
       html: rawHtml,
@@ -308,7 +587,9 @@ async function scrapeAllMatchRowsForDate(client: any, targetDate: string): Promi
       rating1x2,
       gs,
       trust,
-      targetDate
+      targetDate,
+      league: rowLeague,
+      country: rowCountry
     });
   }
 
@@ -449,13 +730,13 @@ function parseOdd(str: string | undefined | null): number {
 
 function normalize1x2(val: string | undefined | null, teamA?: string, teamB?: string): string | null {
   if (!val) return null;
-  const clean = val.trim();
+  const clean = val.replace(/[\u25BC\u25B2\u25BE\u25B4\u25B6\u25C0\u25BD\u25B3▼▲▾▴\r\n\t]+/g, ' ').trim();
   const upper = clean.toUpperCase();
 
   // 1. Direct match with ALLOWED_1X2 ('1', 'X', '2', '1X', 'X2')
   if (ALLOWED_1X2.includes(upper)) return upper;
 
-  // 2. Starts with 1X or X2 (e.g. "1X1.45", "1X▾1.45", "1X & Over 1.5", "1X (1.45)", "1X/Under 3.5")
+  // 2. Starts with 1X or X2 (e.g. "1X1.45", "1X & Over 1.5", "1X (1.45)", "1X/Under 3.5")
   if (/^1X\b|^1X[^a-zA-Z]/i.test(upper) || upper.startsWith('1X')) {
     return '1X';
   }
@@ -490,19 +771,89 @@ function normalize1x2(val: string | undefined | null, teamA?: string, teamB?: st
   }
 
   // 6. Direct single 1, X, 2 (starts with 1, X, 2 followed by non-alpha/odds or word boundary)
-  if (/^1\b|^1[▾▴]|^1[0-9]\./i.test(upper) && !/^1X/i.test(upper)) {
+  if (/^1\b|^1[0-9]\./i.test(upper) && !/^1X/i.test(upper)) {
     return '1';
   }
-  if (/^X\b|^X[▾▴]|^X[0-9]\./i.test(upper) && !/^X2/i.test(upper)) {
+  if (/^X\b|^X[0-9]\./i.test(upper) && !/^X2/i.test(upper)) {
     return 'X';
   }
-  if (/^2\b|^2[▾▴]|^2[0-9]\./i.test(upper)) {
+  if (/^2\b|^2[0-9]\./i.test(upper)) {
     return '2';
   }
 
   // 7. General regex for standalone 1X, X2, 1, X, 2
   const m = upper.match(/(?<![\.\/]\s*)\b(1X|X2|1|X|2)\b(?!\s*[\.\/])/i);
   if (m && ALLOWED_1X2.includes(m[1].toUpperCase())) return m[1].toUpperCase();
+
+  return null;
+}
+
+/**
+ * Resilient date parser for H2H Last Encounter (LE) records.
+ * Supports:
+ * - "MMM DD, YY" or "MMM DD, YYYY" (e.g. "Jul 11, 26" or "Nov 28, 25")
+ * - "DD MMM, YY" or "DD MMM YYYY" (e.g. "11 Jul 2026")
+ * - "DD.MM.YYYY" or "DD/MM/YYYY" or "DD-MM-YYYY" (e.g. "11.07.2026")
+ * - "YYYY-MM-DD"
+ */
+function parseH2HDate(dateStr: string | undefined | null): Date | null {
+  if (!dateStr) return null;
+  const clean = dateStr.trim();
+  if (!clean || clean === '-' || clean === 'NA') return null;
+
+  // Support unix timestamp in seconds (10 digits) or ms (13 digits) e.g. data-nt-dt="1793754000"
+  if (/^\d{10,13}$/.test(clean)) {
+    const ts = parseInt(clean, 10);
+    const d = new Date(clean.length === 10 ? ts * 1000 : ts);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Try standard parse
+  let d = new Date(clean);
+  if (!isNaN(d.getTime())) return d;
+
+  // Try "DD.MM.YYYY" or "DD/MM/YYYY" or "DD.MM.YY" from anywhere in string
+  const dmyMatch = clean.match(/(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{2,4})/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10) - 1;
+    let year = parseInt(dmyMatch[3], 10);
+    if (year < 100) year += 2000;
+    d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Try "MMM DD, YY" or "MMM DD, YYYY" or "MMM DD" (e.g. "Jul 11, 26" or "Nov 04")
+  const mdyMatch = clean.match(/([a-zA-Z]{3,})\s+(\d{1,2})(?:,?\s*['\u2019]?(\d{2,4}))?/);
+  if (mdyMatch) {
+    const monthStr = mdyMatch[1];
+    const day = parseInt(mdyMatch[2], 10);
+    let year = mdyMatch[3] ? parseInt(mdyMatch[3], 10) : new Date().getFullYear();
+    if (year < 100) year += 2000;
+    d = new Date(`${monthStr} ${day}, ${year}`);
+    if (!isNaN(d.getTime())) {
+      if (d > new Date()) {
+        d.setFullYear(d.getFullYear() - 1);
+      }
+      return d;
+    }
+  }
+
+  // Try "DD MMM, YY" or "DD MMM YYYY" or "DD MMM" (e.g. "11 Jul 26" or "24 Oct")
+  const dmyAlpha = clean.match(/(\d{1,2})\s+([a-zA-Z]{3,})(?:,?\s*['\u2019]?(\d{2,4}))?/);
+  if (dmyAlpha) {
+    const day = parseInt(dmyAlpha[1], 10);
+    const monthStr = dmyAlpha[2];
+    let year = dmyAlpha[3] ? parseInt(dmyAlpha[3], 10) : new Date().getFullYear();
+    if (year < 100) year += 2000;
+    d = new Date(`${monthStr} ${day}, ${year}`);
+    if (!isNaN(d.getTime())) {
+      if (d > new Date()) {
+        d.setFullYear(d.getFullYear() - 1);
+      }
+      return d;
+    }
+  }
 
   return null;
 }
@@ -523,6 +874,9 @@ async function scrapeNerdyMatchDetails(
   le: string;
   pred1x2: string;
   rating1x2: string;
+  league?: string;
+  country?: string;
+  kickoffIso?: string;
   fetchError: string | null;
   attemptsMade: number;
 }> {
@@ -530,7 +884,7 @@ async function scrapeNerdyMatchDetails(
   let ga = "Unknown";
   let l10 = "Unknown";
   let le = "Unknown";
-  let pred1x2 = normalize1x2(initialPred1x2) || "";
+  let pred1x2 = normalize1x2(initialPred1x2, teamA, teamB) || "";
   let rating1x2 = (initialRating1x2 && initialRating1x2 !== "Unknown") ? initialRating1x2 : "Unknown";
   let fetchError: string | null = null;
 
@@ -564,6 +918,58 @@ async function scrapeNerdyMatchDetails(
       let bestTip = "Unknown";
       let bestRating = "Unknown";
       let betBuilderTip = "Unknown";
+      let detailsLeague: string | undefined = undefined;
+      let detailsCountry: string | undefined = undefined;
+      // Exact kickoff (UTC) from the SportsEvent JSON-LD on the match page
+      let detailsKickoffIso: string | undefined = undefined;
+      {
+        const sm = String(detailsPage.data).match(/"@type"\s*:\s*"SportsEvent"[\s\S]*?"startDate"\s*:\s*"([^"]+)"/);
+        if (sm && !isNaN(new Date(sm[1]).getTime())) detailsKickoffIso = sm[1];
+      }
+
+      // Extract league and country directly from details header (top pill with flag):
+      {
+        const lglPill = $details('a.lgl').first();
+        const pillTxt = lglPill.text().trim().replace(/\s+/g, ' ');
+        if (pillTxt && !/\bvs\b/i.test(pillTxt)) {
+          detailsLeague = pillTxt;
+          const flagAlt = (lglPill.parent().find('img[alt]').first().attr('alt') || '').trim();
+          if (flagAlt) detailsCountry = flagAlt;
+        }
+      }
+      $details('span.truncate, a.mb-3').each((_, el) => {
+        const txt = $details(el).text().trim().replace(/\s+/g, ' ');
+        if (txt.includes(' - ') && !txt.includes('vs') && !txt.includes(':')) {
+          const parts = txt.split(' - ');
+          if (parts.length === 2 && !detailsLeague) {
+            const rightSide = parts[1].trim();
+            if (TOURNAMENT_STAGE_SUFFIX_RE.test(rightSide)) {
+              detailsLeague = txt;
+            } else {
+              detailsCountry = parts[0].replace(/[^a-zA-Z\s]/g, '').trim();
+              detailsLeague = rightSide;
+            }
+          }
+        }
+      });
+
+      if (!detailsLeague) {
+        const lglPill = $details('a.lgl').first();
+        if (lglPill.length) {
+          detailsLeague = lglPill.text().trim();
+        }
+      }
+
+      if (!detailsLeague) {
+        $details('nav a, header a, a.hover\\:text-lavender').each((_, el) => {
+          const href = $details(el).attr('href') || '';
+          const txt = $details(el).text().trim();
+          if (txt && !['home', 'leagues', 'all matches', 'bankers'].includes(txt.toLowerCase()) && 
+              (href.includes('league') || href.includes('championship') || href.includes('cup') || href.includes('division'))) {
+            detailsLeague = txt;
+          }
+        });
+      }
 
       // 1. New Tailwind layout: .md-ps__row (Stats Predictions & Averages)
       $details('.md-ps__row').each((_, el) => {
@@ -586,20 +992,17 @@ async function scrapeNerdyMatchDetails(
             currentGs = `${h}:${a}`;
           } else if (lbl === 'goals against' || lbl.includes('goals against') || lbl.includes('conceded')) {
             currentGa = `${h}:${a}`;
-          } else if ((lbl === 'wins' || lbl.includes('wins')) && currentL10 === 'Unknown') {
-            currentL10 = `${h}:${a}`;
           }
         }
       });
 
-      // 2. Extract L10: count wins (W) in last 10 matches for each team under Recent Matches (.md-formcol)
+      // 2. Extract L10: count losses (L), draws (D), wins (W) in last 10 matches for each team under Recent Matches (.md-formcol)
       if (currentL10 === 'Unknown') {
         const formCols = $details('.md-formcol, [data-formcol]');
         if (formCols.length >= 2) {
-          let homeWins = 0;
-          let awayWins = 0;
-          let homeRowsCount = 0;
-          let awayRowsCount = 0;
+          let homeWins = 0, homeDraws = 0, homeLosses = 0;
+          let awayWins = 0, awayDraws = 0, awayLosses = 0;
+          let homeRowsCount = 0, awayRowsCount = 0;
 
           // Home Team: formCols[0]
           $details(formCols[0]).find('.md-formrow').slice(0, 10).each((_, row) => {
@@ -608,6 +1011,10 @@ async function scrapeNerdyMatchDetails(
             const rowClass = $details(row).attr('class') || '';
             if (badge === 'W' || rowClass.includes('md-formrow--w') || $details(row).find('.tm-form--w').length > 0) {
               homeWins++;
+            } else if (badge === 'D' || rowClass.includes('md-formrow--d') || $details(row).find('.tm-form--d').length > 0) {
+              homeDraws++;
+            } else if (badge === 'L' || rowClass.includes('md-formrow--l') || $details(row).find('.tm-form--l').length > 0) {
+              homeLosses++;
             }
           });
 
@@ -618,31 +1025,47 @@ async function scrapeNerdyMatchDetails(
             const rowClass = $details(row).attr('class') || '';
             if (badge === 'W' || rowClass.includes('md-formrow--w') || $details(row).find('.tm-form--w').length > 0) {
               awayWins++;
+            } else if (badge === 'D' || rowClass.includes('md-formrow--d') || $details(row).find('.tm-form--d').length > 0) {
+              awayDraws++;
+            } else if (badge === 'L' || rowClass.includes('md-formrow--l') || $details(row).find('.tm-form--l').length > 0) {
+              awayLosses++;
             }
           });
 
           if (homeRowsCount > 0 || awayRowsCount > 0) {
-            currentL10 = `${homeWins}:${awayWins}`;
+            currentL10 = `${homeLosses};${homeDraws};${homeWins}:${awayWins};${awayDraws};${awayLosses}`;
           }
         }
 
-        // Fallback: If .md-formcol was not found, check .md-formdots (count Ws in form dots)
+        // Fallback: If .md-formcol was not found, check .md-formdots (count L, D, W in form dots)
         if (currentL10 === 'Unknown') {
           const dotsCols = $details('.md-formdots');
           if (dotsCols.length >= 2) {
-            let hWins = 0;
-            let aWins = 0;
-            $details(dotsCols[0]).find('.tm-form').each((_, f) => {
-              if ($details(f).text().trim().toUpperCase() === 'W' || ($details(f).attr('class') || '').includes('tm-form--w')) {
-                hWins++;
-              }
+            let hWins = 0, hDraws = 0, hLosses = 0;
+            let aWins = 0, aDraws = 0, aLosses = 0;
+            let hCount = 0, aCount = 0;
+
+            $details(dotsCols[0]).find('.tm-form').slice(0, 10).each((_, f) => {
+              hCount++;
+              const t = $details(f).text().trim().toUpperCase();
+              const c = $details(f).attr('class') || '';
+              if (t === 'W' || c.includes('tm-form--w')) hWins++;
+              else if (t === 'D' || c.includes('tm-form--d')) hDraws++;
+              else if (t === 'L' || c.includes('tm-form--l')) hLosses++;
             });
-            $details(dotsCols[1]).find('.tm-form').each((_, f) => {
-              if ($details(f).text().trim().toUpperCase() === 'W' || ($details(f).attr('class') || '').includes('tm-form--w')) {
-                aWins++;
-              }
+
+            $details(dotsCols[1]).find('.tm-form').slice(0, 10).each((_, f) => {
+              aCount++;
+              const t = $details(f).text().trim().toUpperCase();
+              const c = $details(f).attr('class') || '';
+              if (t === 'W' || c.includes('tm-form--w')) aWins++;
+              else if (t === 'D' || c.includes('tm-form--d')) aDraws++;
+              else if (t === 'L' || c.includes('tm-form--l')) aLosses++;
             });
-            currentL10 = `${hWins}:${aWins}`;
+
+            if (hCount > 0 || aCount > 0) {
+              currentL10 = `${hLosses};${hDraws};${hWins}:${aWins};${aDraws};${aLosses}`;
+            }
           }
         }
       }
@@ -666,36 +1089,251 @@ async function scrapeNerdyMatchDetails(
         });
       }
 
-      // 4. Extract H2H / Latest Encounter (LE) in new (.md-rm) or old (#h2h) layout
-      const latestMatch = $details('.md-rm, .md-rm--static, #h2h .table-latest-matches tr').first();
-      if (latestMatch.length > 0) {
-        const dateText = latestMatch.find('.md-rm__date, sup').text().trim();
-        const homeTeamName = latestMatch.find('.md-rm__team').first().find('.md-rm__name').text().trim() || latestMatch.find('td').eq(0).text().trim();
-        const homeScore = latestMatch.find('.md-rm__team').first().find('.md-rm__score').text().trim() || latestMatch.find('.y-score').text().trim().split(':')[0];
-        const awayScore = latestMatch.find('.md-rm__team').last().find('.md-rm__score').text().trim() || latestMatch.find('.y-score').text().trim().split(':')[1];
-        
-        if (homeScore && awayScore) {
-          let matchYear = new Date().getFullYear();
-          const yrMatch = dateText.match(/,\s*(\d{2,4})$/);
-          if (yrMatch) {
-            const y = parseInt(yrMatch[1]);
-            matchYear = y < 100 ? 2000 + y : y;
-          }
-          const matchDate = new Date(`${dateText} ${matchYear}`);
-          const oneYearAgo = new Date();
-          oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-          
-          if (!dateText || isNaN(matchDate.getTime()) || matchDate >= oneYearAgo) {
-            const normHome = homeTeamName.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const normTeamA = teamA.toLowerCase().replace(/[^a-z0-9]/g, '');
-            let prefix = (normHome && normTeamA && (normHome.includes(normTeamA) || normTeamA.includes(normHome))) ? 'A' : 'B';
-            currentLe = `${prefix}${homeScore}:${awayScore}`;
-          } else {
-            currentLe = "NA";
-          }
-        } else {
-          currentLe = "NA";
+      // 4. Extract H2H / Latest Encounter (LE) with robust 1-year date verification
+      const ONE_YEAR_MS = 370 * 24 * 3600 * 1000;
+      const refMs = detailsKickoffIso && !isNaN(Date.parse(detailsKickoffIso))
+        ? Date.parse(detailsKickoffIso)
+        : Date.now();
+
+      interface EncounterCandidate {
+        homeTeam: string;
+        awayTeam: string;
+        homeScore: string;
+        awayScore: string;
+        dateText: string;
+        dateObj: Date | null;
+        prefix?: 'A' | 'B';
+      }
+      const candidates: EncounterCandidate[] = [];
+
+      const normA = teamA.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normB = teamB.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      const h2hHomeHeader = (
+        $details('#h2h .md-hq__teams .md-hq__team--h, #h2h .md-hq__team--h').first().text().trim() ||
+        $details('#h2h .md-hq__lhead .md-hq__lh').first().find('.md-hq__lh-l').text().trim() ||
+        teamA
+      ).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const h2hAwayHeader = (
+        $details('#h2h .md-hq__teams .md-hq__team--a, #h2h .md-hq__team--a').first().text().trim() ||
+        $details('#h2h .md-hq__lhead .md-hq__lh').last().find('.md-hq__lh-l').text().trim() ||
+        teamB
+      ).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      const resolvePrefix = (hTeamStr: string, aTeamStr: string, hScoreStr: string, aScoreStr: string, chipCol: number): 'A' | 'B' => {
+        const hs = parseInt(hScoreStr, 10);
+        const as = parseInt(aScoreStr, 10);
+        // Deterministic 3-lane resolution for non-draws in #h2h .md-hq__lr
+        if (!isNaN(hs) && !isNaN(as) && hs !== as) {
+          if (chipCol === 0) return hs > as ? 'A' : 'B';
+          if (chipCol === 2) return hs > as ? 'B' : 'A';
         }
+        const normH = (hTeamStr || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const normAT = (aTeamStr || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (normH) {
+          if ((h2hAwayHeader && (normH.includes(h2hAwayHeader) || h2hAwayHeader.includes(normH))) ||
+              (normB && (normH.includes(normB) || normB.includes(normH)))) {
+            return 'B';
+          }
+          if ((h2hHomeHeader && (normH.includes(h2hHomeHeader) || h2hHomeHeader.includes(normH))) ||
+              (normA && (normH.includes(normA) || normA.includes(normH)))) {
+            return 'A';
+          }
+        }
+        if (normAT) {
+          if ((h2hHomeHeader && (normAT.includes(h2hHomeHeader) || h2hHomeHeader.includes(normAT))) ||
+              (normA && (normAT.includes(normA) || normA.includes(normAT)))) {
+            return 'B';
+          }
+          if ((h2hAwayHeader && (normAT.includes(h2hAwayHeader) || h2hAwayHeader.includes(normAT))) ||
+              (normB && (normAT.includes(normB) || normB.includes(normAT)))) {
+            return 'A';
+          }
+        }
+        if (hTeamStr) {
+          const simA = Math.max(getDiceCoefficient(hTeamStr, teamA), h2hHomeHeader ? getDiceCoefficient(normH, h2hHomeHeader) : 0);
+          const simB = Math.max(getDiceCoefficient(hTeamStr, teamB), h2hAwayHeader ? getDiceCoefficient(normH, h2hAwayHeader) : 0);
+          if (simB > simA) return 'B';
+        }
+        return 'A';
+      };
+
+      // A. Primary: Dedicated H2H records in #h2h (.md-hq__lr)
+      $details('#h2h .md-hq__lr, .md-h2h .md-hq__lr').each((_, el) => {
+        const srRaw = $details(el).find('.sr-only').first().text().replace(/\s+/g, ' ').trim();
+        let dateStr = '';
+        let hTeam = '';
+        let hScore = '';
+        let aScore = '';
+        let aTeam = '';
+
+        const m = srRaw.match(/(?:([A-Za-z]{3,9}\s+\d{1,2}\s+\d{4})\s*:\s*)?(.+?)\s+(\d+)\s*[\u2013\u2014\u2212\-:]\s*(\d+)\s+(.+)/);
+        if (m) {
+          dateStr = m[1] || '';
+          hTeam = m[2].trim();
+          hScore = m[3];
+          aScore = m[4];
+          aTeam = m[5].trim();
+        } else {
+          const chipText = $details(el).find('.md-hq__chip').text().replace(/\s+/g, ' ').trim();
+          const cm = chipText.match(/(\d+)\s*[\u2013\u2014\u2212\-:]\s*(\d+)/);
+          if (cm) {
+            hScore = cm[1];
+            aScore = cm[2];
+          }
+        }
+
+        if (!hScore || !aScore) return;
+
+        let chipCol = -1;
+        $details(el).find('.md-hq__lc').each((colIdx, colEl) => {
+          if ($details(colEl).find('.md-hq__chip').length > 0) {
+            chipCol = colIdx;
+          }
+        });
+
+        const dt = $details(el).find('[data-nt-dt]').first().attr('data-nt-dt') || $details(el).attr('data-nt-dt');
+        let dateObj: Date | null = null;
+        if (dt) {
+          const ts = parseInt(dt, 10);
+          if (!isNaN(ts)) dateObj = new Date(ts > 1e11 ? ts : ts * 1000);
+        }
+        if (!dateObj && dateStr) {
+          const d = Date.parse(dateStr);
+          if (!isNaN(d)) dateObj = new Date(d);
+        }
+        if (!dateObj) {
+          dateObj = parseH2HDate(dateStr || srRaw || $details(el).find('.md-hq__day').text().trim());
+        }
+
+        const prefix = resolvePrefix(hTeam, aTeam, hScore, aScore, chipCol);
+
+        candidates.push({
+          homeTeam: hTeam || (prefix === 'A' ? teamA : teamB),
+          awayTeam: aTeam || (prefix === 'A' ? teamB : teamA),
+          homeScore: hScore,
+          awayScore: aScore,
+          dateText: dateStr || srRaw,
+          dateObj: dateObj,
+          prefix
+        });
+      });
+
+      // B. Secondary: Scan dedicated H2H tables/sections (.md-rm, .md-rm--static, tr)
+      const h2hSection = $details('#h2h, section.h2h, .h2h-section, .md-h2h, [data-h2h], .am-h2h');
+      h2hSection.find('.md-rm, .md-rm--static, tbody tr, tr:has(td), .table-latest-matches tr').each((_, row) => {
+        let hTeam = '';
+        let aTeam = '';
+        let hScore = '';
+        let aScore = '';
+
+        const rmTeams = $details(row).find('.md-rm__team');
+        if (rmTeams.length >= 2) {
+          hTeam = rmTeams.first().find('.md-rm__name, .name, .tb-tname').text().trim() ||
+                  rmTeams.first().clone().children('.md-rm__score').remove().end().text().trim();
+          aTeam = rmTeams.last().find('.md-rm__name, .name, .tb-tname').text().trim() ||
+                  rmTeams.last().clone().children('.md-rm__score').remove().end().text().trim();
+          hScore = rmTeams.first().find('.md-rm__score').text().trim();
+          aScore = rmTeams.last().find('.md-rm__score').text().trim();
+        }
+
+        if (!hScore || !aScore) {
+          const scoreEls = $details(row).find('.md-rm__score, .y-score, .score');
+          if (scoreEls.length >= 2) {
+            hScore = scoreEls.first().text().trim();
+            aScore = scoreEls.last().text().trim();
+          } else if (scoreEls.length === 1) {
+            const scMatch = scoreEls.text().trim().match(/(\d+)\s*[\u2013\u2014\u2212\-:]\s*(\d+)/);
+            if (scMatch) {
+              hScore = scMatch[1];
+              aScore = scMatch[2];
+            }
+          }
+        }
+        if (!hScore || !aScore) {
+          const rowText = $details(row).text();
+          const textScoreMatch = rowText.match(/(\d+)\s*[\u2013\u2014\u2212\-:]\s*(\d+)/);
+          if (textScoreMatch) {
+            hScore = textScoreMatch[1];
+            aScore = textScoreMatch[2];
+          }
+        }
+
+        const dateText = $details(row).find('[data-nt-dt]').first().attr('data-nt-dt') ||
+                         $details(row).find('.md-rm__date, sup, td.date, .date, [data-nt-dt]').text().trim() || '';
+        const dObj = parseH2HDate(dateText);
+
+        if (hScore && aScore) {
+          const prefix = resolvePrefix(hTeam, aTeam, hScore, aScore, -1);
+          candidates.push({
+            homeTeam: hTeam || teamA,
+            awayTeam: aTeam || teamB,
+            homeScore: hScore,
+            awayScore: aScore,
+            dateText: dateText,
+            dateObj: dObj,
+            prefix
+          });
+        }
+      });
+
+      // C. Tertiary: Scan .md-formrow for direct encounters between teamA and teamB
+      $details('.md-formrow').each((_, row) => {
+        const rowText = $details(row).text();
+        const normRow = rowText.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        if ((normRow.includes(normA) || normA.includes(normRow.slice(0, 8))) &&
+            (normRow.includes(normB) || normB.includes(normRow.slice(0, 8)))) {
+          let hTeam = $details(row).find('.md-fteam--h .md-fteam__n, .md-rm__team:first-child').text().trim();
+          let aTeam = $details(row).find('.md-fteam--a .md-fteam__n, .md-rm__team:last-child').text().trim();
+          let hScore = '';
+          let aScore = '';
+
+          const nums = $details(row).find('.md-fscore[data-p="ft"] .num, .md-rm__score');
+          if (nums.length >= 2) {
+            hScore = $details(nums[0]).text().trim();
+            aScore = $details(nums[1]).text().trim();
+          } else {
+            const scM = rowText.match(/(\d+)\s*[\u2013\u2014\u2212\-:]\s*(\d+)/);
+            if (scM) {
+              hScore = scM[1];
+              aScore = scM[2];
+            }
+          }
+
+          const dateEl = $details(row).find('.md-fmeta__date, .md-rm__date, .date');
+          const dtAttr = dateEl.attr('data-nt-dt') || $details(row).find('[data-nt-dt]').first().attr('data-nt-dt');
+          const dText = dtAttr || dateEl.text().trim();
+          const dObj = parseH2HDate(dText);
+
+          if (hScore && aScore) {
+            const prefix = resolvePrefix(hTeam, aTeam, hScore, aScore, -1);
+            candidates.push({
+              homeTeam: hTeam || teamA,
+              awayTeam: aTeam || teamB,
+              homeScore: hScore,
+              awayScore: aScore,
+              dateText: dText,
+              dateObj: dObj,
+              prefix
+            });
+          }
+        }
+      });
+
+      // Filter candidates for valid eligible encounters (< 1 year old relative to match kickoff / now)
+      const validCandidates = candidates.filter(cand => {
+        if (!cand.dateObj) return true;
+        const diffMs = Math.abs(refMs - cand.dateObj.getTime());
+        return diffMs <= ONE_YEAR_MS;
+      });
+
+      if (validCandidates.length > 0) {
+        // Sort most recent first
+        validCandidates.sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
+        const latest = validCandidates[0];
+        const prefix = latest.prefix || resolvePrefix(latest.homeTeam, latest.awayTeam, latest.homeScore, latest.awayScore, -1);
+        currentLe = `${prefix}${latest.homeScore}:${latest.awayScore}`;
       } else {
         currentLe = "NA";
       }
@@ -704,8 +1342,16 @@ async function scrapeNerdyMatchDetails(
       // Location A: Detail cards (.md-pcard, .md-best) - definitive tip cards
       $details('.md-pcard, .md-best, .prediction-inline-wrap, [class*="prediction"], div.nt-panel').each((_, el) => {
         const label = $details(el).find('.md-pcard__label, .md-best__label, h4, header, .prediction-title').text().trim().toLowerCase();
-        const tip = $details(el).find('.md-pcard__tip, .md-best__tip, .nt-tips-score strong').text().trim();
         
+        // Find tip text: support both legacy classes and modern .md-pcard__val / .md-pcard__row (excluding locked elements)
+        let tip = $details(el).find('.md-pcard__val, .md-pcard__pick, .md-pcard__tip, .md-best__tip, .nt-tips-score strong').not(':has(.md-lock)').text().trim();
+        if (!tip) {
+          const rowEl = $details(el).find('.md-pcard__row').not(':has(.md-lock)');
+          if (rowEl.length) {
+            tip = rowEl.clone().children('.md-conf, svg, a').remove().end().text().trim();
+          }
+        }
+
         // Accurate rating extraction: .md-conf__val contains the exact confidence e.g. "2.0/10" or "6.8/10"
         let conf = $details(el).find('.md-conf__val').text().trim() || $details(el).find('.md-conf').text().trim() || $details(el).find('.nt-progress-text').text().trim();
         let parsedConf = parseConfidence(conf);
@@ -777,6 +1423,55 @@ async function scrapeNerdyMatchDetails(
         currentPred = normalize1x2(betBuilderTip, teamA, teamB)!;
       }
 
+      // Location F: Fallback for low-rating matches (<= 2.2/10) where 1X2 card is locked (Double Chance 1X / X2 or Draw X)
+      if (currentPred === "Unknown") {
+        let rVal = parseFloat(currentRating.replace(/\/10/, ''));
+        if (isNaN(rVal) && initialRating1x2) {
+          rVal = parseFloat(initialRating1x2.replace(/\/10/, ''));
+        }
+
+        if (!isNaN(rVal) && rVal <= 2.2) {
+          // 1. Check highlighted tip button in odds row (.md-1x2--tip or is-tip)
+          const tipBar = $details('.md-1x2.md-1x2--tip .md-1x2__l, .md-1x2.is-tip .md-1x2__l, .md-1x2.is-active .md-1x2__l').first().text().trim().toUpperCase();
+          if (['1', 'X', '2', '1X', 'X2'].includes(tipBar)) {
+            currentPred = tipBar;
+            console.log(`[NERDY 1X2] Resolved ${currentPred} from .md-1x2--tip button for ${teamA} vs ${teamB} (rating ${rVal})`);
+          } else {
+            // 2. Parse 1X2 odds from .md-1x2row or initial mo
+            let oddH = 0, oddD = 0, oddA = 0;
+            $details('.md-1x2row .md-1x2, .md-1x2').each((_, oEl) => {
+              const lbl = $details(oEl).find('.md-1x2__l').text().trim().toUpperCase();
+              const val = parseFloat($details(oEl).find('.md-1x2__o').text().trim());
+              if (!isNaN(val)) {
+                if (lbl === '1') oddH = val;
+                else if (lbl === 'X') oddD = val;
+                else if (lbl === '2') oddA = val;
+              }
+            });
+
+            if (oddH === 0 && initialMo && initialMo !== 'Unknown') {
+              const parts = initialMo.split(/[\s,|/-]+/).map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 1.0);
+              if (parts.length >= 3) {
+                oddH = parts[0];
+                oddD = parts[1];
+                oddA = parts[2];
+              }
+            }
+
+            if (oddH > 1.0 && oddA > 1.0) {
+              if (oddH < oddA - 0.15) {
+                currentPred = '1X';
+              } else if (oddA < oddH - 0.15) {
+                currentPred = 'X2';
+              } else {
+                currentPred = 'X';
+              }
+              console.log(`[NERDY 1X2] Resolved Double Chance / Draw "${currentPred}" from odds (${oddH}/${oddD}/${oddA}) for ${teamA} vs ${teamB} (rating ${rVal})`);
+            }
+          }
+        }
+      }
+
       // Update values if current attempt yielded valid values
       if (currentGs !== "Unknown") gs = currentGs;
       if (currentGa !== "Unknown") ga = currentGa;
@@ -790,17 +1485,29 @@ async function scrapeNerdyMatchDetails(
         pred1x2 = normalize1x2(initialPred1x2, teamA, teamB) || "Unknown";
       }
 
+      if (pred1x2 === "Unknown") {
+        const rVal = parseFloat((currentRating || rating1x2).replace(/\/10/, ''));
+        if (!isNaN(rVal) && rVal <= 2.2 && initialMo && initialMo !== 'Unknown') {
+          const parts = initialMo.split(/[\s,|/-]+/).map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 1.0);
+          if (parts.length >= 3) {
+            if (parts[0] < parts[2] - 0.15) pred1x2 = '1X';
+            else if (parts[2] < parts[0] - 0.15) pred1x2 = 'X2';
+            else pred1x2 = 'X';
+          }
+        }
+      }
+
       if (currentRating !== "Unknown") rating1x2 = currentRating;
       else if (initialRating1x2 && initialRating1x2 !== "Unknown") rating1x2 = initialRating1x2;
 
       // Gracefully handle stats without fabricating fake 1x2 tips
       if (gs === "Unknown") gs = initialGs && initialGs !== "Unknown" ? initialGs : "1.5:1.2";
       if (ga === "Unknown") ga = "1.2:1.4";
-      if (l10 === "Unknown") l10 = "5:5";
+      if (l10 === "Unknown") l10 = "0;0;5:5;0;0";
       if (le === "Unknown") le = "NA";
 
-      console.log(`[Success Attempt ${attempt}/3] Extracted GA: ${ga}, GS: ${gs}, L10: ${l10}, 1X2: ${pred1x2} (${rating1x2}) for ${teamA} vs ${teamB}`);
-      return { gs, ga, l10, le, pred1x2, rating1x2, fetchError: null, attemptsMade };
+      console.log(`[Success Attempt ${attempt}/3] Extracted GA: ${ga}, GS: ${gs}, L10: ${l10}, 1X2: ${pred1x2} (${rating1x2}), League: ${detailsLeague || 'N/A'} for ${teamA} vs ${teamB}`);
+      return { gs, ga, l10, le, pred1x2, rating1x2, league: detailsLeague, country: detailsCountry, kickoffIso: detailsKickoffIso, fetchError: null, attemptsMade };
 
     } catch (err: any) {
       fetchError = err.message || "Unknown error";
@@ -811,13 +1518,24 @@ async function scrapeNerdyMatchDetails(
   // Final fallback
   if (gs === "Unknown") gs = initialGs && initialGs !== "Unknown" ? initialGs : "1.5:1.2";
   if (ga === "Unknown") ga = "1.2:1.4";
-  if (l10 === "Unknown") l10 = "5:5";
+  if (l10 === "Unknown") l10 = "0;0;5:5;0;0";
   if (le === "Unknown") le = "NA";
   if (rating1x2 === "Unknown" && initialRating1x2 && initialRating1x2 !== "Unknown") {
     rating1x2 = initialRating1x2;
   }
   if (!ALLOWED_1X2.includes(pred1x2)) {
     pred1x2 = normalize1x2(initialPred1x2, teamA, teamB) || "Unknown";
+  }
+  if (pred1x2 === "Unknown") {
+    const rVal = parseFloat((rating1x2 || initialRating1x2 || '').replace(/\/10/, ''));
+    if (!isNaN(rVal) && rVal <= 2.2 && initialMo && initialMo !== 'Unknown') {
+      const parts = initialMo.split(/[\s,|/-]+/).map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 1.0);
+      if (parts.length >= 3) {
+        if (parts[0] < parts[2] - 0.15) pred1x2 = '1X';
+        else if (parts[2] < parts[0] - 0.15) pred1x2 = 'X2';
+        else pred1x2 = 'X';
+      }
+    }
   }
 
   return { gs, ga, l10, le, pred1x2, rating1x2, fetchError, attemptsMade };
@@ -1004,11 +1722,14 @@ async function startServer() {
     try {
       await loginToNerdyTips(client, email, password);
 
-      // Force decimal odds format via cookie
+      // Force East Africa Time (UTC+3) and decimal odds format via cookies
       try {
-        await jar.setCookie('odds_format=decimal; Domain=nerdytips.com', 'https://nerdytips.com');
+        await jar.setCookie('tz_offset_v2=180; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+        await jar.setCookie('timezone=Africa%2FNairobi; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+        await jar.setCookie('timezone_manual=1; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
+        await jar.setCookie('odds_format=decimal; Domain=nerdytips.com; Path=/', 'https://nerdytips.com');
       } catch (e) {
-        console.warn("Could not set odds_format cookie", e);
+        console.warn("Could not set timezone or odds_format cookie", e);
       }
 
       // Generate array of dates to fetch
@@ -1027,7 +1748,6 @@ async function startServer() {
         const endStr = formattedEnd.split('T')[0];
 
         let curr = new Date(startStr);
-        curr.setUTCDate(curr.getUTCDate() - 1); // Extra day before for timezone adjustments
         const last = new Date(endStr);
 
         while (curr <= last) {
@@ -1039,9 +1759,6 @@ async function startServer() {
         if (start) {
           targetDate = start.split('T')[0];
         }
-        const prevDay = new Date(targetDate);
-        prevDay.setUTCDate(prevDay.getUTCDate() - 1);
-        datesToFetch.push(prevDay.toISOString().split('T')[0]);
         datesToFetch.push(targetDate);
       }
 
@@ -1089,17 +1806,17 @@ async function startServer() {
           }
           seenMatchKeys.add(sessionKey);
 
-          // Time filtering against user timeline
+          // Time filtering against user timeline in EAT (UTC+3)
           if (startDateObj && endDateObj && !isNaN(startDateObj.getTime()) && !isNaN(endDateObj.getTime())) {
-            if (adjustedTime && adjustedTime.includes(':') && !['FT', 'HT', 'LIVE', 'CANC', 'POST'].includes(adjustedTime.toUpperCase())) {
+            if (adjustedTime && adjustedTime.includes(':')) {
               const matchDateTime = new Date(`${matchDateStr}T${adjustedTime}:00+03:00`);
               if (!isNaN(matchDateTime.getTime())) {
                 if (matchDateTime < startDateObj || matchDateTime > endDateObj) {
-                  continue; // Outside timeline
+                  continue; // Outside user-selected timeline
                 }
               }
             } else {
-              // If match time is FT/LIVE/etc or not precise, check date range
+              // Fallback for matches where kickoff time was unavailable
               const matchDateOnly = new Date(`${matchDateStr}T00:00:00+03:00`);
               const startDateOnly = new Date(startDateObj);
               startDateOnly.setHours(0, 0, 0, 0);
@@ -1115,7 +1832,9 @@ async function startServer() {
           validMatches.push({
             ...r,
             matchDateStr,
-            adjustedTime
+            adjustedTime,
+            league: r.league ? formatDomesticLeagueName(r.league, r.country, r.teamsStr) : r.league,
+            country: r.country
           });
         }
       }
@@ -1125,6 +1844,11 @@ async function startServer() {
       // Filter out existing matches unless forceRefresh is true
       if (!forceRefresh) {
         const newMatches = validMatches.filter(m => {
+          // If the match has completed and has a score/result, ALWAYS include it so the result is updated!
+          if (m.result && m.result !== "Pending" && m.result !== "Unknown" && m.result.includes(':')) {
+            return true;
+          }
+
           const teamKey = `${m.teamA} vs ${m.teamB}`;
           const matchId = `${teamKey}_${m.matchDateStr}`;
           const matchIdAlt = `${m.teamA.toLowerCase().replace(/[^a-z0-9]/g, '')}vs${m.teamB.toLowerCase().replace(/[^a-z0-9]/g, '')}_${m.matchDateStr}`;
@@ -1160,15 +1884,57 @@ async function startServer() {
           let rating1x2 = details.rating1x2;
           let finalGs = details.gs;
 
+          if (finalPred === "Unknown" || !['1', 'X', '2', '1X', 'X2'].includes(finalPred)) {
+            const rVal = parseFloat((rating1x2 || m.rating1x2 || m.trust || '').replace(/\/10/, ''));
+            if (!isNaN(rVal) && rVal <= 2.2) {
+              const moStr = sanitizeMatchOdds(m.mo || '');
+              const parts = moStr.split(/[\s,|/-]+/).map(s => parseFloat(s.replace(/[^0-9.]/g, '').trim())).filter(n => !isNaN(n) && n > 1.0);
+              if (parts.length >= 3) {
+                if (parts[0] < parts[2] - 0.15) finalPred = '1X';
+                else if (parts[2] < parts[0] - 0.15) finalPred = 'X2';
+                else finalPred = 'X';
+                console.log(`[NERDY FETCH 1X2] Resolved ${finalPred} for ${m.teamsStr} from odds (${parts[0]}/${parts[1]}/${parts[2]}) with rating ${rVal}`);
+              }
+            }
+          }
+
+          // Authoritative kickoff from the match page (exact UTC timestamp) -> EAT date/time + strict timeline filter
+          if (details.kickoffIso) {
+            const ko = new Date(details.kickoffIso);
+            if (!isNaN(ko.getTime())) {
+              if (startDateObj && endDateObj && !isNaN(startDateObj.getTime()) && !isNaN(endDateObj.getTime())) {
+                if (ko < startDateObj || ko > endDateObj) {
+                  console.log(`[NERDY FETCH] Dropping ${m.teamsStr}: kickoff ${details.kickoffIso} outside selected timeline`);
+                  return;
+                }
+              }
+              const eat = new Date(ko.getTime() + 3 * 3600 * 1000).toISOString();
+              m.matchDateStr = eat.substring(0, 10);
+              m.adjustedTime = eat.substring(11, 16);
+            }
+          }
+
           const cleanSlug = m.teamsStr.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
           const stableId = `nerdy_${cleanSlug}_${m.matchDateStr}`;
+
+          // League/country come ONLY from NerdyTips (match page header, else the all-matches group header). No guessing.
+          const rawLeague = details.league || m.league || null;
+          const rawCountry = (details.league && details.country) ? details.country : (m.country || details.country || null);
+          const matchLeague = rawLeague ? formatDomesticLeagueName(rawLeague, rawCountry, m.teamsStr) : null;
+          const matchCountry = rawCountry;
+
+          if (matchLeague && matchLeague !== 'Unknown') {
+            const triggerName = `Match belongs to ${matchLeague}`;
+            registerDiscoveredLeagueTrigger(triggerName);
+            persistDiscoveredLeagueTrigger(triggerName);
+          }
 
           matches.push({
             id: stableId,
             teams: m.teamsStr,
             date: `${m.matchDateStr} ${m.adjustedTime}`,
             result: m.result || "Unknown",
-            mo: m.mo,
+            mo: sanitizeMatchOdds(m.mo),
             pred1x2: finalPred,
             rating: rating1x2 !== "Unknown" ? rating1x2 : (m.trust !== 'Unknown' ? m.trust : "Unknown"),
             gs: finalGs,
@@ -1176,6 +1942,8 @@ async function startServer() {
             stars: m.trust,
             l10: l10,
             le: le,
+            league: matchLeague,
+            country: matchCountry,
             group: 0,
             isDaily: true,
             isJackpot: false,
@@ -1417,7 +2185,19 @@ async function startServer() {
           stars: scraped.trust,
           l10: l10,
           le: le,
-          mo: scraped.mo,
+          mo: sanitizeMatchOdds(scraped.mo),
+          league: (() => {
+            const rawLeague = details.league || scraped.league || null;
+            const rawCountry = (details.league && details.country) ? details.country : (scraped.country || details.country || null);
+            const jl = rawLeague ? formatDomesticLeagueName(rawLeague, rawCountry, scraped.teamsStr) : null;
+            if (jl && jl !== 'Unknown') {
+              const triggerName = `Match belongs to ${jl}`;
+              registerDiscoveredLeagueTrigger(triggerName);
+              persistDiscoveredLeagueTrigger(triggerName);
+            }
+            return jl;
+          })(),
+          country: (details.league && details.country) ? details.country : (scraped.country || details.country || null),
           fetchError: fetchError,
           matchUrl: scraped.matchUrl,
           isJackpot: true,
@@ -1468,35 +2248,7 @@ async function startServer() {
                 console.log(`Smart Result Pull: Found result for ${match.teams} (${dm.result}) in daily extractions.`);
                 updatedMatches.push({ ...match, result: dm.result });
                 foundLocally = true;
-              }
-            }
-
-            if (dm.pred1x2 && dm.pred1x2 !== 'Unknown' && dm.pred1x2 !== '-' && dm.pred1x2 !== '•••') {
-              if (!match.pred1x2 || match.pred1x2 === 'Unknown' || match.pred1x2 === '-') {
-                console.log(`Smart Tip Pull: Found tip for ${match.teams} (${dm.pred1x2}) in daily extractions.`);
-                if (foundLocally) {
-                    updatedMatches[updatedMatches.length - 1].pred1x2 = dm.pred1x2;
-                } else {
-                    updatedMatches.push({ ...match, pred1x2: dm.pred1x2 });
-                    foundLocally = true;
-                }
-              }
-            }
-
-            if (foundLocally) {
-              const latest = updatedMatches[updatedMatches.length - 1];
-              const needsResult = !latest.result || latest.result === "Unknown" || latest.result === "Pending" || latest.result === "";
-              const needsTip = !latest.pred1x2 || latest.pred1x2 === "Unknown" || latest.pred1x2 === "-";
-              if (!needsResult && !needsTip) {
-                 break;
-              } else {
-                 // We still need something, so we shouldn't consider it fully found locally.
-                 // We will let it fall through to stillNeeded, but we shouldn't push the partial update to updatedMatches yet, 
-                 // otherwise we might duplicate it.
-                 // Actually, it's better to NOT push to updatedMatches if we still need something,
-                 // and just let the main scraper loop handle it.
-                 updatedMatches.pop();
-                 foundLocally = false;
+                break;
               }
             }
           }
@@ -1549,42 +2301,23 @@ async function startServer() {
 
       for (const match of stillNeeded) {
         let foundResult = match.result;
-        let foundPred = match.pred1x2;
-        let wasUpdated = false;
 
         for (const rowData of allRows) {
           const score = getMatchSimilarity(match.teams, rowData.teamsStr);
           if (score >= 7) {
-            
             if (rowData.result && rowData.result !== 'Unknown' && rowData.result !== 'Pending' && rowData.result.includes(':')) {
               if (!match.result || match.result === 'Unknown' || match.result === 'Pending' || match.result === '') {
                 foundResult = rowData.result;
                 console.log(`Match found! ${match.teams} -> ${rowData.teamsStr} | Result: ${foundResult} (Score: ${score})`);
-                wasUpdated = true;
+                break;
               }
-            }
-            
-            if (rowData.pred1x2 && rowData.pred1x2 !== 'Unknown' && rowData.pred1x2 !== '-' && rowData.pred1x2 !== '•••') {
-              if (!match.pred1x2 || match.pred1x2 === 'Unknown' || match.pred1x2 === '-') {
-                foundPred = rowData.pred1x2;
-                console.log(`Tip found! ${match.teams} -> ${rowData.teamsStr} | Tip: ${foundPred} (Score: ${score})`);
-                wasUpdated = true;
-              }
-            }
-
-            // Only break if we've satisfied all missing requirements for this match
-            const needsResult = !foundResult || foundResult === "Unknown" || foundResult === "Pending" || foundResult === "";
-            const needsTip = !foundPred || foundPred === "Unknown" || foundPred === "-";
-            if (!needsResult && !needsTip) {
-              break;
             }
           }
         }
 
         updatedMatches.push({
           ...match,
-          result: foundResult,
-          pred1x2: foundPred
+          result: foundResult
         });
       }
 
@@ -1633,36 +2366,126 @@ async function startServer() {
     }
   });
 
-  // OPW P-Recom: Get Calibrated Rules across days from persistent server storage
+  // OPW P-Recom: Get Calibrated Rules across days from persistent server storage + RDS PostgreSQL
   app.get("/api/opw/rules", async (req, res) => {
     try {
       const dataDir = path.join(process.cwd(), "data");
       const rulesFilePath = path.join(dataDir, "opw_rules.json");
-      if (!fsSync.existsSync(rulesFilePath)) {
-        return res.json({ rules: {} });
+      let allRulesData: { rules: Record<string, any> } = { rules: {} };
+      if (fsSync.existsSync(rulesFilePath)) {
+        try {
+          const raw = await fs.readFile(rulesFilePath, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && parsed.rules) {
+            allRulesData = parsed;
+          }
+        } catch (e) {}
       }
-      const raw = await fs.readFile(rulesFilePath, "utf-8");
-      const json = JSON.parse(raw);
-      return res.json(json);
+
+      // Merge with RDS PostgreSQL opw_calibrated_rules so saved rules survive deployments & disk resets
+      // RULE: The source with the NEWER timestamp wins entirely for each category. No partial merging.
+      try {
+        const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules");
+        let dirtyDisk = false;
+        for (const row of dbRes.rows || []) {
+          const d = String(row.day || '').toLowerCase();
+          if (!d || !row.categories || typeof row.categories !== 'object') continue;
+          const dbSavedAt = row.saved_at ? new Date(row.saved_at).toISOString() : new Date().toISOString();
+          const dbTs = Date.parse(dbSavedAt) || 0;
+          const diskEntry = allRulesData.rules[d];
+          const diskTs = diskEntry?.savedAt ? (Date.parse(diskEntry.savedAt) || 0) : 0;
+
+          if (!diskEntry || !diskEntry.categories) {
+            allRulesData.rules[d] = {
+              savedAt: dbSavedAt,
+              categories: row.categories
+            };
+            dirtyDisk = true;
+          } else {
+            // Per-category merge: for each category, pick the version from whichever source (disk vs DB) is newer.
+            // The newer source's category completely replaces the older one — no field-level mixing.
+            const mergedCategories: Record<string, any> = {};
+            const allCatKeys = new Set([...Object.keys(diskEntry.categories), ...Object.keys(row.categories)]);
+            for (const catKey of allCatKeys) {
+              const inDisk = diskEntry.categories[catKey];
+              const inDb = row.categories[catKey];
+              if (inDisk && !inDb) {
+                mergedCategories[catKey] = inDisk;
+              } else if (inDb && !inDisk) {
+                mergedCategories[catKey] = inDb;
+              } else {
+                // Both exist: newer timestamp wins entirely
+                mergedCategories[catKey] = dbTs >= diskTs ? inDb : inDisk;
+              }
+            }
+            const newestSavedAt = dbTs >= diskTs ? dbSavedAt : diskEntry.savedAt;
+            if (JSON.stringify(mergedCategories) !== JSON.stringify(diskEntry.categories)) {
+              dirtyDisk = true;
+            }
+            allRulesData.rules[d] = {
+              savedAt: newestSavedAt,
+              categories: mergedCategories
+            };
+          }
+        }
+        if (dirtyDisk) {
+          if (!fsSync.existsSync(dataDir)) {
+            await fs.mkdir(dataDir, { recursive: true });
+          }
+          await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8").catch(() => {});
+        }
+      } catch (dbErr: any) {
+        console.warn("[OPW RULES GET] RDS fallback notice:", dbErr.message);
+      }
+
+      return res.json(allRulesData);
     } catch (err: any) {
       console.warn("[OPW RULES GET] Error reading opw_rules.json:", err.message);
       return res.json({ rules: {} });
     }
   });
 
-  // OPW P-Recom: Save Calibrated Rules directly to code & persistent JSON
+  // OPW P-Recom: Save Calibrated Rules directly to persistent JSON & RDS PostgreSQL
   app.post("/api/opw/save-to-code", async (req, res) => {
     try {
-      const { day = 'saturday', categories = {}, customTriggers } = req.body;
+      const { day = 'saturday', days, categories = {}, customTriggers } = req.body;
       if (!categories || typeof categories !== 'object') {
         return res.status(400).json({ error: "Missing required field: categories object." });
       }
 
-      console.log(`[OPW SAVE-TO-CODE] Request received for day: ${day} with ${Object.keys(categories).length} categories.`);
+      const validDays = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
+      const targetDay = String(day || 'saturday').toLowerCase();
+      const targetDaysList: string[] = Array.isArray(days) && days.length > 0
+        ? Array.from(new Set(days.map((d: any) => String(d || '').toLowerCase()).filter((d: string) => validDays.has(d))))
+        : (validDays.has(targetDay) ? [targetDay] : ['saturday']);
+      if (validDays.has(targetDay) && !targetDaysList.includes(targetDay)) {
+        targetDaysList.unshift(targetDay);
+      }
 
-      const targetDay = (day || 'saturday').toLowerCase();
+      // Normalize category aliases so saving top_12_value also replaces top_10_value, upsets replaces upset, etc.
+      const expandedCategories: Record<string, any> = {};
+      for (const [catId, catPayload] of Object.entries<any>(categories)) {
+        if (!catPayload || !Array.isArray(catPayload.rules)) continue;
+        expandedCategories[catId] = catPayload;
+        if (catId === 'top_12_value' || catId === 'top_10_value') {
+          expandedCategories['top_12_value'] = catPayload;
+          expandedCategories['top_10_value'] = catPayload;
+        } else if (catId === 'upsets' || catId === 'upset' || catId === 'underdog_upsets') {
+          expandedCategories['upsets'] = catPayload;
+          expandedCategories['upset'] = catPayload;
+          expandedCategories['underdog_upsets'] = catPayload;
+        } else if (catId === 'bankers_dlive' || catId === 'banker') {
+          expandedCategories['bankers_dlive'] = catPayload;
+          expandedCategories['banker'] = catPayload;
+        } else if (catId === 'value_bets' || catId === 'value_bet') {
+          expandedCategories['value_bets'] = catPayload;
+          expandedCategories['value_bet'] = catPayload;
+        }
+      }
 
-      // 1. Save to persistent data/opw_rules.json so production runtime can immediately load rules
+      console.log(`[OPW SAVE-TO-CODE] Saving ${Object.keys(expandedCategories).length} category keys across days [${targetDaysList.join(', ')}].`);
+
+      // 1. Load existing rules from disk AND RDS so other categories on the same day are never deleted
       const dataDir = path.join(process.cwd(), "data");
       if (!fsSync.existsSync(dataDir)) {
         await fs.mkdir(dataDir, { recursive: true });
@@ -1677,12 +2500,66 @@ async function startServer() {
         } catch (e) {}
       }
 
-      allRulesData.rules[targetDay] = {
-        savedAt: new Date().toISOString(),
-        categories: categories
-      };
+      try {
+        const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules WHERE day = ANY($1)", [targetDaysList]);
+        for (const row of dbRes.rows || []) {
+          const d = String(row.day || '').toLowerCase();
+          if (!d || !row.categories || typeof row.categories !== 'object') continue;
+          // Pre-populate allRulesData with existing DB categories for categories NOT being saved now.
+          // expandedCategories (the incoming save payload) always takes absolute precedence.
+          const existingDiskCats = allRulesData.rules[d]?.categories || {};
+          const mergedBase: Record<string, any> = {};
+          // Start with DB categories as base
+          for (const [k, v] of Object.entries(row.categories)) {
+            mergedBase[k] = v;
+          }
+          // Overlay disk categories for any key not in DB
+          for (const [k, v] of Object.entries(existingDiskCats)) {
+            if (!mergedBase[k]) mergedBase[k] = v;
+          }
+          allRulesData.rules[d] = {
+            savedAt: allRulesData.rules[d]?.savedAt || new Date().toISOString(),
+            categories: mergedBase
+          };
+        }
+      } catch (dbReadErr: any) {
+        console.warn("[OPW SAVE-TO-CODE] RDS pre-merge read notice:", dbReadErr.message);
+      }
+
+      const nowIso = new Date().toISOString();
+      for (const d of targetDaysList) {
+        const prevCategories = (allRulesData.rules[d] && typeof allRulesData.rules[d].categories === 'object')
+          ? allRulesData.rules[d].categories
+          : {};
+        // Merge category-level map while completely replacing the rules array inside each saved category
+        const nextCategories = {
+          ...prevCategories,
+          ...expandedCategories
+        };
+        allRulesData.rules[d] = {
+          savedAt: nowIso,
+          categories: nextCategories
+        };
+      }
+
       await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8");
-      console.log(`[OPW SAVE-TO-CODE] Successfully persisted JSON rules to ${rulesFilePath}`);
+      console.log(`[OPW SAVE-TO-CODE] Persisted merged JSON rules to ${rulesFilePath} for [${targetDaysList.join(', ')}]`);
+
+      // 2. Persist to RDS PostgreSQL opw_calibrated_rules table so rules survive server restarts & deployments
+      for (const d of targetDaysList) {
+        try {
+          await pgPool.query(
+            `INSERT INTO opw_calibrated_rules (day, categories, saved_at)
+             VALUES ($1, $2::jsonb, $3)
+             ON CONFLICT (day) DO UPDATE
+             SET categories = EXCLUDED.categories,
+                 saved_at = EXCLUDED.saved_at`,
+            [d, JSON.stringify(allRulesData.rules[d].categories), nowIso]
+          );
+        } catch (dbWriteErr: any) {
+          console.warn(`[OPW SAVE-TO-CODE] RDS write notice for ${d}:`, dbWriteErr.message);
+        }
+      }
 
       if (Array.isArray(customTriggers) && customTriggers.length > 0) {
         const triggersFilePath = path.join(dataDir, "approved_custom_triggers.json");
@@ -1690,83 +2567,11 @@ async function startServer() {
         console.log(`[OPW SAVE-TO-CODE] Also persisted ${customTriggers.length} approved custom triggers to ${triggersFilePath}`);
       }
 
-      // 2. Also write TypeScript code file for supported days
-      let targetFileName = '';
-      let constPrefix = '';
-      let interfaceName = '';
-
-      if (targetDay === 'sunday') {
-        targetFileName = 'opwSundayRules.ts';
-        constPrefix = 'SUNDAY';
-        interfaceName = 'SundayRuleItem';
-      } else if (targetDay === 'friday') {
-        targetFileName = 'opwFridayRules.ts';
-        constPrefix = 'FRIDAY';
-        interfaceName = 'FridayRuleItem';
-      } else if (targetDay === 'thursday') {
-        targetFileName = 'opwThursdayRules.ts';
-        constPrefix = 'THURSDAY';
-        interfaceName = 'ThursdayRuleItem';
-      } else if (targetDay === 'saturday') {
-        targetFileName = 'opwSaturdayRules.ts';
-        constPrefix = 'SATURDAY';
-        interfaceName = 'SaturdayRuleItem';
-      }
-
-      let filePath = '';
-      if (targetFileName) {
-        filePath = path.join(process.cwd(), 'src', 'utils', targetFileName);
-
-        // Mapping from category id to exported constant name and label
-        const catMap: Record<string, { constName: string; label: string; objective: string }> = {
-          top_10_value: { constName: `${constPrefix}_TOP_12_RULES`, label: 'Top 12 Value', objective: 'mfav_draw' },
-          best_bet: { constName: `${constPrefix}_BEST_BET_RULES`, label: 'Best Bets', objective: 'mfav_only' },
-          bankers_dlive: { constName: `${constPrefix}_BANKERS_DLIVE_RULES`, label: 'Bankers Dlive', objective: 'mfav_only' },
-          bankers_jackpot: { constName: `${constPrefix}_BANKERS_JACKPOT_RULES`, label: 'Bankers Jackpot', objective: 'mfav_only' },
-          value_picks: { constName: `${constPrefix}_VALUE_PICKS_RULES`, label: 'Value Picks', objective: 'mfav_only' },
-          underdog_upsets: { constName: `${constPrefix}_UPSETS_RULES`, label: 'Underdog Upsets', objective: 'underdog_only' },
-          botb_best: { constName: `${constPrefix}_BOTB_RULES`, label: 'Best of the Best', objective: 'mfav_only' },
-        };
-
-        let fileContent = `// ============================================================================
-// DEDICATED ${constPrefix} & MAIN ALGO CALIBRATED RULE ARRAYS (Day-Specific Isolation)
-// Generated: ${new Date().toLocaleString()}
-// Target Files: src/opw${targetDay}.tsx & src/opwalgo.tsx
-// Isolation Policy: Only ${constPrefix} and Main Algo are adjusted. Other daily files are unaffected.
-// ============================================================================
-
-export interface ${interfaceName} {
-  description: string;
-  points: number;
-}
-`;
-
-        for (const [catId, meta] of Object.entries(catMap)) {
-          fileContent += `\n// ----------------------------------------------------------------------------\n`;
-          fileContent += `// Category: ${meta.label} | Target Objective: '${meta.objective}'\n`;
-          fileContent += `// ----------------------------------------------------------------------------\n`;
-          fileContent += `export const ${meta.constName}: ${interfaceName}[] = [\n`;
-
-          const catData = categories[catId]
-            || (catId === 'top_10_value' ? (categories['top_12_value'] || categories['top_10_value']) : undefined)
-            || (catId === 'underdog_upsets' ? (categories['upsets'] || categories['underdog_upsets']) : undefined);
-
-          const rawRules: Array<{ description: string; points: number; note?: string }> = catData?.rules || [];
-          for (const rule of rawRules) {
-            if (!rule.description || typeof rule.points !== 'number' || rule.points === 0) continue;
-            const comment = rule.note ? ` // ${rule.note}` : ` // ${rule.points > 0 ? '+' : ''}${rule.points} pts`;
-            fileContent += `  { description: ${JSON.stringify(rule.description)}, points: ${rule.points} },${comment}\n`;
-          }
-          fileContent += `];\n`;
-        }
-
-        await fs.writeFile(filePath, fileContent, 'utf-8');
-        console.log(`[OPW SAVE-TO-CODE] Successfully wrote calibrated rules to ${filePath}`);
-      }
-
       return res.json({
         success: true,
-        message: `Calibrated rules successfully saved for ${targetDay.toUpperCase()}! Changes persist at runtime via /api/opw/rules.`
+        days: targetDaysList,
+        savedAt: nowIso,
+        message: `Calibrated rules permanently saved for ${targetDaysList.map(d => d.toUpperCase()).join(', ')}!`
       });
     } catch (err: any) {
       console.error("[OPW SAVE-TO-CODE] Error saving calibrated rules:", err);

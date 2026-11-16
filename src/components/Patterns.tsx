@@ -579,7 +579,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
       "TSA_LT_1",
       "HGS_LT_0_8",
     ],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
   // G1 FF Specific (EWHGS+ESAGS+WHGA+SAGA + home leaks/away goals - No HGS_LT_0_8)
@@ -631,7 +631,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
       "HGS_LT_1_5",
       "TSA_LT_1",
     ],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
   // G3 FF Specific (EWHGS+ESAGS+WHGA+SAGA + home leaks/away goals - No HGS_LT_0_8)
@@ -658,7 +658,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
       "TSA_LT_1",
     ],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   // G1 FF (NEW 4-FLAG)
   {
@@ -817,7 +817,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["SHGS", "WAGS", "EWHGA", "ESAGA"],
     prediction: "X2",
-    primaryPrediction: "X",
+    primaryPrediction: "2",
   },
   {
     id: "G1ff52",
@@ -825,7 +825,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["WHGS", "SAGS", "WHGA", "SAGA"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   {
     id: "G1ff55",
@@ -840,7 +840,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "FF",
     group: 1,
     riders: ["EWHGS", "ESAGS", "ESHGA", "EWAGA"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   // Group 2
@@ -873,7 +873,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "FF",
     group: 2,
     riders: ["ESHGS", "EWAGS", "WHGA", "SAGA"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // BANNED: UPSET RISK
   {
@@ -949,7 +949,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "T",
     group: 1,
     riders: ["HOME_DEF_STRICT"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -1115,7 +1115,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "U",
     group: 1,
     riders: ["TSB_GT_TSA"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
 
@@ -1142,8 +1142,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "S",
     group: 2,
     riders: ["HGA_LEAKY"],
-    prediction: "1X",
-    primaryPrediction: "X",
+    prediction: "X2",
+    primaryPrediction: "2",
   },
   {
     id: "G2r9",
@@ -1176,7 +1176,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "U",
     group: 3,
     riders: ["AWAY_DEF_BETTER"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   // S-G3-05 UPDATED (Batch 30)
@@ -1186,7 +1186,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["AGS_DECENT_1_0"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
 
   // --- NEW GENIUS PATTERNS (BATCH 27 - GENIUS STRATEGY) ---
@@ -1197,7 +1197,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["GS_STALEMATE"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   // G1r02 UPDATED (Batch 30)
   {
@@ -1250,7 +1250,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["TSB_GT_TSA"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   {
     id: "G2u10",
@@ -1407,7 +1407,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGS", "ESAGS", "SHGA", "WAGA"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // BANNED: UPSET RISK
   {
     id: "G3ff49",
@@ -1533,7 +1533,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "S",
     group: 2,
     riders: ["SHGA", "WAGA", "H_BAL", "A_BAL"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
 
@@ -1656,7 +1656,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "S",
     group: 1,
     riders: ["ESHGS", "EWAGS", "EWHGA", "ESAGA", "TSB_1", "H_BAL", "A_BAL"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED
   {
@@ -1672,7 +1672,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "S",
     group: 1,
     riders: ["SHGA", "WAGA", "H_BAL", "A_BAL"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
 
@@ -1764,7 +1764,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGS", "ESAGS"],
     prediction: "1X",
-    primaryPrediction: "X",
+    primaryPrediction: "1",
   }, // Girona
 
   // G2 S
@@ -1773,7 +1773,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "S",
     group: 2,
     riders: ["WHGS", "SAGS", "ESHGA", "EWAGA", "H_BAL", "A_BAL"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // NEW: 4-flag capture
   {
@@ -1822,7 +1822,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "HH",
     group: 2,
     riders: ["EWHGA", "ESAGA", "A_BAL"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED
   {
@@ -1972,7 +1972,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "F",
     group: 1,
     riders: ["EWHGS", "ESAGS", "EWHGA", "ESAGA", "TS_DIFF_DRAW", "H_BAL"],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   }, // BANNED: UPSET RISK
   // New G1 F Subpattern (G1f32) - UPDATED
@@ -1998,7 +1998,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
       "TS_HOME_STRONG",
       "A_BAL",
     ],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -2041,7 +2041,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "O",
     group: 2,
     riders: ["SHGA", "A_BAL"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED: user req
 
@@ -2151,8 +2151,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGA", "ESAGA", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "2",
-  }, // UPDATED: Batch 19 Correction
+    primaryPrediction: "1",
+  }, // UPDATED: user req
   // G1 EE Home Robustness (UPDATED G1e8 mapping)
   {
     id: "G1ee8",
@@ -2191,7 +2191,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
       "AGA_LT_1_5",
       "HGA_LT_1_5",
     ],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
   // G2 E Balanced Away Trend (Batch 8 Update) -> X2
@@ -2201,8 +2201,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "E",
     group: 2,
     riders: ["WHGS", "SAGS", "WHGA", "SAGA"],
-    prediction: "1X",
-    primaryPrediction: "1",
+    prediction: "12",
+    primaryPrediction: "2",
   }, // UPDATED
   // --- NEW FROM IMAGES (Group 3) ---
   // G3 I (Nacional)
@@ -2230,7 +2230,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "S",
     group: 3,
     riders: ["EWHGS", "ESAGS", "ESHGA", "EWAGA", "H_BAL", "A_BAL", "P3"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED
   // G3 S (KV Mechelen)
@@ -2278,7 +2278,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["EWHGS", "ESAGS", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED
 
   // --- NEW PATTERNS (BATCH 12 - G1 UPDATES) ---
@@ -2315,7 +2315,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "G",
     group: 1,
     riders: ["P2"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED: user req
   {
@@ -2390,7 +2390,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "NN",
     group: 1,
     riders: [],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED: user req
   { id: "G2nn1", mainPattern: "NN", group: 2, riders: [], prediction: "X" },
@@ -2399,7 +2399,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "NN",
     group: 3,
     riders: [],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED
 
@@ -2448,7 +2448,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGA", "ESAGA", "H_BAL", "POTENTIAL_DRAW"],
     prediction: "X2",
-    primaryPrediction: "X",
+    primaryPrediction: "2",
   },
   {
     id: "G2m13",
@@ -2531,7 +2531,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["EWHGS", "ESAGS", "ESHGA", "EWAGA", "H_BAL", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED: user req
 
   // --- NEW PATTERNS (BATCH 10) ---
@@ -2643,7 +2643,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["ESHGA", "EWAGA", "SAGS", "WHGS"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   },
   // G3 W Empty Flag Trend (2 Draws, 1 Away -> Dominant X, Final X2)
   {
@@ -2662,7 +2662,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "LL",
     group: 1,
     riders: ["WHGS", "SAGS", "SHGA", "WAGA", "H_BAL", "A_BAL"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   // G2 F (G2f23 updated above)
@@ -2673,7 +2673,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "FF",
     group: 1,
     riders: ["WHGS", "SAGS", "EWHGA", "ESAGA"],
-    prediction: "X2",
+    prediction: "12",
     primaryPrediction: "2",
   },
   // G1 HH
@@ -2717,7 +2717,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
       "TS_DIFF_DRAW",
       "H_BAL",
     ],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
   // G2 II
@@ -2971,7 +2971,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["WHGS", "SAGS", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
   // G1 FF (UPDATED)
   // G3 G (UPDATED)
@@ -3045,7 +3045,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["EWHGS", "ESAGS", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED
   // G3 FF (UPDATED)
   // G2 FF
@@ -3069,7 +3069,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["ESAGS", "P2"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   },
 
   // G3ff5 UPDATED
@@ -3078,7 +3078,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "FF",
     group: 3,
     riders: ["EWHGS", "ESAGS", "EWHGA", "ESAGA"],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
 
@@ -3088,7 +3088,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "II",
     group: 2,
     riders: ["EWHGA", "ESAGA", "POTENTIAL_DRAW", "TS_DIFF_DRAW"],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
 
@@ -3144,7 +3144,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "FF",
     group: 3,
     riders: ["ESHGS", "EWAGS", "EWHGA", "ESAGA"],
-    prediction: "X2",
+    prediction: "1X",
     primaryPrediction: "X",
   },
   // G3 K
@@ -3154,7 +3154,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["H_BAL", "A_BAL"],
     prediction: "X2",
-    primaryPrediction: "2",
+    primaryPrediction: "X",
   }, // UPDATED
   // G1 II
   {
@@ -3253,7 +3253,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["EWHGA", "ESAGA"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
 
   {
@@ -3278,7 +3278,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGS", "ESAGS", "TSB_1", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   },
 
   // --- PATTERNS GG, HH, II, JJ, KK, LL ---
@@ -3328,7 +3328,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["WHGA", "SAGA"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED
   // NEW G3ii3
   {
@@ -3347,7 +3347,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGS", "ESAGS"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   // NEW G3jj3
   {
@@ -3418,7 +3418,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "A",
     group: 2,
     riders: ["EWAGS", "P2"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -3483,7 +3483,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "A",
     group: 3,
     riders: ["WAGS", "P2"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -3502,7 +3502,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "A",
     group: 3,
     riders: ["WAGS"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
 
@@ -3552,7 +3552,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "A",
     group: 2,
     riders: ["EWAGS"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED
   {
@@ -3570,7 +3570,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["ESAGS"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED: user req
   { id: "G2a9", mainPattern: "A", group: 2, riders: [], prediction: "1" },
 
@@ -3706,7 +3706,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["WHGA", "P2"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED: user req
   {
     id: "G2c8",
@@ -3721,7 +3721,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "C",
     group: 2,
     riders: ["WHGS"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -3737,7 +3737,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "C",
     group: 2,
     riders: ["SHGS"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED: user req
   { id: "G2c5", mainPattern: "C", group: 2, riders: ["WAGS"], prediction: "12" },
@@ -3815,7 +3815,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["P1", "P2", "P3", "P7"],
     prediction: "1X",
-    primaryPrediction: "1",
+    primaryPrediction: "X",
   },
   {
     id: "G1cc4",
@@ -3851,7 +3851,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "DD",
     group: 1,
     riders: ["SAGA", "P1", "P5"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -3859,7 +3859,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "DD",
     group: 1,
     riders: ["SAGA", "P2"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   // Group 1 Base
@@ -3939,7 +3939,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "DD",
     group: 2,
     riders: ["EWAGA"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
 
@@ -3950,7 +3950,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "DD",
     group: 3,
     riders: ["SHGA", "WAGA"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED
   {
@@ -4068,7 +4068,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "EE",
     group: 2,
     riders: ["WHGS"],
-    prediction: "X2",
+    prediction: "12",
     primaryPrediction: "2",
   },
   {
@@ -4093,7 +4093,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "EE",
     group: 3,
     riders: ["WHGS", "P2", "P3"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -4231,7 +4231,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "F",
     group: 3,
     riders: ["ESHGA", "EWAGA", "H_BAL"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -4340,7 +4340,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGA", "ESAGA", "POTENTIAL_DRAW"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   },
   // UPDATED G2ff24: prim 1 fin 12
   {
@@ -4356,8 +4356,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "F",
     group: 2,
     riders: ["ESAGA", "SAGS"],
-    prediction: "X2",
-    primaryPrediction: "X",
+    prediction: "12",
+    primaryPrediction: "2",
   },
   {
     id: "G2f14",
@@ -4558,7 +4558,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["ESHGS", "ESAGA", "P2", "P7"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   // G1f5 UPDATED (Batch 30)
   {
@@ -4635,7 +4635,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["EWHGS", "P2", "P5"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
   {
     id: "G1g11",
@@ -4695,8 +4695,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "G",
     group: 1,
     riders: ["WAGS", "P7"],
-    prediction: "12",
-    primaryPrediction: "2",
+    prediction: "X2",
+    primaryPrediction: "X",
   }, // UPDATED: user req
 
   // Base Group 1
@@ -4713,7 +4713,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "G",
     group: 1,
     riders: ["EWHGS"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -4722,7 +4722,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["SAGS"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   },
   // G1g4 UPDATED (Batch 30)
   {
@@ -4827,7 +4827,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["SAGS"],
     prediction: "1X",
-    primaryPrediction: "X",
+    primaryPrediction: "1",
   }, // UPDATED: user req
 
   {
@@ -4868,7 +4868,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "O",
     group: 3,
     riders: ["EWHGA", "ESAGA", "A_BAL"],
-    prediction: "X2",
+    prediction: "12",
     primaryPrediction: "2",
   }, // UPDATED
   {
@@ -5000,7 +5000,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["SHGA", "P3", "P7"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
   {
     id: "G1i12",
@@ -5089,7 +5089,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["WHGA", "P5"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   },
   {
     id: "G2i4",
@@ -5253,7 +5253,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "J",
     group: 2,
     riders: ["ESHGA", "EWAGA", "TS_DIFF_DRAW"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -5359,7 +5359,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "K",
     group: 1,
     riders: ["P2", "P3"],
-    prediction: "X2",
+    prediction: "1X",
     primaryPrediction: "X",
   },
   // Base Group 1
@@ -5368,7 +5368,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "K",
     group: 1,
     riders: [],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
 
@@ -5386,7 +5386,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["WHGS"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED: user req
 
   // --- PATTERN L ---
@@ -5417,7 +5417,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["P1", "P2", "P3"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   // Group 1 Base
   {
@@ -5547,8 +5547,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "O",
     group: 3,
     riders: ["SHGS", "WAGS", "EWHGA", "ESAGA", "A_BAL"],
-    prediction: "X2",
-    primaryPrediction: "X",
+    prediction: "12",
+    primaryPrediction: "1",
   }, // UPDATED
   {
     id: "G1o11",
@@ -5602,7 +5602,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "O",
     group: 1,
     riders: ["SHGA", "TSB_1"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -5628,7 +5628,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "O",
     group: 1,
     riders: ["WHGS", "P2", "P5"],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   }, // UPDATED
   {
@@ -5652,7 +5652,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["WHGS"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED: G1o2 -> 12
   { id: "G1o3", mainPattern: "O", group: 1, riders: ["SHGA"], prediction: "12" },
   {
@@ -5669,7 +5669,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "O",
     group: 2,
     riders: ["SHGS"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -5903,7 +5903,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "Q",
     group: 3,
     riders: ["WHGA", "SAGA", "A_BAL"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED
   // Batch 8 Update G2q12 -> X2
@@ -5912,7 +5912,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "Q",
     group: 2,
     riders: ["EWHGA", "ESAGA", "TSB_1", "A_BAL"],
-    prediction: "X2",
+    prediction: "12",
     primaryPrediction: "2",
   },
   {
@@ -5921,7 +5921,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["TSB_1"],
     prediction: "1X",
-    primaryPrediction: "1",
+    primaryPrediction: "X",
   }, // UPDATED
   // UPDATED G2q11 to 12
   {
@@ -6024,7 +6024,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "Q",
     group: 1,
     riders: ["SHGA"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED
   {
@@ -6068,7 +6068,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["ESHGA", "P5"],
     prediction: "1X",
-    primaryPrediction: "1",
+    primaryPrediction: "X",
   },
 
   {
@@ -6077,8 +6077,8 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["EWHGA", "ESAGA", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "2",
-  }, // UPDATED
+    primaryPrediction: "1",
+  }, // UPDATED: user req
 
   {
     id: "G2q4",
@@ -6131,7 +6131,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "R",
     group: 1,
     riders: ["P1", "P3", "P7"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   },
   {
@@ -6156,7 +6156,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "R",
     group: 1,
     riders: ["P1", "P2", "P4", "P7"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   }, // UPDATED
   {
@@ -6192,7 +6192,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "R",
     group: 1,
     riders: ["P3"],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
   {
@@ -6359,7 +6359,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["P2", "P3"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
   {
     id: "G1s7",
@@ -6375,7 +6375,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["EWHGS", "ESAGS", "ESHGA", "EWAGA", "H_BAL", "A_BAL"],
     prediction: "12",
-    primaryPrediction: "1",
+    primaryPrediction: "2",
   }, // UPDATED: user req
 
   // Base Group 1
@@ -6475,7 +6475,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["P1", "P2", "P3"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
   {
     id: "G2t4",
@@ -6483,7 +6483,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["P1", "P2"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "X",
   },
 
   {
@@ -6631,7 +6631,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 1,
     riders: ["ESAGS"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
 
   { id: "G2w1", mainPattern: "W", group: 2, riders: ["SHGS"], prediction: "1" },
@@ -6667,7 +6667,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["ESHGS"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   }, // UPDATED
   { id: "G3w3", mainPattern: "W", group: 3, riders: ["SAGS"], prediction: "1X" },
   {
@@ -6767,7 +6767,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "Y",
     group: 2,
     riders: ["SAGS"],
-    prediction: "12",
+    prediction: "X2",
     primaryPrediction: "2",
   },
 
@@ -6822,7 +6822,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "AA",
     group: 1,
     riders: ["ESHGA"],
-    prediction: "12",
+    prediction: "1X",
     primaryPrediction: "1",
   }, // UPDATED: user req
   {
@@ -6864,7 +6864,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "AA",
     group: 3,
     riders: ["WAGS", "WHGA"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -6937,7 +6937,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     mainPattern: "BB",
     group: 2,
     riders: ["SAGS"],
-    prediction: "1X",
+    prediction: "12",
     primaryPrediction: "1",
   },
   {
@@ -6992,7 +6992,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 3,
     riders: ["WAGS"],
     prediction: "1X",
-    primaryPrediction: "X",
+    primaryPrediction: "1",
   }, // UPDATED
   {
     id: "G3bb4",
@@ -7068,7 +7068,7 @@ export const SUB_PATTERN_RULES: SubPatternRule[] = [
     group: 2,
     riders: ["SHGS", "WAGS"],
     prediction: "12",
-    primaryPrediction: "2",
+    primaryPrediction: "1",
   },
   {
     id: "G3oo2",

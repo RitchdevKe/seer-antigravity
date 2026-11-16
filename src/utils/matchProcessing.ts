@@ -5,6 +5,7 @@ import { getMatchStats } from './matchEvaluator';
 import { calculateFlags, detectMainPattern, analyzeSubPatterns, detectLegacyPatterns, PATTERN_DESCRIPTIONS, LEGACY_DESCRIPTIONS, getActiveFlags, SUB_PATTERN_RULES } from '../components/Patterns';
 import { matchAlgorithm } from '../components/ai/algorithm';
 import { predictWithHybridML } from './hybridMachineLearning';
+import { parseL10 } from './l10Utils';
 
 
 // Helper for floating point comparisons - Strict check (+-0.2) with epsilon
@@ -67,6 +68,16 @@ const safeParseFloat = (val: string | number | undefined, defaultVal: number = 0
     return isNaN(num) ? defaultVal : num;
 };
 
+// Completely sanitize match odds to pure numeric values without trend arrows or unicode symbols
+export function sanitizeMatchOdds(mo?: string | null): string {
+    if (!mo || mo === 'Unknown' || mo === '-') return 'Unknown';
+    const parts = String(mo)
+        .split(/[- ,]+/)
+        .map(s => s.replace(/[^0-9.]/g, '').trim())
+        .filter(s => s.length > 0 && !isNaN(parseFloat(s)) && parseFloat(s) > 0);
+    return parts.length > 0 ? parts.join(',') : 'Unknown';
+}
+
 // Helper to ensure probabilities display sums to 100% (Largest Remainder Method)
 export const formatProbabilities = (probs: { '1': number; 'X': number; '2': number }) => {
     let p1 = Math.round(probs['1'] * 100);
@@ -105,9 +116,10 @@ export const getLogicalDate = (dateStr: string, timeStr?: string): string => {
     
     let extractedTime = timeStr;
     
-    // Normalize DD/MM/YYYY or DD-MM-YYYY to YYYY-MM-DD for consistency
-    if (/^\d{2}[-/]\d{2}[-/]\d{4}/.test(normalizedDateStr)) {
-      const parts = normalizedDateStr.split(/[-/\s]/);
+    // Normalize DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY to YYYY-MM-DD for consistency
+    const trimmedDate = (normalizedDateStr || '').trim();
+    if (/^\d{2}[-/.]\d{2}[-/.]\d{4}/.test(trimmedDate)) {
+      const parts = trimmedDate.split(/[-/.\s]/);
       if (parts.length >= 3) {
         normalizedDateStr = `${parts[2]}-${parts[1]}-${parts[0]}`;
         if (!extractedTime && parts.length > 3) {
@@ -130,8 +142,11 @@ export const getLogicalDate = (dateStr: string, timeStr?: string): string => {
 
     if (!extractedTime) return normalizedDateStr;
     
-    if (extractedTime <= "09:00") {
-      // Matches before or exactly at 9:00 AM EAT belong to the previous prediction day
+    // Numeric check for 9:00 AM EAT cutoff (handles both '02:00' and '2:00')
+    const timeParts = extractedTime.trim().split(':');
+    const hour = parseInt(timeParts[0], 10);
+    if (!isNaN(hour) && hour < 9) {
+      // Matches strictly before 9:00 AM EAT belong to the previous prediction day
       const dateObj = new Date(normalizedDateStr);
       if (!isNaN(dateObj.getTime())) {
         dateObj.setUTCDate(dateObj.getUTCDate() - 1);
@@ -235,9 +250,9 @@ export const matchesPrediction = (pred: string, actual: string) => {
 const safeEnsureHedgedPrediction = (pred: string, m: Match, phaStatsMap?: Record<string, any>): string => {
   let odds1 = 2.0, odds2 = 2.5;
   if (m) {
-    const moParts = (m.mo || "").split(",").map((s: string) => parseFloat(s.trim()));
+    const moParts = (m.mo || (m as any).odds || (m as any).data?.mo || (m as any).data?.odds || "").split(/[- ,]+/).map((s: string) => parseFloat(s.replace(/[^0-9.]/g, '').trim())).filter((p: number) => !isNaN(p));
     odds1 = moParts[0] || 2.0;
-    odds2 = moParts[2] || 2.5;
+    odds2 = (moParts.length >= 3 ? moParts[2] : (moParts.length === 2 ? moParts[1] : 0)) || 2.5;
   }
   const defaultFavHedge = odds1 <= odds2 ? "1X" : "X2";
   if (!pred) return defaultFavHedge;
@@ -413,19 +428,11 @@ const calculateGSPoints = (gsHome: number, gsAway: number) => {
 const calculateL10Points = (l10: string) => {
     // FORM (L10) gets 8 points
     if (!l10 || l10 === 'NA') return { home: 2.7, draw: 2.6, away: 2.7 }; // Split 8 roughly
-    const str = l10.trim();
-    let home = 0;
-    let away = 0;
-    const parts = str.split(':');
-    if (parts.length === 2) {
-        if (/^\d+$/.test(parts[0].trim())) {
-             home = safeParseFloat(parts[0], 0);
-             away = safeParseFloat(parts[1], 0);
-        } else {
-             home = (parts[0].match(/W/gi) || []).length;
-             away = (parts[1].match(/W/gi) || []).length;
-        }
-    }
+    const parsed = parseL10(l10);
+    if (!parsed.isValid) return { home: 2.7, draw: 2.6, away: 2.7 };
+
+    const home = parsed.homeWins;
+    const away = parsed.awayWins;
     
     const diff = Math.abs(home - away);
     
@@ -1100,8 +1107,9 @@ export const isMatchGoalAccurate = (
         }
 
         case "value_bets":
-            return matchesPrediction(pred, actual);
-
+        case "value_bet":
+        case "ai_value_bets":
+        case "sandbox_value_bets":
         case "top12":
         case "top_12":
         case "top_12_value":

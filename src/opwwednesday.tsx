@@ -1,17 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Match } from './types';
 import { DayMetadata, DAY_METADATA } from './utils/opwDayMetadata';
-import { 
-    populateCategoryWithMasterRules,
-    borrowTriggerPoints,
-    MASTER_TOP_12_RULES,
-    MASTER_BEST_BET_RULES,
-    MASTER_BANKERS_DLIVE_RULES,
-    MASTER_BANKERS_JACKPOT_RULES,
-    MASTER_VALUE_PICKS_RULES,
-    MASTER_UPSETS_RULES,
-    MASTER_BOTB_RULES
-} from './utils/opwCatalog';
+import { sanitizeRulePolarity, populateCategoryWithMasterRules, buildValueBetsRulesFromT12 } from './utils/opwCatalog';
 import { 
     OptimizedCategorySettings, 
     MatchEvaluationStats,
@@ -19,6 +9,828 @@ import {
     evaluateAllCatalogTriggers
 } from './utils/opwCommon';
 import { Calendar, Trophy, Sliders, CheckCircle2 } from 'lucide-react';
+
+export interface WednesdayRuleItem {
+  description: string;
+  points: number;
+}
+
+// ----------------------------------------------------------------------------
+// Category: Top 12 Value | Target Objective: 'mfav_draw'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_TOP_12_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+{ description: "Underdog odds <= 2.80", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Odds for draw is < 3.0", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Odds for underdog <= odds for draw but >= 3.0", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Odds for underdog <= odds for draw but between 2.8 to 3.0", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Odds for underdog <= odds for draw but < 2.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "M.fav GA is > 0.6 points lower than Underdog GA", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "1X2 supports the underdog", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog GS < 1.0 but M.fav GS > 1.0", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo support for Mfav > 50%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo support for Mfav is 45-50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo for Mfav support <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Underdog has hidden strength", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Underdog has hidden weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "M.fav has hidden strength", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "M.fav has hidden weakness", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "PAA, Seer, Algo, and ML agree on 1X/X2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "PAA, Seer, and ML agree on 1X/X2", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "All predictors (Algo, Seer, PAA, SubPattern) agree on 1X/X2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo,seer,and ML final agree on 1X/X2 But PAA and Sub pattern final is 12", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Sub pattern primary prediction supports the underdog", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Algo primary prediction supports the underdog", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Match has BB, T12, or BD opw < 10%", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog GS >Mfav GS with >=0.4 points", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "HGA=AGS + Equal GS", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Match is for Tournament", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Match is for Carabao Cup", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Both teams GA >= 1.1 (volatile) and Underdog has hidden strength", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Equal GS + AGA=HGS + M.fav has hidden strength", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Equal GS + AGA=HGS + M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "A match has GS=GS=GA=GA", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Sub pattern primary on draw and hedges with underdog", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both teams GA >= 1.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog GA >= 1.5 and GS => 1.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog was away on LE and Won", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "LE was a draw+Underdog has hidden strength/weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "1X2 Rating =>7", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Match has Banned:Upset risk tag", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Match has Banned:Draw risk tag", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "M.fav TS >= 2.0 and Underdog TS < 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Pha Underdog and Pha draw both >20%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on draw >= 35%+1X2 Rating < 3.0", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS=>2.0=Underdog GA +-0.2", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav GS=>2.0=Underdog GA +-0.2+Seer score on draw >= 35%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav L10 > Und L10 with >=3 points", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav L10(wins) >5 to 7", points: 15 },
+  { description: "Mfav L10(wins) >7", points: 25 },
+  { description: "Underdog L10(wins) >5 to 7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog L10(wins) >7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Mfav was away and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "PHA for Mfav <40%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +10 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team TS =< 1.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "SubPattern is G2E5", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "MFav TS <=1.2", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "1X2 Rating < 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on Mfav =>70%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -20 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on draw >= 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA on draw =>30%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo Mfav support =>60", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Underdog is at home", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Underdog has hidden strength+Underdog is at home", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Underdog has hidden weakness+Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Underdog has higher L10 than Mfav", points: -5 },
+  { description: "Mfav L10 = Und L10", points: -5 },
+  { description: "LE was a draw + Mfav L10 = Und L10", points: -5 },
+  { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: -5 },
+], 'top_10_value', { preserveExact: true });
+
+// ----------------------------------------------------------------------------
+// Category: Best Bets | Target Objective: 'mfav_only'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_BEST_BET_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+{ description: "Algo support for Mfav > 50%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Low Favorite Odds (< 1.80)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog GS < 1.0 but M.fav GS > 1.0", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Odds difference >= 1.50", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on draw <= 20%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "All predictors (Algo, Seer, PAA, SubPattern) agree on 1X/X2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "PAA, Seer, Algo, and ML agree on 1X/X2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Underdog odds <= 2.80", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on underdog >= 45%", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Algo primary prediction supports the underdog", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog was away on LE and Won", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Youth League (U21,U20,U19)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both teams GA >= 1.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "TS difference <= 0.1", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Match has Banned:Upset risk tag", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Match has Banned:Draw risk tag", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "M.fav TS >= 2.0 and Underdog TS < 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Pha Underdog and Pha draw both >20%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on draw >= 35%+1X2 Rating < 3.0", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS=>2.0=Underdog GA +-0.2", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav GS=>2.0=Underdog GA +-0.2+Seer score on draw >= 35%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav L10 > Und L10 with >=3 points", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav L10(wins) >5 to 7", points: 15 },
+  { description: "Mfav L10(wins) >7", points: 25 },
+  { description: "Underdog L10(wins) >5 to 7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog L10(wins) >7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Mfav was away and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Match is for Tournament", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Match is for Carabao Cup", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "PHA for Mfav <40%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +10 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team TS =< 1.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "SubPattern is G2E5", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "MFav TS <=1.2", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Underdog has hidden strength", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "1X2 Rating < 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on Mfav =>70%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog has hidden weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -20 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on draw >= 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA on draw =>30%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo Mfav support =>60", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo support for Mfav is 45-50%", points: 10 }, // Calibrated Rules: +10 pts,
+  { description: "Underdog has higher L10 than Mfav", points: -5 },
+  { description: "Mfav L10 = Und L10", points: -5 },
+  { description: "LE was a draw + Mfav L10 = Und L10", points: -5 },
+  { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: -5 },
+], 'best_bet', { preserveExact: true });
+
+// ----------------------------------------------------------------------------
+// Category: Bankers Dlive | Target Objective: 'mfav_only'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_BANKERS_DLIVE_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+{ description: "PAA Win probability >= 50%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Pha Underdog and Pha draw both >20%", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Algo support for Mfav > 50%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on draw <= 20%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Low Favorite Odds (< 1.80)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog GS < 1.0 and Mfav GA < 1.0 (Dominant Defense)", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Odds difference >= 1.50", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav TS >= 3.0 and Ud TS < 0.8", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Underdog GS < 1.0 but M.fav GS > 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "TS difference >= 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "All predictors (Algo, Seer, PAA, SubPattern) agree on 1X/X2", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "PAA, Seer, Algo, and ML agree on 1X/X2", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "1X2 Rating =>7", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Underdog L10 <= 2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Ud GA < Mfav GA (defensive edge)", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS >= 1.5 and Underdog GS < 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Algo support for Mfav is 45-50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Draw odds < 3.2 (draw absorbs)", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "PAA, Seer, and ML agree on 1X/X2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog odds <= 2.80", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Algo primary prediction supports the underdog", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Seer score on underdog >= 45%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Seer primary predicts on underdog", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Sub pattern primary prediction supports the underdog", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Underdog was away on LE and Won", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Dead-Heat Draw Trap (Fav >= 2.50 + Ud <= 2.80 + Draw < 3.30)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "TS difference <= 0.1", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Youth League (U21,U20,U19)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Both teams GA >= 1.5", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "LE Underdog won with 2+ goals", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both teams GA >= 1.1 (volatile match)", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Algo for Mfav support <40%", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was away and won last Encounter <=1 goal", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav was home and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was home and won last Encounter >3 goal", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was Away and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "PHA for Mfav <40%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +30 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team TS =< 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "SubPattern is G2E5", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "MFav TS <=1.2", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Algo final prediction is 1X/X2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav TS < 1.5, Ud TS < 0.8, Seer score draw >= 35%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav GA close to Ud GA (+-0.2) + Algo support 45-50%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA Draw probability >= 35%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -20 pts
+  { description: "Underdog has higher L10 than Mfav", points: -5 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 and Underdog L10 difference <= 1", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "1X2 Rating < 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GA <= 1.1 and Underdog GA > 1.1", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Match has Banned:Draw risk tag", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden strength", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "LE was a draw", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 = Und L10", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "LE was a draw + Mfav L10 = Und L10", points: -5 }, // Calibrated Rules: -25 pts
+  { description: "LE was a draw + Mfav has hidden strength", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 = Und L10+ Mfav L10 and Underdog L10 difference <= 1", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "M.fav TS >= 2.0 and Underdog TS < 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "1X2 Rating 5.0 to 7.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav L10 and Underdog L10 difference <= 1+Both teams GA >= 1.1 (volatile match)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav L10 = Und L10+ Both teams GA >= 1.1 (volatile match)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "M.fav GA is > 0.6 points lower than Underdog GA", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "LE : Underdog won the last encounter", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Seer score on draw >= 35%+1X2 Rating < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE : Underdog won the last encounter+ Underdog has higher L10 than Mfav", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden strength", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "LE was a draw+Underdog has hidden strength/weakness", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE was a draw+1X2 Rating < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav has hidden strength/weakness+Underdog has hidden strength/weakness", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both teams GA >= 1.1 (volatile) and Underdog has hidden strength", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Underdog GA >= 1.5 and GS => 1.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Underdog GS >Mfav GS with >=0.4 points", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Both team GS => 1.8 + Mfav GA close to Ud GA (+-0.2)", points: -15 }, // Calibrated Rules: -25 pts
+  { description: "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Match has Banned:Upset risk tag", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 > Und L10 with >=3 points", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav L10(wins) >5 to 7", points: 15 },
+  { description: "Mfav L10(wins) >7", points: 25 },
+  { description: "Underdog L10(wins) >5 to 7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog L10(wins) >7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "M.fav has hidden weakness", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on Mfav =>70%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog has hidden weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on draw >= 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA on draw =>30%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo Mfav support =>60", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: 10 }, // Calibrated Rules: +10 pts,
+  { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: -5 },
+], 'bankers_dlive', { preserveExact: true });
+
+// ----------------------------------------------------------------------------
+// Category: Bankers Jackpot | Target Objective: 'mfav_only'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_BANKERS_JACKPOT_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+{ description: "PAA Win probability >= 50%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Pha Underdog and Pha draw both >20%", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Algo support for Mfav > 50%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on draw <= 20%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Low Favorite Odds (< 1.80)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog GS < 1.0 and Mfav GA < 1.0 (Dominant Defense)", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Odds difference >= 1.50", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav TS >= 3.0 and Ud TS < 0.8", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog GS < 1.0 but M.fav GS > 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "TS difference >= 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "All predictors (Algo, Seer, PAA, SubPattern) agree on 1X/X2", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "PAA, Seer, Algo, and ML agree on 1X/X2", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "1X2 Rating =>7", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Underdog L10 <= 2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Ud GA < Mfav GA (defensive edge)", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS >= 1.5 and Underdog GS < 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Algo support for Mfav is 45-50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Draw odds < 3.2 (draw absorbs)", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "PAA, Seer, and ML agree on 1X/X2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog odds <= 2.80", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Algo primary prediction supports the underdog", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Seer score on underdog >= 45%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Seer primary predicts on underdog", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Sub pattern primary prediction supports the underdog", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Underdog was away on LE and Won", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Dead-Heat Draw Trap (Fav >= 2.50 + Ud <= 2.80 + Draw < 3.30)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "TS difference <= 0.1", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Youth League (U21,U20,U19)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Both teams GA >= 1.5", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "LE Underdog won with 2+ goals", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both teams GA >= 1.1 (volatile match)", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Algo for Mfav support <40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav was away and won last Encounter <=1 goal", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav was home and won last Encounter <=1 goal", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was home and won last Encounter >3 goal", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was Away and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "PHA for Mfav <40%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +30 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team TS =< 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "SubPattern is G2E5", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "MFav TS <=1.2", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Algo final prediction is 1X/X2", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav TS < 1.5, Ud TS < 0.8, Seer score draw >= 35%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav GA close to Ud GA (+-0.2) + Algo support 45-50%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA Draw probability >= 35%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -20 pts
+  { description: "PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Underdog GS >Mfav GS with >=0.4 points", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Underdog has higher L10 than Mfav", points: -5 }, // Calibrated Rules: -15 pts
+  { description: "1X2 Rating < 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "PAA, SubPattern, and Algo agree on 12 hedge", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both teams GS < 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both teams GS < 1.0 and Both team GS <GA", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both teams GA > GS and Both team GS <=1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Odds for underdog >= 2.80 to 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Odds for underdog <= odds for draw but between 2.8 to 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE : Underdog won the last encounter", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav L10 and Underdog L10 difference <= 1", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "LE : Underdog won the last encounter+ Underdog has higher L10 than Mfav", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 and Underdog L10 difference <= 1+Both teams GA >= 1.1 (volatile match)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog GA >= 1.5 and GS => 1.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both team GS => 1.8 + Mfav GA close to Ud GA (+-0.2)", points: -15 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 = Und L10", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav L10 = Und L10+ Both teams GA >= 1.1 (volatile match)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav is away but was home last LE won with <=1 goal", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav L10 = Und L10+ Mfav L10 and Underdog L10 difference <= 1", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "M.fav has hidden strength", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "M.fav GA is > 0.6 points lower than Underdog GA", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GA <= 1.1 and Underdog GA > 1.1", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog GA >= 1.8 and Mfav GA <= 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav L10 > Und L10 with >=3 points", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav L10(wins) >5 to 7", points: 15 },
+  { description: "Mfav L10(wins) >7", points: 25 },
+  { description: "Underdog L10(wins) >5 to 7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog L10(wins) >7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog has hidden strength", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Match has Banned:Upset risk tag", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE was a draw", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE was a draw+1X2 Rating < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav TS >= 2.0 and Underdog TS < 0.7 + Seer score on draw >= 35%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav TS >= 2.0 and Underdog TS < 1.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Odds for draw is < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "1X2 Rating 5.0 to 7.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "M.fav has hidden weakness", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Both teams GA >= 1.1 (volatile) and Underdog has hidden strength", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Match has Banned:Draw risk tag", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav is away but was home last LE won with <=1 goal+ Odds for underdog >= 2.80 to 3.0", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Mfav GS = Und Gs +-0.2+Mfav is away but was home last LE won with <=1 goal", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Seer score on draw >= 35%+1X2 Rating < 3.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Odds for underdog <= odds for draw but < 2.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8 + Odds underdog < 2.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8 + Algo support < 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE was a draw + Mfav L10 = Und L10", points: -5 }, // Calibrated Rules: -25 pts
+  { description: "LE was a draw + Mfav has hidden strength", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on Mfav =>70%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog has hidden weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on draw >= 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA on draw =>30%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo Mfav support =>60", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: 10 }, // Calibrated Rules: +10 pts,
+  { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: -5 },
+], 'bankers_jackpot', { preserveExact: true });
+
+// ----------------------------------------------------------------------------
+// Category: Value Picks | Target Objective: 'mfav_only'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_VALUE_PICKS_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+{ description: "Low Favorite Odds (< 1.80)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo support for Mfav > 50%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog GS < 1.0 but M.fav GS > 1.0", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "PAA Win probability >= 50%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +10 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Draw odds between 3.0 and 3.3", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team TS =< 1.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "MFav TS <=1.2", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "LE was a draw", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Both teams GA >= 1.1 (volatile match)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Underdog has hidden strength", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Underdog odds <= 2.80", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "1X2 Rating < 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on Mfav =>70%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog has hidden weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -20 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on draw >= 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA on draw =>30%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo Mfav support =>60", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo support for Mfav is 45-50%", points: 10 }, // Calibrated Rules: +10 pts,
+  { description: "Mfav L10(wins) >5 to 7", points: 15 },
+  { description: "Mfav L10(wins) >7", points: 25 },
+  { description: "Underdog L10(wins) >5 to 7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog L10(wins) >7", points: -5 }, // Calibrated Rules (Favorite): -5 pts
+  { description: "Underdog has higher L10 than Mfav", points: -5 },
+  { description: "Mfav L10 = Und L10", points: -5 },
+  { description: "LE was a draw + Mfav L10 = Und L10", points: -5 },
+  { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: -5 },
+], 'value_picks', { preserveExact: true });
+
+// ----------------------------------------------------------------------------
+// Category: Underdog Upsets | Target Objective: 'underdog_only'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_UPSETS_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+  { description: "Mfav is playing at home", points: -25 }, // Calibrated Rules (Upsets): -25 pts
+{ description: "Odds for underdog >= 2.80 to 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Odds for underdog <= odds for draw but between 2.8 to 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog GS >Mfav GS with >=0.4 points", points: 30 }, // Calibrated Rules: +30 pts
+  { description: "Underdog GA >= 1.5 and GS => 1.8", points: 30 }, // Calibrated Rules: +30 pts
+  { description: "Algo primary prediction supports the underdog", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Seer score on underdog >= 45%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Seer primary predicts on underdog", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog has >= 5 more points on point system", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog odds <= 2.80", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Odds for underdog <= odds for draw but < 2.8", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "LE Underdog won with 2+ goals", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Dead-Heat Draw Trap (Fav >= 2.50 + Ud <= 2.80 + Draw < 3.30)", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog GS < 1.0 but M.fav GS > 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav GS >= 1.5 and Underdog GS < 1.0", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Odds for underdog <= odds for draw but >= 3.0", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "PAA, Seer, and ML agree on 1X/X2", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Underdog was away on LE and Won", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "LE : Underdog won the last encounter", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "M.fav TS >= 2.0 and Underdog TS < 1.0", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Low Favorite Odds (< 1.80)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Seer score on draw >= 35%+1X2 Rating < 3.0", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav GS=>2.0=Underdog GA +-0.2+Seer score on draw >= 35%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "All predictors (Algo, Seer, PAA, SubPattern) agree on 1X/X2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "PAA, SubPattern, and Algo agree on 12 hedge", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Sub pattern primary prediction supports the underdog", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav TS >= 3.0 and Ud TS < 0.8", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog has hidden weakness", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both teams GA >= 1.1 (volatile) and Underdog has hidden strength", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8 + Algo support < 40%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "LE was a draw + Mfav L10 = Und L10", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "LE was a draw + Mfav has hidden strength", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog GS < 1.0 and Mfav GA < 1.0 (Dominant Defense)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GA >= 1.8 and Mfav GA <= 1.0", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "LE : Underdog won the last encounter+ Underdog has higher L10 than Mfav", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav is away but was home last LE won with <=1 goal+ Odds for underdog >= 2.80 to 3.0", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav GS = Und Gs +-0.2+Mfav is away but was home last LE won with <=1 goal", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Youth League (U21,U20,U19)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +15 pts
+  { description: "Both teams GA > GS and Both team GS <=1.0", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav L10(wins) >5 to 7", points: -15 },
+  { description: "Mfav L10(wins) >7", points: -25 },
+  { description: "Underdog L10(wins) >5 to 7", points: 20 }, // Calibrated Rules (Upsets): +20 pts
+  { description: "Underdog L10(wins) >7", points: 25 }, // Calibrated Rules (Upsets): +25 pts
+  { description: "Match is for Tournament", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Match is for Carabao Cup", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "PHA for Mfav <40%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "SubPattern is G2E5", points: 30 }, // Calibrated Rules: +30 pts
+  { description: "Odds for draw is < 3.0", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo support for Mfav > 50%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Algo final prediction is 1X/X2", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "PAA, Seer, Algo, and ML agree on 1X/X2", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Sub pattern primary on draw and hedges with underdog", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav TS 1.5-1.99 and Ud TS < 0.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav TS >= 2.0 and Underdog TS < 0.7 + Seer score on draw >= 35%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "M.fav has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "M.fav has hidden weakness", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "M.fav GA is > 0.6 points lower than Underdog GA", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Equal GS + AGA=HGS + M.fav has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Equal GS + AGA=HGS + M.fav has hidden weakness", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "LE was a draw+Underdog has hidden strength/weakness", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav GA close to Ud GA (+-0.2) + Algo support 45-50%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Both team GS => 1.8 + Mfav GA close to Ud GA (+-0.2)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8 + Odds underdog < 2.8", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "LE was a draw", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav L10 = Und L10", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog has higher L10 than Mfav", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav L10 and Underdog L10 difference <= 1", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "1X2 Rating 5.0 to 7.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "PAA Win probability < 35%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "PHA Underdog probability >= 35%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav L10 and Underdog L10 difference <= 1+Both teams GA >= 1.1 (volatile match)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "LE was a draw+1X2 Rating < 3.0", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav L10 = Und L10+ Both teams GA >= 1.1 (volatile match)", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav has hidden strength/weakness+Underdog has hidden strength/weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Mfav L10 = Und L10+ Mfav L10 and Underdog L10 difference <= 1", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "TS difference <= 0.1", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Pha Underdog and Pha draw both >20%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was home and won last Encounter >3 goal", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "MFav TS <=1.2", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on draw <= 20%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Both teams GS < 1.0", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo support for Mfav is 45-50%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Algo for Mfav support <40%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "PAA, SubPattern, Algo, and ML agree on 12 hedge", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo,seer,and ML final agree on 1X/X2 But PAA and Sub pattern final is 12", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Both teams GS < 1.0 and Both team GS <GA", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both teams GA >= 1.1 (volatile match)", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Both teams GA >= 1.5", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Match has BB, T12, or BD opw < 10%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav GA <= 1.1 and Underdog GA > 1.1", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "PAA Win probability >= 50%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav is away but was home last LE won with <=1 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Match has Banned:Upset risk tag", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Match has Banned:Draw risk tag", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav GS=>2.0=Underdog GA +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav L10 > Und L10 with >=3 points", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was away and won last Encounter <=1 goal", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav was home and won last Encounter <=1 goal", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Both team TS =< 1.0", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "1X2 Rating =>7", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav TS < 1.5, Ud TS < 0.8, Seer score draw >= 35%", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog has hidden strength", points: 30 }, // Calibrated Rules: +30 pts
+  { description: "A match has GS=GS=GA=GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "TS difference >= 1.0", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "PHA Draw probability >= 35%", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Match has PHA TIE tag", points: 30 }, // Calibrated Rules: +20 pts
+  { description: "LE : Underdog won the last encounter+Youth League (U21,U23,U20,U19)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav <40%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Seer score on Mfav =>70%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Seer score on draw >= 40%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "PHA on draw =>30%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Algo Mfav support =>60", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: -10 }, // Calibrated Rules: -10 pts,
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: 5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: 5 },
+], 'upsets', { preserveExact: true });
+
+// ----------------------------------------------------------------------------
+// Category: Best of the Best | Target Objective: 'mfav_only'
+// ----------------------------------------------------------------------------
+export const WEDNESDAY_BOTB_RULES: WednesdayRuleItem[] = sanitizeRulePolarity([
+{ description: "Low Favorite Odds (< 1.80)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo support for Mfav > 50%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Odds difference >= 1.50", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Underdog odds <= 2.80", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on underdog >= 45%", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav was away and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter <=1 goal", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "PHA for Mfav <40%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +10 pts
+  { description: "Underdog odds <=2.7", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Mfav odds >= 2.5", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both team TS =< 1.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "SubPattern is G2E5", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Mfav GA=Und GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "MFav TS <=1.2", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Underdog has hidden strength", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "1X2 Rating < 3.0", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on Mfav <40%", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Seer score on Mfav =>40%  to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Seer score on Mfav =>50%  to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Seer score on Mfav =>60%  to <70%", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Seer score on Mfav =>70%", points: 25 }, // Calibrated Rules: +25 pts
+  { description: "Underdog has hidden weakness", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS = Und Gs +-0.2", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)", points: 5 }, // Calibrated Rules: +5 pts
+  { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
+  { description: "Match has PHA TIE tag", points: -30 }, // Calibrated Rules: -20 pts
+  { description: "M.fav has hidden strength+Underdog has hidden strength", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Underdog has hidden weakness+M.fav has hidden weakness", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Seer score on draw >= 35% to <40%", points: -30 }, // Calibrated Rules: -30 pts
+  { description: "Seer score on draw >= 40%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "PHA on draw =>30%", points: -25 }, // Calibrated Rules: -25 pts
+  { description: "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Algo Mfav support =>50 to <55%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo Mfav support =>55 to <60%", points: 15 }, // Calibrated Rules: +15 pts
+  { description: "Algo Mfav support =>60", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "1X2 Rating < 3.0+MFav TS <=1.2", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Underdog GS > Mfav GS with >= 0.3", points: -10 }, // Calibrated Rules: -10 pts
+  { description: "Mfav GS > Underdog GS with >= 0.3", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo supports Mfav >=45% to <50%", points: 10 }, // Calibrated Rules: +10 pts
+  { description: "Algo support for Mfav is 45-50%", points: 10 }, // Calibrated Rules: +10 pts,
+  { description: "Underdog has higher L10 than Mfav", points: -5 },
+  { description: "Mfav L10 = Und L10", points: -5 },
+  { description: "LE was a draw + Mfav L10 = Und L10", points: -5 },
+  { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0", points: -5 },
+  { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav", points: -5 },
+], 'botb_best', { preserveExact: true });
+
+export const WEDNESDAY_VALUE_BETS_RULES: WednesdayRuleItem[] = buildValueBetsRulesFromT12(WEDNESDAY_TOP_12_RULES);
+
+export const WEDNESDAY_RULES_MAP: Record<string, { description: string; points: number }[]> = {
+    top_12_value: WEDNESDAY_TOP_12_RULES,
+    top_10_value: WEDNESDAY_TOP_12_RULES,
+    best_bet: WEDNESDAY_BEST_BET_RULES,
+    bankers_dlive: WEDNESDAY_BANKERS_DLIVE_RULES,
+    bankers_jackpot: WEDNESDAY_BANKERS_JACKPOT_RULES,
+    value_picks: WEDNESDAY_VALUE_PICKS_RULES,
+    value_bets: WEDNESDAY_VALUE_BETS_RULES,
+    value_bet: WEDNESDAY_VALUE_BETS_RULES,
+    upsets: WEDNESDAY_UPSETS_RULES,
+    botb_best: WEDNESDAY_BOTB_RULES,
+};
 
 export const WEDNESDAY_METADATA: DayMetadata = DAY_METADATA.wednesday;
 
@@ -31,17 +843,17 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
         description: "Wednesday Top 12 - Statistically sound 1X hedged value picks with proven safety.",
         baseLogic: "Points based on Market Favorite's Primary Pattern PHA %.",
         baseWeightIntervals: [
-            { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-            { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-            { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-            { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-            { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-            { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+            { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
         ],
-        rules: populateCategoryWithMasterRules(MASTER_TOP_12_RULES, 'mfav_draw', 'top_12_value', 'wednesday')
+        rules: populateCategoryWithMasterRules(WEDNESDAY_TOP_12_RULES, 'mfav_draw', 'top_12_value', 'wednesday', { preserveExact: true })
     };
 
-    return {
+    const settings: Record<string, OptimizedCategorySettings> = {
         top_12_value: top12Config,
         top_10_value: top12Config,
         best_bet: {
@@ -49,14 +861,14 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
             description: "Wednesday Best Bets - Peak high-conviction favorites.",
             baseLogic: "Points based on Market Favorite's Primary Pattern PHA %.",
             baseWeightIntervals: [
-                { id: '1', min: 60, max: 100, points: 35, metric: 'pha_market_fav' },
-                { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
-                { id: '3', min: 45, max: 49.99, points: 25, metric: 'pha_market_fav' },
-                { id: '4', min: 40, max: 44.99, points: 20, metric: 'pha_market_fav' },
-                { id: '5', min: 34, max: 39.99, points: 15, metric: 'pha_market_fav' },
-                { id: '6', min: 0, max: 33.99, points: 10, metric: 'pha_market_fav' }
+                { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+          { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+          { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+          { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+          { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+          { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
             ],
-            rules: populateCategoryWithMasterRules(MASTER_BEST_BET_RULES, 'mfav_only', 'best_bet', 'wednesday')
+            rules: populateCategoryWithMasterRules(WEDNESDAY_BEST_BET_RULES, 'mfav_only', 'best_bet', 'wednesday', { preserveExact: true })
         },
         bankers_dlive: {
             name: "Bankers Dlive (Wednesday)",
@@ -67,7 +879,7 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
                 { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
                 { id: '3', min: 0, max: 49.99, points: 15, metric: 'pha_market_fav' }
             ],
-            rules: populateCategoryWithMasterRules(MASTER_BANKERS_DLIVE_RULES, 'mfav_only', 'bankers_dlive', 'wednesday')
+            rules: populateCategoryWithMasterRules(WEDNESDAY_BANKERS_DLIVE_RULES, 'mfav_only', 'bankers_dlive', 'wednesday', { preserveExact: true })
         },
         bankers_jackpot: {
             name: "Bankers Jackpot (Wednesday)",
@@ -78,7 +890,7 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
                 { id: '2', min: 50, max: 59.99, points: 30, metric: 'pha_market_fav' },
                 { id: '3', min: 0, max: 49.99, points: 15, metric: 'pha_market_fav' }
             ],
-            rules: populateCategoryWithMasterRules(MASTER_BANKERS_JACKPOT_RULES, 'mfav_only', 'bankers_jackpot', 'wednesday')
+            rules: populateCategoryWithMasterRules(WEDNESDAY_BANKERS_JACKPOT_RULES, 'mfav_only', 'bankers_jackpot', 'wednesday', { preserveExact: true })
         },
         upsets: {
             name: "Upsets (Wednesday)",
@@ -90,7 +902,7 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
                 { id: '3', min: 25, max: 34.99, points: 20, metric: 'pha_underdog' },
                 { id: '4', min: 0, max: 24.99, points: 10, metric: 'pha_underdog' }
             ],
-            rules: populateCategoryWithMasterRules(MASTER_UPSETS_RULES, 'underdog_only', 'upsets', 'wednesday')
+            rules: populateCategoryWithMasterRules(WEDNESDAY_UPSETS_RULES, 'underdog_only', 'upsets', 'wednesday', { preserveExact: true })
         },
         value_picks: {
             name: "Value Picks (Wednesday)",
@@ -100,7 +912,21 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
                 { id: '1', min: 50, max: 100, points: 30, metric: 'pha_market_fav' },
                 { id: '2', min: 0, max: 49.99, points: 15, metric: 'pha_market_fav' }
             ],
-            rules: populateCategoryWithMasterRules(MASTER_VALUE_PICKS_RULES, 'mfav_only', 'value_picks', 'wednesday')
+            rules: populateCategoryWithMasterRules(WEDNESDAY_VALUE_PICKS_RULES, 'mfav_only', 'value_picks', 'wednesday', { preserveExact: true })
+        },
+        value_bets: {
+            name: "Value Bets (Wednesday)",
+            description: "Wednesday Value Bets - Independent value bet selections (Mfav win or draw).",
+            baseLogic: "Points based on Market Favorite's Primary Pattern PHA %.",
+            baseWeightIntervals: [
+                { id: '1', min: 60, max: 100, points: 45, metric: 'pha_market_fav' },
+                { id: '2', min: 50, max: 59.99, points: 40, metric: 'pha_market_fav' },
+                { id: '3', min: 45, max: 49.99, points: 35, metric: 'pha_market_fav' },
+                { id: '4', min: 40, max: 44.99, points: 25, metric: 'pha_market_fav' },
+                { id: '5', min: 34, max: 39.99, points: 10, metric: 'pha_market_fav' },
+                { id: '6', min: 0, max: 33.99, points: 5, metric: 'pha_market_fav' }
+            ],
+            rules: populateCategoryWithMasterRules(WEDNESDAY_VALUE_BETS_RULES, 'mfav_draw', 'value_bets', 'wednesday', { preserveExact: true })
         },
         botb_best: {
             name: "BOTB (Wednesday)",
@@ -110,9 +936,10 @@ export function getWednesdayCategorySettings(): Record<string, OptimizedCategory
                 { id: '1', min: 55, max: 100, points: 35, metric: 'pha_market_fav' },
                 { id: '2', min: 0, max: 54.99, points: 15, metric: 'pha_market_fav' }
             ],
-            rules: populateCategoryWithMasterRules(MASTER_BOTB_RULES, 'mfav_only', 'botb_best', 'wednesday')
+            rules: populateCategoryWithMasterRules(WEDNESDAY_BOTB_RULES, 'mfav_only', 'botb_best', 'wednesday', { preserveExact: true })
         }
     };
+    return settings;
 }
 
 /**
@@ -128,16 +955,36 @@ export function evaluateWednesdayScoreDetailed(
     activeHedgingProtocol: string | null;
     optimizedPrediction: string;
 } {
+    const catNameLower = (categorySettings?.name || stats.evalCategoryId || '').toLowerCase();
+    if (catNameLower.includes('banker_draw') || catNameLower.includes('banker draw')) {
+        return {
+            totalScore: 0,
+            rulesHit: [],
+            activeHedgingProtocol: null,
+            optimizedPrediction: 'X'
+        };
+    }
+
     const rulesToUse = categorySettings?.rules || [];
     const triggeredDescriptions = evaluateAllCatalogTriggers(stats, match);
     const rulesHit: { description: string; points: number }[] = [];
+    const evaluatedDescriptions = new Set<string>();
     let totalScore = 0;
 
     rulesToUse.forEach(rule => {
-        if (triggeredDescriptions.has(rule.description)) {
-            const pts = rule.points !== 0 ? rule.points : borrowTriggerPoints(rule.description, 'top_12_value', 'wednesday');
+        if (rule.description && !evaluatedDescriptions.has(rule.description) && triggeredDescriptions.has(rule.description)) {
+            evaluatedDescriptions.add(rule.description);
+            const pts = rule.points;
             rulesHit.push({ description: rule.description, points: pts });
             totalScore += pts;
+        }
+    });
+
+    triggeredDescriptions.forEach(desc => {
+        if (desc && !evaluatedDescriptions.has(desc)) {
+            evaluatedDescriptions.add(desc);
+            rulesHit.push({ description: desc, points: 5 });
+            totalScore += 5;
         }
     });
 

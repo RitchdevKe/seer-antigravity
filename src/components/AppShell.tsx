@@ -30,7 +30,8 @@ export type ShellView =
   | "seer"
   | "perf"
   | "ml"
-  | "opw_comp";
+  | "opw_comp"
+  | "opw_algo";
 
 interface NavItem {
   id: ShellView;
@@ -43,10 +44,12 @@ const PRIMARY_NAV: NavItem[] = [
   { id: "analysis", label: "Analysis Board", icon: BarChart3, hint: "Historical patterns" },
   { id: "live", label: "Live Analysis", icon: PlayCircle, hint: "Daily & jackpot" },
   { id: "seer", label: "SEER", icon: Eye, hint: "Self-learning algo" },
+  { id: "opw_algo", label: "OPW P-Recom", icon: Sparkles, hint: "Point optimizer" },
   { id: "ai", label: "AI Analyst", icon: BrainCircuit, hint: "Gemini studio" },
   { id: "ml", label: "SEER Intelligence", icon: Database, hint: "Machine Learning" },
 ];
 const SECONDARY_NAV: NavItem[] = [
+  { id: "opw_comp", label: "OPW Comparison", icon: BarChart2, hint: "Trigger accuracy" },
   { id: "nerdy", label: "Nerdy Tips", icon: Cpu },
   { id: "sub_pattern_audit", label: "Pattern Audit", icon: BarChart2 },
   { id: "archive", label: "Archives", icon: History },
@@ -283,7 +286,75 @@ export const AppShell: React.FC<AppShellProps> = ({
 
         {banner && <div className="px-4 md:px-6 pt-4">{banner}</div>}
 
-        <main className={cn("flex-1 pt-4 pb-10 md:pt-6", activeView === "seer" ? "px-0 md:px-0.5 pt-2 pb-8 md:pt-3" : "px-3 md:px-6")}>{children}</main>
+        <main className={cn("flex-1 pt-3 pb-24 sm:pb-10 md:pt-6", activeView === "seer" ? "px-0 md:px-0.5 pt-2 pb-24 sm:pb-8 md:pt-3" : "px-2.5 sm:px-4 md:px-6")}>{children}</main>
+
+        {/* Mobile Bottom Navigation Bar */}
+        <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-[var(--color-background)]/95 backdrop-blur-md border-t border-[var(--color-border)] flex items-center justify-around h-16 px-1 shadow-2xl safe-area-pb">
+          <button
+            onClick={() => onNavigate("live")}
+            className={cn(
+              "flex flex-col items-center justify-center flex-1 py-1 transition-colors",
+              activeView === "live"
+                ? "text-[var(--color-primary)] font-bold"
+                : "text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
+            )}
+            title="Live Analysis"
+          >
+            <PlayCircle size={20} className={cn(activeView === "live" && "scale-110 transition-transform")} />
+            <span className="text-[10px] mt-0.5 tracking-tight">Live</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate("seer")}
+            className={cn(
+              "flex flex-col items-center justify-center flex-1 py-1 transition-colors",
+              activeView === "seer"
+                ? "text-[var(--color-primary)] font-bold"
+                : "text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
+            )}
+            title="SEER Analysis"
+          >
+            <Eye size={20} className={cn(activeView === "seer" && "scale-110 transition-transform")} />
+            <span className="text-[10px] mt-0.5 tracking-tight">SEER</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate("opw_algo")}
+            className={cn(
+              "flex flex-col items-center justify-center flex-1 py-1 transition-colors",
+              activeView === "opw_algo"
+                ? "text-emerald-500 font-bold"
+                : "text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
+            )}
+            title="OPW P-Recom"
+          >
+            <Sparkles size={20} className={cn(activeView === "opw_algo" && "scale-110 transition-transform")} />
+            <span className="text-[10px] mt-0.5 tracking-tight">OPW Rec</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate("ml")}
+            className={cn(
+              "flex flex-col items-center justify-center flex-1 py-1 transition-colors",
+              activeView === "ml"
+                ? "text-[var(--color-primary)] font-bold"
+                : "text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
+            )}
+            title="SEER Intelligence"
+          >
+            <Database size={20} className={cn(activeView === "ml" && "scale-110 transition-transform")} />
+            <span className="text-[10px] mt-0.5 tracking-tight">Intel</span>
+          </button>
+
+          <button
+            onClick={() => setMobileOpen(true)}
+            className="flex flex-col items-center justify-center flex-1 py-1 text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] transition-colors"
+            title="All Workspaces & Settings"
+          >
+            <Menu size={20} />
+            <span className="text-[10px] mt-0.5 tracking-tight">Menu</span>
+          </button>
+        </nav>
       </div>
     </div>
   );
@@ -300,6 +371,7 @@ const VIEW_META: Record<ShellView, { title: string; sub: string }> = {
   perf: { title: "Live Performance", sub: "Live analysis performance" },
   ml: { title: "SEER Intelligence", sub: "ML Engine & Pattern Studies" },
   opw_comp: { title: "OPW Comparison", sub: "Bonus and penalty accuracy breakdown" },
+  opw_algo: { title: "OPW P-Recom", sub: "Point recommendations & optimizer" },
 };
 
 const ViewTitle: React.FC<{ view: ShellView }> = ({ view }) => {

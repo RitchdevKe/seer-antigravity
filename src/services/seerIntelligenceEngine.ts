@@ -186,6 +186,15 @@ export function getIntelligenceReport(match: Match): IntelligenceReport | null {
     overallDrawProb = (drawPct * varWeight) + (histDrawProb * histWeight);
   }
 
+  // Multi-predictor Draw Floor: Ensure draw confidence is realistically calibrated (never artificially 0%)
+  if (overallDrawProb < 12) {
+    overallDrawProb = 14;
+    const remaining = 100 - overallDrawProb;
+    const currentSum = (overallFavProb + overallUndProb) || 1;
+    overallFavProb = Number(((overallFavProb / currentSum) * remaining).toFixed(1));
+    overallUndProb = Number((100 - overallFavProb - overallDrawProb).toFixed(1));
+  }
+
   // Recommendations
   const isHomeFav = features.favIndex === 0;
   let recommendedPrediction = '1X';
