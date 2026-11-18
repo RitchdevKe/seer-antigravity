@@ -731,10 +731,11 @@ export function getTriggerAccuracyProfile(
 
   // Within-Sign Collateral Damage Cap:
   // Strictly preserve domain polarity (PRO_MFAV is always +5..+30/+40 in favorite categories, PRO_UNDERDOG is always -30..-5).
-  // If a negative penalty trigger hits a large volume of winning targets, cap its deepest penalty at -10 ([-10, -5])
-  // so it never crushes winning matches while strictly remaining a negative penalty.
-  if (totalHits >= 2 && maxPolarityBound < 0) {
-    if (targetHits >= 8 && targetAccuracy >= 0.35 && trapHits <= targetHits * 2) {
+  // Only cap a negative penalty trigger at -10 if its target accuracy genuinely exceeds the category baseline
+  // AND its underdog/trap lift is below 1.0 (never cap shared trap triggers like "LE : Underdog won the last encounter").
+  const baselineTargetRate = objective === 'underdog_only' ? 0.25 : objective === 'mfav_only' ? 0.62 : 0.78;
+  if (totalHits >= 8 && maxPolarityBound < 0) {
+    if (targetAccuracy >= baselineTargetRate + 0.05 && underdogLift < 0.95 && trapFrequency <= (1 - baselineTargetRate)) {
       minPolarityBound = Math.max(minPolarityBound, -10);
     }
   }
@@ -4241,14 +4242,19 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       }
     }
 
-    // Winner-Promotion & Trap-Targeted Separation Analysis (recomputed lazily after accepted changes)
+    // Winner-Promotion & Trap-Targeted Commonality Analysis (recomputed lazily after accepted changes)
     let targetingDirty = true;
     let targetDownIds = new Int32Array(0);
     let targetUpIds = new Int32Array(0);
+    let sharedTrapBundleIds = new Int32Array(0);
+    let sharedWinnerBundleIds = new Int32Array(0);
+    const trapCommonalityScore = new Float32Array(numTriggers);
+    const winnerCommonalityScore = new Float32Array(numTriggers);
     const targetDownFlags = new Uint8Array(numTriggers);
     const targetUpFlags = new Uint8Array(numTriggers);
     let cachedBoundaryCandidateIds = new Int32Array(0);
     const freqBuf = new Int32Array(numTriggers);
+    const cleanWinFreqBuf = new Int32Array(numTriggers);
     const allBelowFreqBuf = new Int32Array(numTriggers);
     const topTrapFreqBuf = new Int32Array(numTriggers);
     const prevTrapFlagsBuf = new Uint8Array(numTriggers);
@@ -4257,27 +4263,52 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const recomputeTargeting = (targetTrapIdx: number = 0) => {
       targetingDirty = false;
       const trapList: { idx: number; score: number }[] = [];
+      const targetList: { idx: number; score: number }[] = [];
       for (let i = 0; i < numMatches; i++) {
         if (isTarget[i] === 0) {
           trapList.push({ idx: i, score: matchScores[i] });
+        } else {
+          targetList.push({ idx: i, score: matchScores[i] });
         }
       }
       if (trapList.length === 0) {
         targetDownIds = emptyInt16 as unknown as Int32Array;
         targetUpIds = emptyInt16 as unknown as Int32Array;
+        sharedTrapBundleIds = emptyInt16 as unknown as Int32Array;
+        sharedWinnerBundleIds = emptyInt16 as unknown as Int32Array;
         return;
       }
       trapList.sort((a, b) => b.score - a.score);
+      targetList.sort((a, b) => b.score - a.score);
 
       const focusIdx = Math.min(trapList.length - 1, Math.max(0, targetTrapIdx));
       const focusTrap = trapList[focusIdx];
       const focusScore = focusTrap.score;
-      const topTraps = trapList.slice(0, Math.min(5, trapList.length));
 
+      // Identify Intrusive Traps: traps scoring at or above the topNCapacity target cutoff (or top 5 traps)
+      const capacityTargetScore = targetList.length > 0
+        ? targetList[Math.min(targetList.length - 1, Math.max(0, topNCapacity - 1))].score
+        : focusScore;
+      let intrusiveTraps = trapList.filter(tr => tr.score >= capacityTargetScore - 5);
+      if (intrusiveTraps.length < 2) {
+        intrusiveTraps = trapList.slice(0, Math.min(5, trapList.length));
+      } else if (intrusiveTraps.length > 8) {
+        intrusiveTraps = intrusiveTraps.slice(0, 8);
+      }
+      const topTraps = intrusiveTraps;
+      const numIntrusiveTraps = Math.max(1, topTraps.length);
+
+      const cleanWinners: number[] = [];
       const below: number[] = [];
       for (let i = 0; i < numMatches; i++) {
-        if (isTarget[i] === 1 && matchScores[i] <= focusScore) {
-          below.push(i);
+        if (isTarget[i] === 1) {
+          if (matchScores[i] > focusScore) cleanWinners.push(i);
+          else below.push(i);
+        }
+      }
+      if (cleanWinners.length === 0 && targetList.length > 0) {
+        for (let i = 0; i < Math.min(topNCapacity, targetList.length); i++) {
+          cleanWinners.push(targetList[i].idx);
         }
       }
       if (below.length === 0) {
@@ -4288,16 +4319,21 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (below.length === 0) return;
 
       below.sort((a, b) => matchScores[b] - matchScores[a]);
-      let boundary = below.filter(i => matchScores[i] >= focusScore - 25);
+      let boundary = below.filter(i => matchScores[i] >= focusScore - 30);
       if (boundary.length < 12) boundary = below.slice(0, Math.min(20, below.length));
       const bLen = Math.max(1, boundary.length);
+      const cleanLen = Math.max(1, cleanWinners.length);
+      const belowLen = Math.max(1, below.length);
       const trapIdx = focusTrap.idx;
 
       freqBuf.fill(0);
+      cleanWinFreqBuf.fill(0);
       allBelowFreqBuf.fill(0);
       topTrapFreqBuf.fill(0);
       prevTrapFlagsBuf.fill(0);
       focusTrapFlagsBuf.fill(0);
+      trapCommonalityScore.fill(0);
+      winnerCommonalityScore.fill(0);
 
       const focusTrigs = matchTriggerIds[trapIdx];
       for (let i = 0; i < focusTrigs.length; i++) focusTrapFlagsBuf[focusTrigs[i]] = 1;
@@ -4305,6 +4341,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       for (let i = 0; i < boundary.length; i++) {
         const mTrigs = matchTriggerIds[boundary[i]];
         for (let j = 0; j < mTrigs.length; j++) freqBuf[mTrigs[j]]++;
+      }
+
+      for (let i = 0; i < cleanWinners.length; i++) {
+        const mTrigs = matchTriggerIds[cleanWinners[i]];
+        for (let j = 0; j < mTrigs.length; j++) cleanWinFreqBuf[mTrigs[j]]++;
       }
 
       for (let i = 0; i < below.length; i++) {
@@ -4326,6 +4367,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
 
       const upScored: { tId: number; gain: number }[] = [];
       const downScored: { tId: number; gain: number }[] = [];
+      const sharedTrapCand: { tId: number; score: number }[] = [];
+      const sharedWinCand: { tId: number; score: number }[] = [];
+      const totalTrapsCount = Math.max(1, numMatches - totalCorrectMatches);
+      const totalTargetsCount = Math.max(1, totalCorrectMatches);
 
       for (let tId = 0; tId < numTriggers; tId++) {
         const liveHits = triggerIndicesArr[tId].length;
@@ -4339,33 +4384,68 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const canStepDown = curVal > minAllowed;
 
         const bHits = freqBuf[tId];
+        const cleanHits = cleanWinFreqBuf[tId];
         const allBelowHits = allBelowFreqBuf[tId];
         const inFocusTrap = focusTrapFlagsBuf[tId] === 1;
         const topTrapHits = topTrapFreqBuf[tId];
         const tHits = triggerTargetCountsArr[tId];
         const trHits = triggerTrapCountsArr[tId];
 
+        const intrusiveTrapRate = topTrapHits / numIntrusiveTraps;
+        const boundaryWinRate = bHits / bLen;
+        const cleanWinRate = cleanHits / cleanLen;
+        const belowWinRate = allBelowHits / belowLen;
+        const overallTargetRate = tHits / totalTargetsCount;
+        const overallTrapRate = trHits / totalTrapsCount;
+
+        // 1. Failure Commonality Score: prioritizes triggers shared across >= 2 intrusive/lost traps
+        if (topTrapHits > 0 || inFocusTrap) {
+          const sharedTrapMultiplier = topTrapHits >= 2 ? (2.8 + topTrapHits * 0.9) : (inFocusTrap ? 1.4 : 1.0);
+          const rateEdge = Math.max(0, intrusiveTrapRate - cleanWinRate * 0.65) + Math.max(0, overallTrapRate - overallTargetRate * 0.55);
+          const tComm = ((topTrapHits * 14) + (inFocusTrap ? 10 : 0) + (rateEdge * 45) - (boundaryWinRate * 18)) * sharedTrapMultiplier;
+          if (tComm > 0) trapCommonalityScore[tId] = tComm;
+        }
+
+        // 2. Success Commonality Score: prioritizes triggers shared across >= 2 stranded/clean winners
+        if (bHits > 0 || allBelowHits >= 2) {
+          const sharedWinMultiplier = bHits >= 2 ? (2.4 + Math.min(6, bHits) * 0.45) : 1.0;
+          const rateEdge = Math.max(0, boundaryWinRate - intrusiveTrapRate * 0.85) + Math.max(0, overallTargetRate - overallTrapRate * 0.55);
+          const wComm = ((bHits * 12) + (allBelowHits * 2) + (rateEdge * 40) - (topTrapHits * 10)) * sharedWinMultiplier;
+          if (wComm > 0) winnerCommonalityScore[tId] = wComm;
+        }
+
         if (canStepUp) {
-          const upGain = (bHits * 3) + (allBelowHits * 2) - (inFocusTrap ? 12 : 0) - (topTrapHits * 3) + (tHits - trHits);
-          if ((bHits > 0 || allBelowHits >= 2) && (!inFocusTrap || (bHits / bLen >= 0.40 && tHits > trHits)) && upGain > 0) {
+          const upGain = winnerCommonalityScore[tId] + (bHits * 4) + (allBelowHits * 1.5) - (inFocusTrap ? 16 : 0) - (topTrapHits * 6);
+          if ((bHits > 0 || allBelowHits >= 2) && (!inFocusTrap || (boundaryWinRate >= 0.35 && overallTargetRate > overallTrapRate)) && upGain > 0) {
             upScored.push({ tId, gain: upGain });
+            if (bHits >= 2 && topTrapHits === 0) {
+              sharedWinCand.push({ tId, score: upGain });
+            }
           }
         }
 
-        if (canStepDown && inFocusTrap && !(focusIdx > 0 && prevTrapFlagsBuf[tId] === 1)) {
-          const collateralRatio = bHits / bLen;
-          const globalWinnerProtected = allBelowHits > topTrapHits * 1.5;
-          const downGain = 10 + (topTrapHits * 3) - (bHits * 4) - (allBelowHits * 2) + (trHits - tHits);
-          if (collateralRatio <= 0.35 && !globalWinnerProtected && downGain > 0) {
+        // Rate-based down-targeting: includes triggers shared across any intrusive trap (not just focusTrap #1)
+        // and compares rates instead of raw counts so shared Top-12 failure triggers are never blocked!
+        if (canStepDown && (inFocusTrap || topTrapHits >= 2) && !(focusIdx > 0 && prevTrapFlagsBuf[tId] === 1)) {
+          const cleanCollateral = cleanWinRate > intrusiveTrapRate * 1.35 && boundaryWinRate > intrusiveTrapRate && topTrapHits < 2;
+          const downGain = trapCommonalityScore[tId] + 12 + (topTrapHits * 10) - (bHits * 3) - (belowWinRate * 15) + ((overallTrapRate - overallTargetRate) * 25);
+          if (boundaryWinRate <= 0.45 && !cleanCollateral && downGain > 0) {
             downScored.push({ tId, gain: downGain });
+            if (topTrapHits >= 2 || (inFocusTrap && boundaryWinRate <= 0.20)) {
+              sharedTrapCand.push({ tId, score: downGain });
+            }
           }
         }
       }
 
       upScored.sort((a, b) => b.gain - a.gain);
       downScored.sort((a, b) => b.gain - a.gain);
+      sharedTrapCand.sort((a, b) => b.score - a.score);
+      sharedWinCand.sort((a, b) => b.score - a.score);
       const upArr = upScored.map(x => x.tId);
       const downArr = downScored.map(x => x.tId);
+      sharedTrapBundleIds = new Int32Array(sharedTrapCand.slice(0, 12).map(x => x.tId));
+      sharedWinnerBundleIds = new Int32Array(sharedWinCand.slice(0, 12).map(x => x.tId));
 
       if (downArr.length === 0) {
         for (let i = 0; i < focusTrigs.length; i++) {
@@ -4733,13 +4813,12 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         }
       }
 
-      // Rotate/shuffle sweepTriggerIds so all fired triggers across stranded winners get equal evaluation priority
-      for (let i = sweepTriggerIds.length - 1; i > 0; i--) {
-        const j = (Math.random() * (i + 1)) | 0;
-        const tmp = sweepTriggerIds[i];
-        sweepTriggerIds[i] = sweepTriggerIds[j];
-        sweepTriggerIds[j] = tmp;
-      }
+      // Order sweepTriggerIds by Failure + Success Commonality Score (with slight jitter) so root-cause triggers are swept first
+      sweepTriggerIds.sort((a, b) => {
+        const sA = trapCommonalityScore[a] + winnerCommonalityScore[a] + triggerImpactMomentum[a] * 0.5 + Math.random() * 4;
+        const sB = trapCommonalityScore[b] + winnerCommonalityScore[b] + triggerImpactMomentum[b] * 0.5 + Math.random() * 4;
+        return sB - sA;
+      });
 
       const sweepLimit = sweepTriggerIds.length;
       for (let sIdx = 0; sIdx < sweepLimit; sIdx++) {
@@ -4966,6 +5045,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
               trapOnlyList.push(tId);
             }
           }
+          winOnlyList.sort((a, b) => (winnerCommonalityScore[b] + wFlagsBuf[b] * 8) - (winnerCommonalityScore[a] + wFlagsBuf[a] * 8));
+          trapOnlyList.sort((a, b) => (trapCommonalityScore[b] + focusTrapFlagsBuf[b] * 10) - (trapCommonalityScore[a] + focusTrapFlagsBuf[a] * 10));
         }
       }
       cachedFrameWinOnlyIds = new Int32Array(winOnlyList);
@@ -4989,17 +5070,25 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const broadPoolIds = new Int32Array(broadDriverTriggerIds);
     const allWorkingPoolIds = new Int32Array(allWorkingTriggerIds);
 
-    // Systematic Round-Robin Epoch State (every active trigger participates equally)
+    // Rank-weighted picker: favors top-ranked commonality triggers 4x-6x over tail triggers
+    const pickRankWeighted = (pool: Int32Array): number => {
+      if (pool.length <= 1) return pool[0] ?? -1;
+      const r = Math.random();
+      const idx = (r * r * pool.length) | 0;
+      return pool[idx < pool.length ? idx : pool.length - 1];
+    };
+
+    // Systematic Priority-Ordered Epoch State (every active trigger participates, root-cause commonalities go first)
     const epochTriggerIds: number[] = allWorkingTriggerIds.filter(tId => triggerIndicesArr[tId].length > 0);
     if (epochTriggerIds.length === 0) epochTriggerIds.push(...allWorkingTriggerIds);
     const shuffleEpochTriggers = () => {
-      for (let i = epochTriggerIds.length - 1; i > 0; i--) {
-        const j = (Math.random() * (i + 1)) | 0;
-        const tmp = epochTriggerIds[i];
-        epochTriggerIds[i] = epochTriggerIds[j];
-        epochTriggerIds[j] = tmp;
-      }
+      epochTriggerIds.sort((a, b) => {
+        const prioA = (trapCommonalityScore[a] + winnerCommonalityScore[a] + triggerImpactMomentum[a] + 5) * (0.80 + Math.random() * 0.40);
+        const prioB = (trapCommonalityScore[b] + winnerCommonalityScore[b] + triggerImpactMomentum[b] + 5) * (0.80 + Math.random() * 0.40);
+        return prioB - prioA;
+      });
     };
+    recomputeTargeting(0);
     shuffleEpochTriggers();
     let epochCursor = 0;
     let auditPending = false;
@@ -5109,23 +5198,29 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             }
 
             const activeGroup = triggerGroupsIds[currentGroupIndex] || allWorkingPoolIds;
-            // Two-Track Incremental Schedule:
-            // - 68% Systematic Round-Robin Single-Trigger Sweep (every fired trigger proves its contribution at ±5)
-            // - 32% Targeted Frontier / Pairwise / Breakthrough Probes (1 or 2 triggers, strictly incremental)
-            const isRoundRobinTrack = Math.random() < 0.68 && epochTriggerIds.length > 0;
-            let clusterSize = isRoundRobinTrack ? 1 : (Math.random() < 0.55 ? 1 : 2);
+            // Intelligent Two-Track Schedule:
+            // - 52% Priority-Ordered Single-Trigger Epoch (every fired trigger evaluated, root-cause commonalities first)
+            // - 48% Commonality Bundles, Rank-Weighted Frontier / Pairwise / Up / Down / Breakthrough Probes
+            const isRoundRobinTrack = Math.random() < 0.52 && epochTriggerIds.length > 0;
+            let clusterSize = isRoundRobinTrack ? 1 : (Math.random() < 0.45 ? 1 : (Math.random() < 0.78 ? 2 : 3));
             let mutCount = 0;
 
-            let targetedMode: 'pairwise' | 'up' | 'down' | 'boundary' | 'breakthrough' | 'group' = 'group';
+            let targetedMode: 'commonality_trap_bundle' | 'commonality_win_bundle' | 'pairwise' | 'up' | 'down' | 'boundary' | 'breakthrough' | 'group' = 'group';
             if (!isRoundRobinTrack) {
               const r = Math.random();
-              if (r < 0.40 && ((frameWinOnly.length > 0 || frameTrapOnly.length > 0) || (targetUpIds.length > 0 && targetDownIds.length > 0))) {
+              if (r < 0.20 && sharedTrapBundleIds.length >= 2) {
+                targetedMode = 'commonality_trap_bundle';
+                clusterSize = Math.min(3, sharedTrapBundleIds.length, Math.random() < 0.65 ? 2 : 3);
+              } else if (r < 0.34 && sharedWinnerBundleIds.length >= 2) {
+                targetedMode = 'commonality_win_bundle';
+                clusterSize = Math.min(3, sharedWinnerBundleIds.length, Math.random() < 0.65 ? 2 : 3);
+              } else if (r < 0.58 && ((frameWinOnly.length > 0 || frameTrapOnly.length > 0) || (targetUpIds.length > 0 && targetDownIds.length > 0))) {
                 targetedMode = 'pairwise';
-              } else if (r < 0.58 && targetUpIds.length > 0) {
-                targetedMode = 'up';
               } else if (r < 0.72 && targetDownIds.length > 0) {
                 targetedMode = 'down';
-              } else if (r < 0.86 && cachedBoundaryCandidateIds.length > 0) {
+              } else if (r < 0.84 && targetUpIds.length > 0) {
+                targetedMode = 'up';
+              } else if (r < 0.92 && cachedBoundaryCandidateIds.length > 0) {
                 targetedMode = 'boundary';
               } else if (recentBreakthroughs.length > 0) {
                 targetedMode = 'breakthrough';
@@ -5133,6 +5228,9 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
                 targetedMode = 'group';
               }
             }
+
+            const totalTargetsDenom = Math.max(1, totalCorrectMatches);
+            const totalTrapsDenom = Math.max(1, numMatches - totalCorrectMatches);
 
             for (let k = 0; k < clusterSize; k++) {
               let tId = -1;
@@ -5142,32 +5240,39 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
                 tId = epochTriggerIds[epochCursor++];
                 if (epochCursor >= epochTriggerIds.length) {
                   epochCursor = 0;
-                  shuffleEpochTriggers();
+                  recomputeTargeting(0);
+    shuffleEpochTriggers();
                   auditPending = true;
                 }
                 targetedDir = 'any';
+              } else if (targetedMode === 'commonality_trap_bundle' && sharedTrapBundleIds.length > 0) {
+                tId = pickRankWeighted(sharedTrapBundleIds);
+                targetedDir = 'down';
+              } else if (targetedMode === 'commonality_win_bundle' && sharedWinnerBundleIds.length > 0) {
+                tId = pickRankWeighted(sharedWinnerBundleIds);
+                targetedDir = 'up';
               } else if (targetedMode === 'pairwise') {
                 if (k % 2 === 0) {
-                  const useTargetUp = targetUpIds.length > 0 && (frameWinOnly.length === 0 || Math.random() < 0.45);
+                  const useTargetUp = targetUpIds.length > 0 && (frameWinOnly.length === 0 || Math.random() < 0.50);
                   const pool = useTargetUp ? targetUpIds : frameWinOnly;
                   if (pool.length > 0) {
-                    tId = pool[(Math.random() * pool.length) | 0];
+                    tId = pickRankWeighted(pool);
                     targetedDir = 'up';
                   }
                 } else {
-                  const useTargetDown = targetDownIds.length > 0 && (frameTrapOnly.length === 0 || Math.random() < 0.45);
+                  const useTargetDown = targetDownIds.length > 0 && (frameTrapOnly.length === 0 || Math.random() < 0.50);
                   const pool = useTargetDown ? targetDownIds : frameTrapOnly;
                   if (pool.length > 0) {
-                    tId = pool[(Math.random() * pool.length) | 0];
+                    tId = pickRankWeighted(pool);
                     targetedDir = 'down';
                   }
                 }
                 if (tId < 0) continue;
               } else if (targetedMode === 'up' && targetUpIds.length > 0) {
-                tId = targetUpIds[(Math.random() * targetUpIds.length) | 0];
+                tId = pickRankWeighted(targetUpIds);
                 targetedDir = 'up';
               } else if (targetedMode === 'down' && targetDownIds.length > 0) {
-                tId = targetDownIds[(Math.random() * targetDownIds.length) | 0];
+                tId = pickRankWeighted(targetDownIds);
                 targetedDir = 'down';
               } else if (targetedMode === 'boundary' && cachedBoundaryCandidateIds.length > 0) {
                 tId = cachedBoundaryCandidateIds[(Math.random() * cachedBoundaryCandidateIds.length) | 0];
@@ -5204,10 +5309,22 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
               const allowSecondaryStep = isLayer2 || staleCleanComps >= 25000 || inIlsKick;
 
               let dir: 'up' | 'down' | 'any';
-              if (targetedDir) dir = targetedDir;
-              else if (tHits > trHits) dir = Math.random() < 0.65 ? 'up' : 'down';
-              else if (trHits > tHits) dir = Math.random() < 0.65 ? 'down' : 'up';
-              else dir = 'any';
+              if (targetedDir) {
+                dir = targetedDir;
+              } else {
+                // Intelligent rate & commonality direction (replaces raw tHits > trHits bias)
+                const trapComm = trapCommonalityScore[tId];
+                const winComm = winnerCommonalityScore[tId];
+                const tRate = tHits / totalTargetsDenom;
+                const trRate = trHits / totalTrapsDenom;
+                if (trapComm > winComm * 1.15 || trRate > tRate * 1.15) {
+                  dir = Math.random() < 0.80 ? 'down' : 'any';
+                } else if (winComm > trapComm * 1.15 || tRate > trRate * 1.15) {
+                  dir = Math.random() < 0.80 ? 'up' : 'any';
+                } else {
+                  dir = 'any';
+                }
+              }
 
               const slot = tId * PTS_SPAN + Math.max(0, Math.min(80, currentVal + PTS_OFFSET));
               const primaryValues = dir === 'up' ? stepUpTable[slot] : dir === 'down' ? stepDownTable[slot] : stepAnyTable[slot];
