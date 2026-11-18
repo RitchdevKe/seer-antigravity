@@ -3153,7 +3153,6 @@ export function evaluateAllCatalogTriggers(
     applyRule("Underdog odds <=2.7", stats.udOdds > 0 && stats.udOdds <= 2.70, -20);
     applyRule("Mfav odds >= 2.5", stats.favOdds >= 2.50, -15);
     applyRule("Odds for underdog >= 2.80 to 3.0", stats.udOdds >= 2.80 && stats.udOdds <= 3.0, 0);
-    applyRule("Odds for draw is < 3.0", stats.oX > 0 && stats.oX < 3.0, 0);
     applyRule("Odds for underdog <= odds for draw but < 2.8", stats.oddsUnderdogLessEqDraw && stats.udOdds < 2.8, 0);
     applyRule("Odds for underdog <= odds for draw but between 2.8 to 3.0", stats.oddsUnderdogLessEqDraw && stats.udOdds >= 2.8 && stats.udOdds <= 3.0, 0);
     applyRule("Odds for underdog <= odds for draw but >= 3.0", stats.oddsUnderdogLessEqDraw && stats.udOdds >= 3.0, 0);
@@ -3167,8 +3166,6 @@ export function evaluateAllCatalogTriggers(
 
     // --- 6. Match Situational & Dynamic League Evaluation ---
     applyRule("Mfav is playing at home", stats.isMfavHome, 10);
-    applyRule("Match is for Tournament", stats.isTournamentMatch, 15);
-    applyRule("Match is for Carabao Cup", stats.isCarabaoCupMatch, 15);
 
     // Dynamic League Evaluation: All static pre-loaded league triggers purged.
     // Each match evaluates strictly and solely its own true discovered league.
@@ -3282,7 +3279,6 @@ export function evaluateAllCatalogTriggers(
     const isPaaMlSeer1xX2SubAlgo12 = ['1X', 'X2'].includes(stats.paaPred) && ['1X', 'X2'].includes(stats.mlPred) && ['1X', 'X2'].includes(stats.seerPred) && stats.subPred === '12' && stats.algoPred === '12';
 
     applyRule("Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0", isYouthLeague && stats.udOdds >= 2.80 && stats.udOdds <= 3.0, -20);
-    applyRule("Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge", (stats.oX > 0 && stats.oX < 3.0) && isPaaSubAlgo12, -20);
     applyRule("PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)", isPaaSubAlgo12 && stats.isVolatile, -20);
     applyRule("Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", isYouthLeague && isPaaMlSeer1xX2SubAlgo12, -20);
     applyRule("Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8", (stats.udOdds > 0 && stats.udOdds <= 2.80) && (stats.underdogGA >= 1.5 && stats.underdogGS >= 1.8), -20);

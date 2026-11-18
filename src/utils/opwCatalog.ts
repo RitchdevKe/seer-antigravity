@@ -21,6 +21,12 @@ export const REMOVED_TRIGGER_DESCRIPTIONS = new Set<string>([
     "Match belongs to Iraq: Iraqi League",
     "Match belongs to Iraq: League",
     "Match belongs to Iraq League",
+    "Odds for draw is < 3.0",
+    "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge",
+    "Match is for Tournament",
+    "Match is for tournament",
+    "Match is for Carabao Cup",
+    "Match is for carabao cup",
 ]);
 
 export const BASELINE_20_LEAGUES = new Set<string>([
@@ -142,7 +148,6 @@ export const ALL_MASTER_CATALOG_TRIGGERS: string[] = [
     "Equal GS + AGA=HGS + M.fav has hidden weakness",
     "Underdog odds <= 2.80",
     "Odds for underdog >= 2.80 to 3.0",
-    "Odds for draw is < 3.0",
     "Odds for underdog <= odds for draw but < 2.8",
     "Odds for underdog <= odds for draw but between 2.8 to 3.0",
     "LE : Underdog won the last encounter",
@@ -150,8 +155,6 @@ export const ALL_MASTER_CATALOG_TRIGGERS: string[] = [
     "Underdog was away on LE and Won",
     "LE was a draw+Underdog has hidden strength/weakness",
     "LE, Underdog won the last encounter +Mfav L10= Und L10",
-    "Match is for Tournament",
-    "Match is for Carabao Cup",
     "Mfav is playing at home",
     "Youth League (U21,U20,U19)",
     "Match has BB, T12, or BD opw < 10%",
@@ -191,7 +194,6 @@ export const ALL_MASTER_CATALOG_TRIGGERS: string[] = [
     "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)",
     "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)",
     "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0",
-    "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge",
     "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)",
     "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12",
     "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8",
@@ -349,7 +351,6 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "Equal GS + AGA=HGS + M.fav has hidden weakness": -15,
     "Underdog odds <= 2.80": -30,
     "Odds for underdog >= 2.80 to 3.0": 10,
-    "Odds for draw is < 3.0": 15,
     "Odds for underdog <= odds for draw but < 2.8": -15,
     "Odds for underdog <= odds for draw but between 2.8 to 3.0": -5,
     "LE : Underdog won the last encounter": -20,
@@ -357,8 +358,6 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "Underdog was away on LE and Won": -20,
     "LE was a draw+Underdog has hidden strength/weakness": -10,
     "LE, Underdog won the last encounter +Mfav L10= Und L10": -20,
-    "Match is for Tournament": 15,
-    "Match is for Carabao Cup": 15,
     "Youth League (U21,U20,U19)": -15,
     "Match has BB, T12, or BD opw < 10%": -10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": -20,
@@ -397,7 +396,6 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)": -20,
     "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)": -20,
     "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0": -20,
-    "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge": -20,
     "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)": -20,
     "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12": -20,
     "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8": -20,
@@ -547,7 +545,6 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "Equal GS + AGA=HGS + M.fav has hidden weakness": -15,
     "Underdog odds <= 2.80": -30,
     "Odds for underdog >= 2.80 to 3.0": -5,
-    "Odds for draw is < 3.0": -15,
     "Odds for underdog <= odds for draw but < 2.8": -15,
     "Odds for underdog <= odds for draw but between 2.8 to 3.0": -10,
     "LE : Underdog won the last encounter": -15,
@@ -555,8 +552,6 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "Underdog was away on LE and Won": -20,
     "LE was a draw+Underdog has hidden strength/weakness": -15,
     "LE, Underdog won the last encounter +Mfav L10= Und L10": -20,
-    "Match is for Tournament": 15,
-    "Match is for Carabao Cup": 15,
     "Youth League (U21,U20,U19)": -15,
     "Match has BB, T12, or BD opw < 10%": -10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": -20,
@@ -595,7 +590,6 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)": -20,
     "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)": -20,
     "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0": -20,
-    "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge": -20,
     "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)": -20,
     "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12": -20,
     "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8": -20,
@@ -744,7 +738,6 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "Equal GS + AGA=HGS + M.fav has hidden weakness": 15,
     "Underdog odds <= 2.80": -15,
     "Odds for underdog >= 2.80 to 3.0": -15,
-    "Odds for draw is < 3.0": 5,
     "Odds for underdog <= odds for draw but < 2.8": -20,
     "Odds for underdog <= odds for draw but between 2.8 to 3.0": -15,
     "Odds for underdog <= odds for draw but >= 3.0": 25,
@@ -754,8 +747,6 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "Underdog was away on LE and Won": 20,
     "LE was a draw+Underdog has hidden strength/weakness": 15,
     "LE, Underdog won the last encounter +Mfav L10= Und L10": 20,
-    "Match is for Tournament": -15,
-    "Match is for Carabao Cup": 15,
     "Youth League (U21,U20,U19)": 15,
     "Match has BB, T12, or BD opw < 10%": 10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": 20,
@@ -795,7 +786,6 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)": 15,
     "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)": 25,
     "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0": 20,
-    "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge": 10,
     "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)": 15,
     "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12": 10,
     "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8": 20,
@@ -876,7 +866,6 @@ export const UPSETS_EXPLICIT_PENALTIES: Record<string, number> = {
     "Mfav odds >= 2.50": -15,
     "Odds for underdog >= 2.80 to 3.0": -15,
     "Odds for underdog <= odds for draw but between 2.8 to 3.0": -15,
-    "Match is for Tournament": -15,
     "Mfav has hidden strength/weakness+Underdog has hidden strength/weakness": -15,
 };
 
@@ -1104,9 +1093,6 @@ export const PRO_UNDERDOG_TRIGGERS = new Set<string>([
     "Mfav TS <= 1.2",
     "SubPattern is G2E5",
     "Both teams GS < 1.0",
-    "Odds for draw is < 3.0",
-    "Match is for Tournament",
-    "Match is for Carabao Cup",
     "Underdog is at home",
     "Underdog has hidden strength+Underdog is at home",
     "Underdog has hidden weakness",
@@ -1116,8 +1102,8 @@ export const PRO_UNDERDOG_TRIGGERS = new Set<string>([
 ]);
 
 /**
- * Dual-Bonus Triggers: Triggers that attract positive bonuses (+5 to +40) in BOTH
- * pro-Mfav categories AND pro-Underdog (Upsets) categories.
+ * Dual-Bonus Triggers: Neutral bidirectional triggers that can take either bonuses (+5 to +30)
+ * or penalties (-5 to -30) across all categories based on empirical accuracy.
  */
 export const DUAL_BONUS_TRIGGERS = new Set<string>([
     "Seer score on draw <= 20%",
@@ -1158,10 +1144,14 @@ export function isAfricanSaudiOrIsraelLeagueTrigger(triggerName: string): boolea
     return /\b(?:african|africa|caf\b|egypt|egyptian|south\s*africa|kenya|fkf\b|tanzania|ligi\s*kuu|morocco|botola|algeria|tunisia|nigeria|ghana|zambia|uganda|ethiopia|senegal|cameroon|ivory\s*coast|cote\s*d'?ivoire|mali\b|congo|angola|zimbabwe|botswana|rwanda|burundi|sudan|libya|mauritania|benin|togo|burkina\s*faso|guinea|mozambique|namibia|malawi|gambia|sierra\s*leone|liberia|gabon|saudi\s*arabia|saudi\b|israel|liga\s*leumit|liga\s*alef|ligat\s*ha'?al)\b/i.test(d);
 }
 
+export function isEnglishPremierLeagueTrigger(triggerName: string): boolean {
+    const d = (triggerName || '').trim();
+    return /^match belongs? to (?:english\s+|england\s*:\s*|england\s*-\s*)?premier\s+league$/i.test(d);
+}
+
 export function getLeagueTriggerMaxPenalty(triggerName: string): number {
     if (!isLeagueTrigger(triggerName)) return -30;
-    const lower = (triggerName || '').toLowerCase();
-    if (lower.includes('premier league')) {
+    if (isEnglishPremierLeagueTrigger(triggerName)) {
         return -40;
     }
     return -30;
@@ -1171,8 +1161,7 @@ export function getLeagueTriggerMaxBonus(triggerName: string, isUpsets: boolean 
     if (!isLeagueTrigger(triggerName)) {
         return 30;
     }
-    const lower = (triggerName || '').toLowerCase();
-    if (lower.includes('premier league')) {
+    if (isEnglishPremierLeagueTrigger(triggerName)) {
         return 40;
     }
     return 30;
@@ -1180,130 +1169,55 @@ export function getLeagueTriggerMaxBonus(triggerName: string, isUpsets: boolean 
 
 const PRO_UD_STORAGE_KEY = 'opw_manual_pro_underdog_leagues_v2';
 
-// Set of league triggers explicitly adjusted from Pro-Mfav to Pro-Underdog by empirical computation
+// League triggers are strictly NEUTRAL and never permanently locked to PRO_UNDERDOG
 export const USER_MANUAL_PRO_UNDERDOG_LEAGUES = new Set<string>();
 
 if (typeof window !== 'undefined' && window.localStorage) {
     try {
-        // Clear legacy v1 auto-assigned penalties
         window.localStorage.removeItem('opw_manual_pro_underdog_leagues_v1');
-        const raw = window.localStorage.getItem(PRO_UD_STORAGE_KEY);
-        if (raw) {
-            const list: string[] = JSON.parse(raw);
-            list.forEach(item => USER_MANUAL_PRO_UNDERDOG_LEAGUES.add(item));
-        }
+        window.localStorage.removeItem(PRO_UD_STORAGE_KEY);
     } catch (e) {}
 }
 
-function persistProUnderdogLeagues(): void {
-    if (typeof window !== 'undefined' && window.localStorage) {
-        try {
-            window.localStorage.setItem(PRO_UD_STORAGE_KEY, JSON.stringify(Array.from(USER_MANUAL_PRO_UNDERDOG_LEAGUES)));
-        } catch (e) {}
-    }
-}
+function persistProUnderdogLeagues(): void {}
 
 export function resetAllLeaguesToNeutral(): void {
     USER_MANUAL_PRO_UNDERDOG_LEAGUES.clear();
-    persistProUnderdogLeagues();
     CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.clear();
-    persistCategoryLockedProUnderdogLeagues();
 }
 
-export function isManuallyAdjustedProUnderdogLeague(triggerName: string): boolean {
-    return USER_MANUAL_PRO_UNDERDOG_LEAGUES.has(triggerName);
+export function isManuallyAdjustedProUnderdogLeague(_triggerName: string): boolean {
+    return false;
 }
 
-export function markLeagueAsProUnderdog(triggerName: string): void {
-    if (isLeagueTrigger(triggerName)) {
-        USER_MANUAL_PRO_UNDERDOG_LEAGUES.add(triggerName);
-        persistProUnderdogLeagues();
-    }
-}
+export function markLeagueAsProUnderdog(_triggerName: string): void {}
 
 export function markLeagueAsNeutral(triggerName: string): void {
     if (isLeagueTrigger(triggerName)) {
         USER_MANUAL_PRO_UNDERDOG_LEAGUES.delete(triggerName);
-        persistProUnderdogLeagues();
     }
 }
 
 const CATEGORY_LOCKED_PRO_UD_STORAGE_KEY = 'opw_cat_locked_pro_underdog_leagues_v2';
 
-// Category-keyed set of league triggers locked to Pro-Underdog (categoryId -> Set<triggerName>)
 export const CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES = new Map<string, Set<string>>();
 
 if (typeof window !== 'undefined' && window.localStorage) {
     try {
         window.localStorage.removeItem('opw_cat_locked_pro_underdog_leagues_v1');
-        const raw = window.localStorage.getItem(CATEGORY_LOCKED_PRO_UD_STORAGE_KEY);
-        if (raw) {
-            const parsed: Record<string, string[]> = JSON.parse(raw);
-            Object.entries(parsed).forEach(([catId, list]) => {
-                if (Array.isArray(list)) {
-                    CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.set(catId, new Set(list));
-                }
-            });
-        }
+        window.localStorage.removeItem(CATEGORY_LOCKED_PRO_UD_STORAGE_KEY);
     } catch (e) {}
 }
 
-function persistCategoryLockedProUnderdogLeagues(): void {
-    if (typeof window !== 'undefined' && window.localStorage) {
-        try {
-            const obj: Record<string, string[]> = {};
-            CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.forEach((set, catId) => {
-                obj[catId] = Array.from(set);
-            });
-            window.localStorage.setItem(CATEGORY_LOCKED_PRO_UD_STORAGE_KEY, JSON.stringify(obj));
-        } catch (e) {}
-    }
+function persistCategoryLockedProUnderdogLeagues(): void {}
+
+export function isLeagueLockedProUnderdog(_triggerName: string, _categoryId?: string, _day?: string): boolean {
+    return false;
 }
 
-/**
- * League polarity locks are strictly DAY + CATEGORY specific when a day is supplied
- * (key: `${day}::${categoryId}`), so a lock computed on one day never bleeds into other days.
- * Without a day, the legacy category-only key is used.
- */
-function getLeagueLockKey(categoryId: string, day?: string): string {
-    return day ? `${String(day).toLowerCase()}::${categoryId}` : categoryId;
-}
+export function lockLeagueAsProUnderdog(_triggerName: string, _categoryId: string, _day?: string): void {}
 
-export function isLeagueLockedProUnderdog(triggerName: string, categoryId?: string, day?: string): boolean {
-    if (!triggerName) return false;
-    if (categoryId) {
-        const catSet = CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.get(getLeagueLockKey(categoryId, day));
-        if (catSet && catSet.has(triggerName)) {
-            return true;
-        }
-    }
-    // Day-specific lookups never consult the global (all-days) manual set to prevent cross-day bleed.
-    if (day) return false;
-    return USER_MANUAL_PRO_UNDERDOG_LEAGUES.has(triggerName);
-}
-
-export function lockLeagueAsProUnderdog(triggerName: string, categoryId: string, day?: string): void {
-    if (isLeagueTrigger(triggerName) && categoryId) {
-        const key = getLeagueLockKey(categoryId, day);
-        let set = CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.get(key);
-        if (!set) {
-            set = new Set<string>();
-            CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.set(key, set);
-        }
-        set.add(triggerName);
-        persistCategoryLockedProUnderdogLeagues();
-    }
-}
-
-export function unlockLeagueProUnderdog(triggerName: string, categoryId: string, day?: string): void {
-    if (categoryId) {
-        const set = CATEGORY_LOCKED_PRO_UNDERDOG_LEAGUES.get(getLeagueLockKey(categoryId, day));
-        if (set) {
-            set.delete(triggerName);
-            persistCategoryLockedProUnderdogLeagues();
-        }
-    }
-}
+export function unlockLeagueProUnderdog(_triggerName: string, _categoryId: string, _day?: string): void {}
 
 export const NEUTRAL_TRIGGERS = new Set<string>([
     "L10: Mfav Wins+ Draws = Underdog wins +Draws",
@@ -1322,9 +1236,11 @@ export function getTriggerSemanticPolarity(triggerName: string, categoryIdOrObje
     // They are allowed to switch freely between penalties and bonuses based on empirical evidence,
     // and can have a penalty on Pro Mfav matches as well as a penalty on Pro Underdog matches.
     if (isLeagueTrigger(triggerName)) {
-        if (USER_MANUAL_PRO_UNDERDOG_LEAGUES.has(triggerName)) {
-            return 'PRO_UNDERDOG';
-        }
+        return 'NEUTRAL';
+    }
+
+    // DUAL_BONUS_TRIGGERS are strictly NEUTRAL across all categories
+    if (DUAL_BONUS_TRIGGERS.has(triggerName)) {
         return 'NEUTRAL';
     }
 
@@ -1346,9 +1262,6 @@ export function getTriggerSemanticPolarity(triggerName: string, categoryIdOrObje
         return 'PRO_MFAV';
     }
 
-    if (DUAL_BONUS_TRIGGERS.has(triggerName)) {
-        return isUpsetsContext ? 'PRO_UNDERDOG' : 'PRO_MFAV';
-    }
     if (PRO_UNDERDOG_TRIGGERS.has(triggerName)) return 'PRO_UNDERDOG';
     if (PRO_MFAV_TRIGGERS.has(triggerName)) return 'PRO_MFAV';
 
@@ -1392,10 +1305,7 @@ export function getTriggerSemanticPolarity(triggerName: string, categoryIdOrObje
         lower.includes('european chasers') ||
         lower.includes('banned:upset risk') ||
         lower.includes('banned:draw risk') ||
-        lower.includes('tournament') ||
-        lower.includes('carabao') ||
         lower.includes('both teams gs < 1.0') ||
-        lower.includes('odds for draw is < 3.0') ||
         lower.includes('mfav wins+ draws < underdog wins +draws') ||
         lower.includes('mfav wins+draws < underdog wins+draws')
     ) {
@@ -1463,9 +1373,9 @@ export function registerDiscoveredLeagueTrigger(triggerName: string): boolean {
             ALL_MASTER_CATALOG_TRIGGERS.push(triggerName);
         }
         const isBaseline = BASELINE_20_LEAGUES.has(triggerName);
-        const isPremier = /^match belongs? to (?:english\s+)?premier\s+league$/i.test(triggerName.trim());
+        const isPremier = isEnglishPremierLeagueTrigger(triggerName);
         const mfavPts = isPremier ? 40 : (isBaseline ? 30 : 5);
-        const underdogPts = isPremier ? 40 : (isBaseline ? 30 : 5);
+        const underdogPts = 5;
 
         if (MASTER_MFAV_DRAW_POINTS[triggerName] === undefined) {
             MASTER_MFAV_DRAW_POINTS[triggerName] = mfavPts;
@@ -1530,17 +1440,13 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
                 if (isUpsets) {
                     if (UPSETS_EXPLICIT_PENALTIES[desc] !== undefined) {
                         orientedPts = -Math.abs(orientedPts);
-                    } else if (DUAL_BONUS_TRIGGERS.has(desc)) {
-                        orientedPts = Math.abs(orientedPts);
                     } else if (polarity === 'PRO_MFAV' && orientedPts > 0) {
                         orientedPts = -Math.abs(orientedPts);
                     } else if (polarity === 'PRO_UNDERDOG' && orientedPts < 0) {
                         orientedPts = Math.abs(orientedPts);
                     }
                 } else {
-                    if (DUAL_BONUS_TRIGGERS.has(desc)) {
-                        orientedPts = Math.abs(orientedPts);
-                    } else if (polarity === 'PRO_UNDERDOG' && orientedPts > 0) {
+                    if (polarity === 'PRO_UNDERDOG' && orientedPts > 0) {
                         orientedPts = -Math.abs(orientedPts);
                     } else if (polarity === 'PRO_MFAV' && orientedPts < 0) {
                         orientedPts = Math.abs(orientedPts);
@@ -1582,7 +1488,6 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
 export const MASTER_TOP_12_RULES: { description: string; points: number }[] = sanitizeRulePolarity([
     { description: "Both team L10 <= 5", points: -15 },
     { description: "Underdog odds <= 2.80", points: -30 },
-    { description: "Odds for draw is < 3.0", points: 10 },
     { description: "Odds for underdog <= odds for draw but >= 3.0", points: -10 },
     { description: "Odds for underdog <= odds for draw but between 2.8 to 3.0", points: -5 },
     { description: "Odds for underdog <= odds for draw but < 2.8", points: -20 },
@@ -1611,8 +1516,6 @@ export const MASTER_TOP_12_RULES: { description: string; points: number }[] = sa
     { description: "Mfav GA=Und GA (+-0.2)", points: -10 },
     { description: "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA", points: -10 },
     { description: "HGA=AGS + Equal GS", points: 15 },
-    { description: "Match is for Tournament", points: 15 },
-    { description: "Match is for Carabao Cup", points: 15 },
     { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 },
     { description: "PHA on draw =>30%", points: -25 },
     { description: "Match has PHA TIE tag", points: -30 },
@@ -1731,8 +1634,6 @@ export const MASTER_BEST_BET_RULES: { description: string; points: number }[] = 
     { description: "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 },
     { description: "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 },
     { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: 10 },
-    { description: "Match is for Tournament", points: 15 },
-    { description: "Match is for Carabao Cup", points: 15 },
     { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: -15 },
     { description: "PHA on draw =>30%", points: -25 },
     { description: "Match has PHA TIE tag", points: -30 },
@@ -1965,7 +1866,6 @@ export const MASTER_BANKERS_JACKPOT_RULES: { description: string; points: number
     { description: "Equal GS + AGA=HGS + M.fav has hidden strength", points: 15 },
     { description: "Equal GS + AGA=HGS + M.fav has hidden weakness", points: -15 },
     { description: "Odds for underdog >= 2.80 to 3.0", points: -5 },
-    { description: "Odds for draw is < 3.0", points: -15 },
     { description: "Odds for underdog <= odds for draw but < 2.8", points: -15 },
     { description: "Odds for underdog <= odds for draw but between 2.8 to 3.0", points: -5 },
     { description: "LE : Underdog won the last encounter", points: -20 },
@@ -1973,8 +1873,6 @@ export const MASTER_BANKERS_JACKPOT_RULES: { description: string; points: number
     { description: "Underdog was away on LE and Won", points: -20 },
     { description: "LE was a draw+Underdog has hidden strength/weakness", points: -15 },
     { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -20 },
-    { description: "Match is for Tournament", points: -25 },
-    { description: "Match is for Carabao Cup", points: -15 },
     { description: "Youth League (U21,U20,U19)", points: -30 },
     { description: "Match has BB, T12, or BD opw < 10%", points: -10 },
     { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 },
@@ -2001,7 +1899,6 @@ export const MASTER_BANKERS_JACKPOT_RULES: { description: string; points: number
     { description: "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)", points: -5 },
     { description: "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)", points: -15 },
     { description: "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0", points: -20 },
-    { description: "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge", points: -20 },
     { description: "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)", points: -5 },
     { description: "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -20 },
     { description: "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8", points: -20 },
@@ -2142,7 +2039,6 @@ export const MASTER_VALUE_PICKS_RULES: { description: string; points: number }[]
     { description: "Equal GS + AGA=HGS + M.fav has hidden strength", points: 15 },
     { description: "Equal GS + AGA=HGS + M.fav has hidden weakness", points: -15 },
     { description: "Odds for underdog >= 2.80 to 3.0", points: -5 },
-    { description: "Odds for draw is < 3.0", points: -15 },
     { description: "Odds for underdog <= odds for draw but < 2.8", points: -15 },
     { description: "Odds for underdog <= odds for draw but between 2.8 to 3.0", points: -10 },
     { description: "LE : Underdog won the last encounter", points: -15 },
@@ -2150,8 +2046,6 @@ export const MASTER_VALUE_PICKS_RULES: { description: string; points: number }[]
     { description: "Underdog was away on LE and Won", points: -20 },
     { description: "LE was a draw+Underdog has hidden strength/weakness", points: -15 },
     { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -20 },
-    { description: "Match is for Tournament", points: 15 },
-    { description: "Match is for Carabao Cup", points: 15 },
     { description: "Youth League (U21,U20,U19)", points: -15 },
     { description: "Match has BB, T12, or BD opw < 10%", points: -10 },
     { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 },
@@ -2178,7 +2072,6 @@ export const MASTER_VALUE_PICKS_RULES: { description: string; points: number }[]
     { description: "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)", points: -20 },
     { description: "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)", points: -20 },
     { description: "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0", points: -20 },
-    { description: "Odds for draw is < 3.0+PAA, SubPattern, and Algo agree on 12 hedge", points: -20 },
     { description: "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)", points: -20 },
     { description: "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: -20 },
     { description: "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8", points: -20 },
@@ -2268,12 +2161,9 @@ export const MASTER_UPSETS_RULES: { description: string; points: number }[] = sa
     { description: "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points", points: -10 },
     { description: "Mfav L10(wins) >5 to 7", points: -15 },
     { description: "Mfav L10(wins) >7", points: -25 },
-    { description: "Match is for Tournament", points: -15 },
     { description: "Mfav has hidden strength/weakness+Underdog has hidden strength/weakness", points: -15 },
-    { description: "Match is for Carabao Cup", points: 15 },
     { description: "PHA for Mfav <40%", points: -15 },
     { description: "Both teams GS < 1.0", points: 10 },
-    { description: "Odds for draw is < 3.0", points: -15 },
     { description: "PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12", points: 5 },
     { description: "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%", points: 15 },
     { description: "PHA on draw =>30%", points: 25 },
@@ -2361,9 +2251,12 @@ export const MASTER_VALUE_BETS_RULES: { description: string; points: number }[] 
  * - Baseline leagues (BASELINE_20_LEAGUES, excluding Premier League): +30
  * - Every other core or league trigger: +5
  */
-export function getNewTriggerDefaultPoints(description: string): number {
+export function getNewTriggerDefaultPoints(description: string, isUpsets: boolean = false): number {
     const d = (description || '').trim();
-    if (/^match belongs? to (?:english\s+)?premier\s+league$/i.test(d) || d === "Match belongs to England: Premier League") {
+    if (isUpsets && isLeagueTrigger(d)) {
+        return 5;
+    }
+    if (isEnglishPremierLeagueTrigger(d)) {
         return 40;
     }
     if (BASELINE_20_LEAGUES.has(d)) {
@@ -2377,7 +2270,8 @@ export function getMasterTriggerDefaultPoints(
     objective: 'mfav_draw' | 'mfav_only' | 'underdog_only' = 'mfav_draw',
     categoryId?: string
 ): number {
-    return getNewTriggerDefaultPoints(description);
+    const isUpsets = objective === 'underdog_only' || categoryId === 'upsets' || categoryId === 'upset';
+    return getNewTriggerDefaultPoints(description, isUpsets);
 }
 
 /**
@@ -2410,20 +2304,17 @@ export function populateCategoryWithMasterRules(
         }
     });
 
-    // Ensure all 150+ core catalog triggers and 200+ league triggers are always included.
-    // Tuned and existing saved rules retain their exact points; any trigger without saved points for this
-    // day & category is NEW and starts at its default (Premier League +40, baseline leagues +30, all others +5).
     ALL_MASTER_CATALOG_TRIGGERS.forEach(desc => {
         if (!seenDescriptions.has(desc)) {
             seenDescriptions.add(desc);
-            result.push({ description: desc, points: getNewTriggerDefaultPoints(desc) });
+            result.push({ description: desc, points: getNewTriggerDefaultPoints(desc, isUpsets) });
         }
     });
 
     DYNAMIC_LEAGUE_TRIGGERS.forEach(desc => {
         if (!seenDescriptions.has(desc)) {
             seenDescriptions.add(desc);
-            result.push({ description: desc, points: getNewTriggerDefaultPoints(desc) });
+            result.push({ description: desc, points: getNewTriggerDefaultPoints(desc, isUpsets) });
         }
     });
 

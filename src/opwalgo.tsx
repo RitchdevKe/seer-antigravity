@@ -581,60 +581,49 @@ export function getTriggerAccuracyProfile(
   day?: string,
   histCounts?: { mfav: number; draw: number; underdog: number }
 ): TriggerAccuracyProfile {
-  const isBig5 = desc === "Match belongs to England: Premier League";
+  const isBig5 = /^match belongs? to (?:english\s+|england\s*:\s*|england\s*-\s*)?premier\s+league$/i.test((desc || '').trim());
   const isUpsets = objective === 'underdog_only';
   const zeroEligible = isUpsets ? isUpsetTriggerZeroEligible(desc, counts, histCounts, categoryId, day) : false;
   const leagueMaxPen = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
   const leagueMaxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUpsets) : (isBig5 && !isUpsets ? 40 : 30);
   const minFull = Math.min(-30, leagueMaxPen);
   const maxFull = Math.max(30, leagueMaxBonus);
-  const fullBand = [-35, -30, -25, -20, -15, -10, -5, ...(zeroEligible ? [0] : []), 5, 10, 15, 20, 25, 30, 35, 40].filter(v => v >= minFull && v <= maxFull);
+  const fullBand = [-40, -35, -30, -25, -20, -15, -10, -5, ...(zeroEligible ? [0] : []), 5, 10, 15, 20, 25, 30, 35, 40].filter(v => v >= minFull && v <= maxFull);
 
-  const isLeagueLockedUd = isLeagueTrigger(desc) && isLeagueLockedProUnderdog(desc, categoryId, day);
-  const polarity = isLeagueTrigger(desc) ? 'NEUTRAL' : (isLeagueLockedUd ? 'PRO_UNDERDOG' : getTriggerSemanticPolarity(desc, categoryId || objective));
+  const polarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc))
+    ? 'NEUTRAL'
+    : getTriggerSemanticPolarity(desc, categoryId || objective);
   const isMfavDraw = objective === 'mfav_draw';
 
   // Allowed candidate bounds based strictly on user-approved domain polarity (0 is allowed ONLY in Upsets when zeroEligible):
-  // 1. Pro-underdog on Mfav: [leagueMaxPen, -5] (minimum penalty is -5, max penalty is -35/-20)
-  // 2. Pro-Mfav on Mfav: [+5, +30] (minimum bonus is +5, up to +20 standard or manual cap for leagues, up to +40 for Big 5 league)
-  // 3. Upsets: Underdog triggers [+5, +30] (0 allowed ONLY if zeroEligible), Mfav triggers [-30, -5] (0 allowed ONLY if zeroEligible)
-  // 4. Underdog odds >3.0: bonus trigger for all categories, including upsets [+5, +30] (or 0 if zeroEligible)
-  // 5. Neutral (League triggers): [getLeagueTriggerMaxPenalty(desc), leagueMaxBonus]
+  // 1. Neutral triggers (League triggers, DUAL_BONUS_TRIGGERS, NEUTRAL_TRIGGERS): [minPenalty, maxBonus] (can flip between bonus & penalty)
+  // 2. Pro-underdog on Mfav/Draw: strictly penalties [-30, -5]
+  // 3. Pro-Mfav on Mfav/Draw: strictly bonuses [+5, +30]
+  // 4. Upsets: Pro-underdog [+5, +30] (0 allowed ONLY if zeroEligible), Pro-Mfav [-30, -5] (0 allowed ONLY if zeroEligible)
   let minPolarityBound: number;
   let maxPolarityBound: number;
 
   if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
-    minPolarityBound = getLeagueTriggerMaxPenalty(desc);
-    maxPolarityBound = leagueMaxBonus;
+    minPolarityBound = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
+    maxPolarityBound = isLeagueTrigger(desc) ? leagueMaxBonus : 30;
   } else if (isUpsets && UPSETS_EXPLICIT_PENALTIES[desc] !== undefined) {
     minPolarityBound = -30;
     maxPolarityBound = zeroEligible ? 0 : -5;
-  } else if (DUAL_BONUS_TRIGGERS.has(desc) && !isLeagueLockedUd) {
-    minPolarityBound = (isUpsets && zeroEligible) ? 0 : 5;
-    maxPolarityBound = isBig5 && !isUpsets ? 40 : (isLeagueTrigger(desc) ? leagueMaxBonus : 30);
-  } else if (desc === "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)") {
-    if (isUpsets) {
-      minPolarityBound = -30;
-      maxPolarityBound = zeroEligible ? 0 : -5;
-    } else {
-      minPolarityBound = 5;
-      maxPolarityBound = 30;
-    }
   } else if (isUpsets) {
-    if (polarity === 'PRO_UNDERDOG' || isLeagueLockedUd) {
+    if (polarity === 'PRO_UNDERDOG') {
       minPolarityBound = zeroEligible ? 0 : 5;
-      maxPolarityBound = isLeagueTrigger(desc) ? leagueMaxBonus : 30;
+      maxPolarityBound = 30;
     } else {
-      minPolarityBound = isLeagueTrigger(desc) ? leagueMaxPen : -30;
+      minPolarityBound = -30;
       maxPolarityBound = zeroEligible ? 0 : -5;
     }
   } else {
-    if (polarity === 'PRO_UNDERDOG' || isLeagueLockedUd) {
-      minPolarityBound = isLeagueTrigger(desc) ? leagueMaxPen : -30;
+    if (polarity === 'PRO_UNDERDOG') {
+      minPolarityBound = -30;
       maxPolarityBound = -5;
     } else {
       minPolarityBound = 5;
-      maxPolarityBound = isLeagueTrigger(desc) ? leagueMaxBonus : (isBig5 ? 40 : 30);
+      maxPolarityBound = isBig5 ? 40 : 30;
     }
   }
 
@@ -729,18 +718,6 @@ export function getTriggerAccuracyProfile(
     }
   }
 
-  // Within-Sign Collateral Damage Cap:
-  // Strictly preserve domain polarity (PRO_MFAV is always +5..+30/+40 in favorite categories, PRO_UNDERDOG is always -30..-5).
-  // Only cap a negative penalty trigger at -10 if its target accuracy genuinely exceeds the category baseline
-  // AND its underdog/trap lift is below 1.0 (never cap shared trap triggers like "LE : Underdog won the last encounter").
-  const baselineTargetRate = objective === 'underdog_only' ? 0.25 : objective === 'mfav_only' ? 0.62 : 0.78;
-  if (totalHits >= 8 && maxPolarityBound < 0) {
-    if (targetAccuracy >= baselineTargetRate + 0.05 && underdogLift < 0.95 && trapFrequency <= (1 - baselineTargetRate)) {
-      minPolarityBound = Math.max(minPolarityBound, -10);
-    }
-  }
-
-  // User directive: paused historical anchor restriction tying live/daily computations to trigger history.
   // Daily algos are improved per day across valid domain semantic polarity bounds [minPolarityBound, maxPolarityBound].
   let allowedBand = fullBand.filter(v => (zeroEligible || v !== 0) && v >= minPolarityBound && v <= maxPolarityBound);
   if (allowedBand.length === 0) {
@@ -1190,16 +1167,15 @@ export function computeCategoryRecommendations(
     return actual === '1' || actual === 'X' || actual === '2';
   });
 
-  // Persistent module-cached historical day hit stats (0ms on repeated category/day renders)
-  const dayCacheKey = `${cat.id}_${selectedDay}_${allMatches ? Math.min(allMatches.length, 300) : 0}`;
+  // Persistent module-cached historical day hit stats across the full historical archive (0ms on repeated category/day renders)
+  const dayCacheKey = `${cat.id}_${selectedDay}_${allMatches ? allMatches.length : 0}`;
   let dayHistStatsMap = MODULE_DAY_HIST_CACHE.get(dayCacheKey) || null;
   const getDayHistStats = (desc: string): { mfav: number; draw: number; underdog: number } => {
     if (!dayHistStatsMap) {
       dayHistStatsMap = new Map();
       const daySample: Match[] = [];
       if (allMatches && allMatches.length > 0) {
-        const minIdx = Math.max(0, allMatches.length - 300);
-        for (let i = allMatches.length - 1; i >= minIdx && daySample.length < 40; i--) {
+        for (let i = allMatches.length - 1; i >= 0; i--) {
           const m = allMatches[i];
           const actual = getActualResult(m.result || '');
           if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
@@ -1227,7 +1203,15 @@ export function computeCategoryRecommendations(
           allTriggers = evaluateAllCatalogTriggers(stats, m);
           (m as any)._opwCatalogTriggers = allTriggers;
         }
-        allTriggers.forEach(t => {
+        const combinedTriggers = new Set<string>(allTriggers);
+        const lInfo = getMatchCountryAndLeague(m);
+        if (lInfo?.display && lInfo.display !== 'Unknown') {
+          const lTrig = `Match belongs to ${lInfo.display}`;
+          registerDiscoveredLeagueTrigger(lTrig);
+          combinedTriggers.add(lTrig);
+        }
+        combinedTriggers.forEach(t => {
+          if (REMOVED_TRIGGER_DESCRIPTIONS.has(t)) return;
           let st = dayHistStatsMap!.get(t);
           if (!st) {
             st = { mfav: 0, draw: 0, underdog: 0 };
@@ -1243,8 +1227,8 @@ export function computeCategoryRecommendations(
     return dayHistStatsMap.get(desc) || EMPTY_HIST_COUNTS;
   };
 
-  // Persistent module-cached overall historical hit stats (0ms on repeated renders)
-  const overallCacheKey = `${cat.id}_${allMatches ? Math.min(allMatches.length, 300) : 0}`;
+  // Persistent module-cached overall historical hit stats across the full historical archive (0ms on repeated renders)
+  const overallCacheKey = `${cat.id}_${allMatches ? allMatches.length : 0}`;
   let overallHistStatsMap = MODULE_OVERALL_HIST_CACHE.get(overallCacheKey) || null;
 
   const getOverallHistStats = (desc: string) => {
@@ -1252,8 +1236,7 @@ export function computeCategoryRecommendations(
       overallHistStatsMap = new Map();
       const overallSample: Match[] = [];
       if (allMatches && allMatches.length > 0) {
-        const minIdx = Math.max(0, allMatches.length - 300);
-        for (let i = allMatches.length - 1; i >= minIdx && overallSample.length < 40; i--) {
+        for (let i = allMatches.length - 1; i >= 0; i--) {
           const m = allMatches[i];
           const actual = getActualResult(m.result || '');
           if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
@@ -1281,7 +1264,15 @@ export function computeCategoryRecommendations(
           allTriggers = evaluateAllCatalogTriggers(stats, m);
           (m as any)._opwCatalogTriggers = allTriggers;
         }
-        allTriggers.forEach(t => {
+        const combinedTriggers = new Set<string>(allTriggers);
+        const lInfo = getMatchCountryAndLeague(m);
+        if (lInfo?.display && lInfo.display !== 'Unknown') {
+          const lTrig = `Match belongs to ${lInfo.display}`;
+          registerDiscoveredLeagueTrigger(lTrig);
+          combinedTriggers.add(lTrig);
+        }
+        combinedTriggers.forEach(t => {
+          if (REMOVED_TRIGGER_DESCRIPTIONS.has(t)) return;
           let st = overallHistStatsMap!.get(t);
           if (!st) {
             st = {
@@ -1383,6 +1374,7 @@ export function computeCategoryRecommendations(
 
     const triggersHit = new Set<string>();
     allTriggers.forEach(t => {
+      if (REMOVED_TRIGGER_DESCRIPTIONS.has(t)) return;
       triggersHit.add(t);
 
       let stat = hitStats.get(t);
@@ -1684,7 +1676,7 @@ export function computeCategoryRecommendations(
     optimizedPoints.set(desc, initialPts);
   });
 
-  // Instantaneous O(N) Empirical Lift & Relative-Risk Calibration
+  // Instantaneous O(N) Empirical Lift & Relative-Risk Calibration (Live-Analysis-First)
   // Always execute fast empirical calibration on the render thread to ensure zero UI freeze (< 10ms).
   // Deep multi-permutation search is executed asynchronously in the background Deep Continuous Optimizer.
   const isHistUniv = matchProfiles.length > 60;
@@ -1694,7 +1686,7 @@ export function computeCategoryRecommendations(
     const currentVal = currentRulePointsMap.get(desc);
     const profile = getTriggerAccuracyProfile(desc, counts, objective, currentVal, isHistUniv, cat.id, recLockDay, getOverallHistStats(desc));
 
-    if (totalHits < 5 || (totalHits >= 8 && isTriggerEmpiricallyBalanced(counts))) {
+    if (totalHits === 0 || (totalHits >= 8 && isTriggerEmpiricallyBalanced(counts))) {
       optimizedPoints.set(desc, profile.historicalAnchor);
       return;
     }
@@ -1758,21 +1750,18 @@ export function computeCategoryRecommendations(
       }
     }
 
-    // Enforce domain semantic polarity (league triggers are neutral and exempted)
-    const trigPolarity = isLeagueTrigger(desc) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, objective);
-    if (!isLeagueTrigger(desc)) {
+    // Strictly enforce domain polarity:
+    // Only NEUTRAL triggers (League triggers, DUAL_BONUS_TRIGGERS, NEUTRAL_TRIGGERS) can flip between bonus and penalty.
+    // PRO_UNDERDOG remains penalties and PRO_MFAV remains bonuses.
+    const trigPolarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc)) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, objective);
+    if (trigPolarity !== 'NEUTRAL') {
       if (objective === 'underdog_only') {
-        if (trigPolarity === 'PRO_UNDERDOG' && pts < 5) pts = 15;
-        else if (trigPolarity === 'PRO_MFAV' && pts > -10) pts = -15;
+        if (trigPolarity === 'PRO_UNDERDOG' && pts < 5) pts = 5;
+        else if (trigPolarity === 'PRO_MFAV' && pts > -5) pts = -5;
       } else {
-        if (trigPolarity === 'PRO_UNDERDOG' && pts > -10) pts = -15;
-        else if (trigPolarity === 'PRO_MFAV' && pts < 5) pts = 15;
+        if (trigPolarity === 'PRO_UNDERDOG' && pts > -5) pts = -5;
+        else if (trigPolarity === 'PRO_MFAV' && pts < 5) pts = 5;
       }
-    }
-
-    // Small sample guardrail (totalHits < 8): anchor to historical defaults
-    if (totalHits < 8) {
-      pts = profile.historicalAnchor;
     }
 
     // Clamp to trigger's empirical allowed band
@@ -1783,16 +1772,14 @@ export function computeCategoryRecommendations(
     totalComputations++;
   });
 
-  // Pure Algorithmic Optimization: Points derived from empirical outcomes without hardcoded driver labels.
-
-  // Final Trigger Recommendation Generation
+  // Final Trigger Recommendation Generation (Live-Analysis-First Bayesian Blending)
   const recs: TriggerRecommendation[] = catalogTriggers.map(desc => {
     const rawCounts = hitStats.get(desc) || { mfav: 0, draw: 0, underdog: 0 };
     const liveTotalHits = rawCounts.mfav + rawCounts.draw + rawCounts.underdog;
     const rawCurrent = currentRulePointsMap.get(desc);
     let currentPoints = currentRulePointsMap.has(desc)
       ? (rawCurrent ?? 5)
-      : 5; // Default for all new or uncomputed triggers is +5 points
+      : 5;
 
     let effectiveCounts = rawCounts;
     let usedDayHistory = false;
@@ -1802,18 +1789,27 @@ export function computeCategoryRecommendations(
     const overallStats = getOverallHistStats(desc);
     const overallTotalHits = overallStats.total;
 
-    // 3-TIERED EVALUATION HIERARCHY FOR SMALL SAMPLES (< 5 live matches):
-    // Tier 1: Current Live Slice (if >= 5 hits)
-    // Tier 2: Weekday History for selected day (if live < 5 and day history >= 5)
-    // Tier 3: Overall Historical Universe across ALL days (if live < 5 and day history < 5 and overall >= 5)
-    if (liveTotalHits < 5) {
-      if (dayTotalHits >= 5) {
+    // LIVE-ANALYSIS-FIRST PRIORITY:
+    // When a trigger has >= 1 hit in Live Analysis, Live Analysis dominates (4x live weight + 1x normalized historical stabilizer when live < 5).
+    // Only when liveTotalHits === 0 does it fall back to Historical Archive / saved points.
+    if (liveTotalHits === 0) {
+      if (dayTotalHits >= 1) {
         effectiveCounts = dayCounts;
         usedDayHistory = true;
-      } else if (overallTotalHits >= 5) {
+      } else if (overallTotalHits >= 1) {
         effectiveCounts = { mfav: overallStats.mfav, draw: overallStats.draw, underdog: overallStats.underdog };
         usedOverallHistory = true;
       }
+    } else if (liveTotalHits < 5 && (dayTotalHits > 0 || overallTotalHits > 0)) {
+      const histSrc = dayTotalHits >= 3 ? dayCounts : { mfav: overallStats.mfav, draw: overallStats.draw, underdog: overallStats.underdog };
+      const histTot = Math.max(1, histSrc.mfav + histSrc.draw + histSrc.underdog);
+      effectiveCounts = {
+        mfav: rawCounts.mfav * 4 + (histSrc.mfav / histTot) * 2,
+        draw: rawCounts.draw * 4 + (histSrc.draw / histTot) * 2,
+        underdog: rawCounts.underdog * 4 + (histSrc.underdog / histTot) * 2,
+      };
+      usedDayHistory = dayTotalHits >= 3;
+      usedOverallHistory = !usedDayHistory && overallTotalHits > 0;
     }
 
     const totalHits = effectiveCounts.mfav + effectiveCounts.draw + effectiveCounts.underdog;
@@ -1827,181 +1823,28 @@ export function computeCategoryRecommendations(
     let ratchetAction: 'increased_bonus' | 'deepened_penalty' | 'preserved' | 'none' = 'none';
     const isUnderdogCat = objective === 'underdog_only';
     const basePoints = (isUnderdogCat || currentPoints !== 0) ? currentPoints : profile.historicalAnchor;
-    const polarity = isLeagueTrigger(desc) ? 'NEUTRAL' : (isLeagueLockedProUnderdog(desc, cat.id) ? 'PRO_UNDERDOG' : getTriggerSemanticPolarity(desc, cat.id || objective));
+    const polarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc)) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, cat.id || objective);
 
-    if (liveTotalHits < 5 && (usedDayHistory || usedOverallHistory)) {
-      // Historical suggestion based on empirical accuracy & risk lift:
-      let histSuggested = profile.historicalAnchor;
-      if (objective === 'underdog_only') {
-        const udRate = profile.underdogRate;
-        const mfavRate = profile.mfavRate;
-        if (profile.isVolatileSignal || udRate >= 0.22 || udRate > mfavRate) {
-          if (udRate >= 0.45) histSuggested = 25;
-          else if (udRate >= 0.38) histSuggested = 20;
-          else if (udRate >= 0.30 || profile.underdogLift >= 1.40) histSuggested = 15;
-          else if (udRate >= 0.24 || profile.underdogLift >= 1.25) histSuggested = 10;
-          else histSuggested = 5;
-        } else if (mfavRate >= 0.55 || udRate <= 0.12) {
-          if (mfavRate >= 0.85) histSuggested = -40;
-          else if (mfavRate >= 0.78) histSuggested = -35;
-          else if (mfavRate >= 0.70) histSuggested = -30;
-          else if (mfavRate >= 0.65) histSuggested = -25;
-          else if (mfavRate >= 0.58) histSuggested = -20;
-          else histSuggested = -10;
-        } else {
-          histSuggested = profile.historicalAnchor;
-        }
-      } else if (objective === 'mfav_only') {
-        const mfavRate = profile.mfavRate;
-        const udRate = profile.underdogRate;
-        const trapRate = profile.trapFrequency;
-        if (profile.isVolatileSignal || udRate >= 0.25 || trapRate >= 0.52 || mfavRate < 0.48) {
-          if (udRate >= 0.45 || mfavRate <= 0.25) histSuggested = -40;
-          else if (udRate >= 0.40 || mfavRate <= 0.30) histSuggested = -35;
-          else if (udRate >= 0.35 || mfavRate <= 0.34) histSuggested = -30;
-          else if (udRate >= 0.30 || mfavRate <= 0.38) histSuggested = -25;
-          else if (udRate >= 0.25 || mfavRate <= 0.45 || profile.isVolatileSignal) histSuggested = -20;
-          else histSuggested = -10;
-        } else if (mfavRate >= 0.52 && udRate <= 0.20) {
-          if (mfavRate >= 0.80) histSuggested = 25;
-          else if (mfavRate >= 0.70) histSuggested = 20;
-          else if (mfavRate >= 0.60) histSuggested = 15;
-          else histSuggested = 10;
-        } else {
-          histSuggested = profile.historicalAnchor;
-        }
-      } else {
-        const targetAcc = profile.targetAccuracy;
-        const udRate = profile.underdogRate;
-        const netEdge = targetAcc - udRate;
-        if (targetAcc > udRate && udRate <= 0.25) {
-          if (targetAcc >= 0.85 || netEdge >= 0.70) histSuggested = 25;
-          else if (targetAcc >= 0.75 || netEdge >= 0.50) histSuggested = 20;
-          else if (targetAcc >= 0.68 || netEdge >= 0.35) histSuggested = 15;
-          else if (targetAcc >= 0.60 || netEdge >= 0.20) histSuggested = 10;
-          else histSuggested = 5;
-        } else if (udRate > 0.25 || udRate >= targetAcc) {
-          if (udRate >= 0.60) histSuggested = -40;
-          else if (udRate >= 0.55) histSuggested = -35;
-          else if (udRate >= 0.50) histSuggested = -30;
-          else if (udRate >= 0.42) histSuggested = -25;
-          else if (udRate >= 0.35) histSuggested = -20;
-          else if (udRate >= 0.28) histSuggested = -15;
-          else histSuggested = -10;
-        } else {
-          histSuggested = profile.historicalAnchor;
-        }
-      }
-
-      // ASYMMETRIC LEEWAY RATCHET:
-      // We check historical accuracy, but allow leeway to INCREASE bonus or penalties, NEVER reduce them!
-      // For NEUTRAL league triggers, allow moving between bonus and penalty within their allowed penalty cap and bonus cap (+20 unless manual).
-      if (polarity === 'NEUTRAL') {
-        const minLeaguePen = getLeagueTriggerMaxPenalty(desc);
-        const maxLeagueBonus = getLeagueTriggerMaxBonus(desc, isUnderdogCat);
-        const clampedHist = Math.max(minLeaguePen, Math.min(maxLeagueBonus, histSuggested));
-        if (clampedHist > basePoints && clampedHist > 0) {
-          recommendedPoints = clampedHist;
-          ratchetAction = 'increased_bonus';
-        } else if (clampedHist < basePoints && clampedHist < 0) {
-          recommendedPoints = clampedHist;
-          ratchetAction = 'deepened_penalty';
-        } else if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
-          // Neutral league triggers can freely switch between bonuses and penalties based on empirical evidence
-          if (histSuggested !== basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = histSuggested > basePoints ? 'increased_bonus' : 'deepened_penalty';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else {
-          recommendedPoints = basePoints;
-          ratchetAction = 'preserved';
-        }
-      } else if (isUnderdogCat) {
-        if (polarity === 'PRO_UNDERDOG') {
-          // Target in Upsets: Leeway to INCREASE bonus, NEVER reduce
-          if (histSuggested > basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = 'increased_bonus';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else if (polarity === 'PRO_MFAV') {
-          // Trap in Upsets: Leeway to DEEPEN penalty, NEVER reduce
-          if (histSuggested < basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = 'deepened_penalty';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
-          // Neutral league triggers can freely switch between bonuses and penalties based on empirical evidence
-          if (histSuggested !== basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = histSuggested > basePoints ? 'increased_bonus' : 'deepened_penalty';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else {
-          recommendedPoints = basePoints;
-          ratchetAction = 'preserved';
-        }
-      } else {
-        if (polarity === 'PRO_MFAV') {
-          // Target in Mfav/Draw categories: Leeway to INCREASE bonus, NEVER reduce
-          if (histSuggested > basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = 'increased_bonus';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else if (polarity === 'PRO_UNDERDOG') {
-          // Trap in Mfav/Draw categories: Leeway to DEEPEN penalty, NEVER reduce
-          if (histSuggested < basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = 'deepened_penalty';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
-          // Neutral league triggers can freely switch between bonuses and penalties based on empirical evidence
-          if (histSuggested !== basePoints) {
-            recommendedPoints = histSuggested;
-            ratchetAction = histSuggested > basePoints ? 'increased_bonus' : 'deepened_penalty';
-          } else {
-            recommendedPoints = basePoints;
-            ratchetAction = 'preserved';
-          }
-        } else {
-          recommendedPoints = basePoints;
-          ratchetAction = 'preserved';
-        }
-      }
-    } else if (liveTotalHits < 5) {
-      // Both live slice and historical data have sparse hits (< 5):
-      // Retain calibrated points to build upon previous accuracy
+    if (liveTotalHits === 0) {
+      // Unseen in today's Live Analysis: preserve calibrated historical points untouched
       recommendedPoints = basePoints;
       ratchetAction = 'preserved';
     } else {
-      // Standard calibration from active slice (>= 5 hits):
+      // Active in today's Live Analysis: allow points to move up OR down based on live performance
+      // (while strictly keeping PRO_MFAV in bonus range and PRO_UNDERDOG in penalty range; only NEUTRAL flips sign)
       recommendedPoints = optimizedPoints.get(desc) ?? profile.historicalAnchor;
-      ratchetAction = 'none';
+      if (recommendedPoints > basePoints && recommendedPoints > 0) ratchetAction = 'increased_bonus';
+      else if (recommendedPoints < basePoints && recommendedPoints < 0) ratchetAction = 'deepened_penalty';
+      else ratchetAction = 'none';
     }
 
-    // Clamp recommendation strictly to trigger's empirical allowed band (which already bounds drift & volatility)
+    // Clamp recommendation strictly to trigger's empirical allowed band (which enforces PRO_MFAV bonus-only, PRO_UNDERDOG penalty-only, NEUTRAL bidirectional)
     if (profile.allowedBand.length > 0 && !profile.allowedBand.includes(recommendedPoints)) {
       recommendedPoints = profile.allowedBand.reduce((prev, curr) => Math.abs(curr - recommendedPoints) < Math.abs(prev - recommendedPoints) ? curr : prev);
     }
 
-    const isBig5 = desc === "Match belongs to England: Premier League";
-    const maxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUnderdogCat) : (isBig5 ? (isUnderdogCat ? 25 : 40) : 30);
+    const isBig5 = /^match belongs? to (?:english\s+|england\s*:\s*|england\s*-\s*)?premier\s+league$/i.test((desc || '').trim());
+    const maxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUnderdogCat) : (isBig5 ? (isUnderdogCat ? 30 : 40) : 30);
     const maxPenalty = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
     if (recommendedPoints > 0) {
       recommendedPoints = Math.max(5, Math.min(maxBonus, recommendedPoints));
@@ -2014,35 +1857,20 @@ export function computeCategoryRecommendations(
     }
 
     let confidence: TriggerRecommendation['confidence'] = 'Insufficient Data';
-    if (totalHits >= 10) confidence = 'High';
-    else if (totalHits >= 5) confidence = 'Medium';
-    else if (totalHits >= 2) confidence = 'Low';
+    if (liveTotalHits >= 10 || totalHits >= 15) confidence = 'High';
+    else if (liveTotalHits >= 4 || totalHits >= 8) confidence = 'Medium';
+    else if (liveTotalHits >= 1 || totalHits >= 2) confidence = 'Low';
 
     let rationale = '';
-    if (liveTotalHits < 5) {
-      const sourceName = usedDayHistory
-        ? `${dayTotalHits} weekday historical matches (${selectedDay === 'all' ? '' : selectedDay})`
-        : usedOverallHistory
-          ? `${overallTotalHits} overall historical matches (all days combined)`
-          : `sparse historical data (${dayTotalHits} day, ${overallTotalHits} overall)`;
-
-      if (usedDayHistory || usedOverallHistory) {
-        if (ratchetAction === 'increased_bonus') {
-          rationale = `Live sample < 5 (${liveTotalHits} hits). Evaluated on ${sourceName} (${effectiveCounts.mfav} Mfav, ${effectiveCounts.draw} Draw, ${effectiveCounts.underdog} UD — ${safePct.toFixed(0)}% safe). Conviction bonus increased from ${basePoints > 0 ? '+' : ''}${basePoints} to +${recommendedPoints} pts (protected from reduction).`;
-        } else if (ratchetAction === 'deepened_penalty') {
-          rationale = `Live sample < 5 (${liveTotalHits} hits). Evaluated on ${sourceName} (${effectiveCounts.underdog} UD, ${effectiveCounts.draw} Draw — ${underdogPct.toFixed(0)}% trap). Penalty deepened from ${basePoints} to ${recommendedPoints} pts (protected from reduction).`;
-        } else {
-          rationale = `Live sample < 5 (${liveTotalHits} hits). Evaluated on ${sourceName}. Preserved calibrated ${basePoints > 0 ? '+' : ''}${basePoints} pts (ratchet leeway protects against point reduction).`;
-        }
-      } else {
-        rationale = `Sample < 5 (${liveTotalHits} live, ${dayTotalHits} day, ${overallTotalHits} overall). Preserved calibrated ${currentPoints > 0 ? '+' : ''}${currentPoints} pts to build upon previous accuracy.`;
-      }
-    } else if (totalHits < 8) {
-      rationale = `${mfavPct.toFixed(0)}% Mfav, ${drawPct.toFixed(0)}% Draw, ${underdogPct.toFixed(0)}% UD (${totalHits} hits, Anchored to Hist ${profile.historicalAnchor > 0 ? '+' : ''}${profile.historicalAnchor} pts).`;
+    if (liveTotalHits === 0) {
+      rationale = `0 live hits today (${dayTotalHits} day hist, ${overallTotalHits} overall hist). Preserved calibrated ${basePoints > 0 ? '+' : ''}${basePoints} pts.`;
     } else {
       const volTag = profile.isVolatileSignal ? ' [Volatile]' : '';
       const dps = triggerDPS.get(desc) ?? 0;
-      rationale = `${mfavPct.toFixed(0)}% Mfav, ${drawPct.toFixed(0)}% Draw, ${underdogPct.toFixed(0)}% UD (DPS ${dps > 0 ? '+' : ''}${dps.toFixed(2)})${volTag}.`;
+      const liveMfavPct = (rawCounts.mfav / liveTotalHits) * 100;
+      const liveDrawPct = (rawCounts.draw / liveTotalHits) * 100;
+      const liveUdPct = (rawCounts.underdog / liveTotalHits) * 100;
+      rationale = `Live (${liveTotalHits} hits): ${liveMfavPct.toFixed(0)}% Mfav, ${liveDrawPct.toFixed(0)}% Draw, ${liveUdPct.toFixed(0)}% UD (DPS ${dps > 0 ? '+' : ''}${dps.toFixed(2)})${volTag}.`;
     }
 
     const netEdge = objective === 'underdog_only'
@@ -2801,12 +2629,19 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         allTriggers = evaluateAllCatalogTriggers(stats, m);
         (m as any)._opwCatalogTriggers = allTriggers;
       }
-      const triggersHit = new Set<string>(allTriggers);
+      const triggersHit = new Set<string>();
+      allTriggers.forEach(t => {
+        if (!REMOVED_TRIGGER_DESCRIPTIONS.has(t)) {
+          triggersHit.add(t);
+        }
+      });
       const lInfo = getMatchCountryAndLeague(m);
       if (lInfo?.display && lInfo.display !== 'Unknown') {
         const lTrig = `Match belongs to ${lInfo.display}`;
-        registerDiscoveredLeagueTrigger(lTrig);
-        triggersHit.add(lTrig);
+        if (!REMOVED_TRIGGER_DESCRIPTIONS.has(lTrig)) {
+          registerDiscoveredLeagueTrigger(lTrig);
+          triggersHit.add(lTrig);
+        }
       }
 
       out.push({
@@ -3162,7 +2997,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     // 3. Any catalog or league trigger with no existing valid saved points is awarded its new default points
     getFullActiveCatalogTriggers().forEach(desc => {
       if (desc && !pointsLookup.has(desc)) {
-        pointsLookup.set(desc, getNewTriggerDefaultPoints(desc));
+        pointsLookup.set(desc, getNewTriggerDefaultPoints(desc, isUpsetsCat));
       }
     });
 
@@ -3195,8 +3030,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (isCleanMatchesModalOpen) {
         for (let k = 0; k < tList.length; k++) {
           const desc = tList[k];
-          if (!desc) continue;
-          const pts = pointsLookup.get(desc) ?? getNewTriggerDefaultPoints(desc);
+          if (!desc || REMOVED_TRIGGER_DESCRIPTIONS.has(desc)) continue;
+          const pts = pointsLookup.get(desc) ?? getNewTriggerDefaultPoints(desc, isUpsetsCat);
           if (pts !== 0) {
             rulesHit.push({ description: desc, points: pts });
             triggerScore += pts;
@@ -3206,8 +3041,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       } else {
         for (let k = 0; k < tList.length; k++) {
           const desc = tList[k];
-          if (!desc) continue;
-          const pts = pointsLookup.get(desc) ?? getNewTriggerDefaultPoints(desc);
+          if (!desc || REMOVED_TRIGGER_DESCRIPTIONS.has(desc)) continue;
+          const pts = pointsLookup.get(desc) ?? getNewTriggerDefaultPoints(desc, isUpsetsCat);
           triggerScore += pts;
         }
       }
@@ -3295,18 +3130,6 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const categoriesToUpdate = [activeCategory];
     if (aliasCatId) categoriesToUpdate.push(aliasCatId);
 
-    // Category-based locking: If computation turned a league trigger from Pro-Mfav (>= 0) to Pro-Underdog (< 0),
-    // lock it permanently for this day & category so it never reverts to Pro-Mfav.
-    tunedRules.forEach(r => {
-      if (isLeagueTrigger(r.description) && r.points < 0) {
-        const prevPts = currentRulePointsMap.get(r.description) ?? 0;
-        if (prevPts >= 0) {
-          lockLeagueAsProUnderdog(r.description, activeCategory, effectiveTargetDay);
-          if (aliasCatId) lockLeagueAsProUnderdog(r.description, aliasCatId, effectiveTargetDay);
-        }
-      }
-    });
-
     const finalPointsMap = new Map(tunedRules.map(r => [r.description, r.points]));
     deepPointsCategoryRef.current = activeCategory;
     setDeepPointsMap(finalPointsMap);
@@ -3356,7 +3179,9 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
 
       // Active triggers that fired in at least one completed match
       const activeTriggersSet = new Set<string>();
-      profiles.forEach(p => p.triggersHit.forEach(t => activeTriggersSet.add(t)));
+      profiles.forEach(p => p.triggersHit.forEach(t => {
+        if (!REMOVED_TRIGGER_DESCRIPTIONS.has(t)) activeTriggersSet.add(t);
+      }));
       const activeTriggers = Array.from(activeTriggersSet);
 
       // Compute empirical trigger statistics across all completed match profiles
@@ -3367,6 +3192,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       });
       profiles.forEach(p => {
         p.triggersHit.forEach(t => {
+          if (REMOVED_TRIGGER_DESCRIPTIONS.has(t)) return;
           let stat = hitStatsMap.get(t);
           if (!stat) {
             stat = { mfav: 0, draw: 0, underdog: 0 };
@@ -3378,15 +3204,24 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         });
       });
 
-      // Historical universe hits map across allMatches (for triggers with matches in history)
+      // Populate full Historical Archive memory (700+ matches) for the active category and day
       const histHitsMap = new Map<string, { mfav: number; draw: number; underdog: number; total: number }>();
+      const effectiveHistDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+      recommendations.forEach(r => {
+        const dayDist = r.weekdayDistribution?.[effectiveHistDay];
+        if (dayDist && dayDist.total >= 3) {
+          histHitsMap.set(r.description, { mfav: dayDist.mfav, draw: dayDist.draw, underdog: dayDist.underdog, total: dayDist.total });
+        } else if (r.overallHits && r.overallHits > 0) {
+          histHitsMap.set(r.description, {
+            mfav: r.overallMfavHits || 0,
+            draw: r.overallDrawHits || 0,
+            underdog: r.overallUnderdogHits || 0,
+            total: r.overallHits
+          });
+        }
+      });
 
       const launchCoreOptimizer = () => {
-    // Initial points map:
-    // Every trigger with existing valid saved points (>= +5 or <= -5, or 0 for Upsets) strictly starts at its saved points
-    // so untuned triggers retain their exact points and the optimizer never drops below the existing clean streak.
-    // If a trigger has no existing valid saved points, we award it +5 points and allow it to go through computation
-    // so that we can figure out the best points for it.
     const isUpsetsCat = activeCategoryConfig.targetObjective === 'underdog_only';
     const allCatalogTriggers = [...catalogTriggers];
     const triggerIdByName = new Map<string, number>();
@@ -3410,9 +3245,18 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (existingSaved !== undefined && ((isUpsetsCat && existingSaved === 0) || (existingSaved !== 0 && (existingSaved >= 5 || existingSaved <= -5)))) {
         bestPointsArr[tId] = Math.max(minP, Math.min(maxP, existingSaved));
       } else {
-        bestPointsArr[tId] = Math.max(minP, Math.min(maxP, getNewTriggerDefaultPoints(desc)));
+        bestPointsArr[tId] = Math.max(minP, Math.min(maxP, getNewTriggerDefaultPoints(desc, isUpsetsCat)));
       }
     }
+
+    // Preserve a read-only snapshot of pre-compute saved points for Cross-Week Driver Preservation & Free-Rider Pruning
+    const savedInitialPointsArr = new Int16Array(bestPointsArr);
+    const histTargetAccArr = new Float32Array(numTriggers);
+    const histBaselineTargetRate = activeCategoryConfig.targetObjective === 'underdog_only'
+      ? 0.25
+      : activeCategoryConfig.targetObjective === 'mfav_only'
+      ? 0.62
+      : 0.78;
 
     const buildPointsMapFromArr = (arr: Int16Array): Map<string, number> => {
       const m = new Map<string, number>();
@@ -3436,7 +3280,19 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const triggerTrapCountsArr = new Int32Array(numTriggers);
     const histTotalCountsArr = new Int32Array(numTriggers);
     for (let tId = 0; tId < numTriggers; tId++) {
-      histTotalCountsArr[tId] = histHitsMap.get(allCatalogTriggers[tId])?.total || 0;
+      const hStat = histHitsMap.get(allCatalogTriggers[tId]);
+      const hTot = hStat?.total || 0;
+      histTotalCountsArr[tId] = hTot;
+      if (hStat && hTot >= 3) {
+        const hTargets = activeCategoryConfig.targetObjective === 'underdog_only'
+          ? hStat.underdog
+          : activeCategoryConfig.targetObjective === 'mfav_only'
+          ? hStat.mfav
+          : (hStat.mfav + hStat.draw);
+        histTargetAccArr[tId] = hTargets / hTot;
+      } else {
+        histTargetAccArr[tId] = -1;
+      }
     }
 
     for (let i = 0; i < numMatches; i++) {
@@ -3456,6 +3312,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       let baseS = p.baseScore;
       const mTrigIds: number[] = [];
       p.triggersHit.forEach(t => {
+        if (REMOVED_TRIGGER_DESCRIPTIONS.has(t)) return;
         const tId = triggerIdByName.get(t);
         if (tId !== undefined) {
           s += bestPointsArr[tId];
@@ -3464,7 +3321,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           if (isT) triggerTargetCountsArr[tId]++;
           else triggerTrapCountsArr[tId]++;
         } else {
-          const defPts = getNewTriggerDefaultPoints(t);
+          const defPts = getNewTriggerDefaultPoints(t, isUpsetsCat);
           s += defPts;
           baseS += defPts;
         }
@@ -4223,19 +4080,19 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         bandMinArr[tId] = -30;
       }
       const isLeague = isLeagueTrigger(desc);
-      const isNeutralLeague = isLeague && !isLeagueLockedProUnderdog(desc, activeCategory) && getTriggerSemanticPolarity(desc, activeCategory) === 'NEUTRAL';
+      const isNeutralTrig = isLeague || DUAL_BONUS_TRIGGERS.has(desc) || getTriggerSemanticPolarity(desc, activeCategory) === 'NEUTRAL';
       const minFloor = isLeague ? getLeagueTriggerMaxPenalty(desc) : -30;
       const maxBonus = isLeague ? getLeagueTriggerMaxBonus(desc, isUpsetsCat) : 40;
-      const isUniversalBonus = DUAL_BONUS_TRIGGERS.has(desc);
+      const isUniversalBonus = false;
       const baseSlot = tId * PTS_SPAN;
       for (let val = -40; val <= 40; val++) {
         const slot = baseSlot + (val + PTS_OFFSET);
-        stepUpTable[slot] = buildCandidatesFor(tId, desc, val, band, 'up', false, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
-        stepDownTable[slot] = buildCandidatesFor(tId, desc, val, band, 'down', false, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
-        stepAnyTable[slot] = buildCandidatesFor(tId, desc, val, band, 'any', false, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
-        stretchUpTable[slot] = buildCandidatesFor(tId, desc, val, band, 'up', true, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
-        stretchDownTable[slot] = buildCandidatesFor(tId, desc, val, band, 'down', true, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
-        stretchAnyTable[slot] = buildCandidatesFor(tId, desc, val, band, 'any', true, isNeutralLeague, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stepUpTable[slot] = buildCandidatesFor(tId, desc, val, band, 'up', false, isNeutralTrig, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stepDownTable[slot] = buildCandidatesFor(tId, desc, val, band, 'down', false, isNeutralTrig, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stepAnyTable[slot] = buildCandidatesFor(tId, desc, val, band, 'any', false, isNeutralTrig, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stretchUpTable[slot] = buildCandidatesFor(tId, desc, val, band, 'up', true, isNeutralTrig, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stretchDownTable[slot] = buildCandidatesFor(tId, desc, val, band, 'down', true, isNeutralTrig, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
+        stretchAnyTable[slot] = buildCandidatesFor(tId, desc, val, band, 'any', true, isNeutralTrig, minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
         escalateUpTable[slot] = buildEscalationCandidatesFor(band, val, 'up', minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
         escalateDownTable[slot] = buildEscalationCandidatesFor(band, val, 'down', minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
         escalateAnyTable[slot] = buildEscalationCandidatesFor(band, val, 'any', minFloor, maxBonus, isUniversalBonus, prof.zeroEligible);
@@ -4402,7 +4259,12 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         if (topTrapHits > 0 || inFocusTrap) {
           const sharedTrapMultiplier = topTrapHits >= 2 ? (2.8 + topTrapHits * 0.9) : (inFocusTrap ? 1.4 : 1.0);
           const rateEdge = Math.max(0, intrusiveTrapRate - cleanWinRate * 0.65) + Math.max(0, overallTrapRate - overallTargetRate * 0.55);
-          const tComm = ((topTrapHits * 14) + (inFocusTrap ? 10 : 0) + (rateEdge * 45) - (boundaryWinRate * 18)) * sharedTrapMultiplier;
+          let tComm = ((topTrapHits * 14) + (inFocusTrap ? 10 : 0) + (rateEdge * 45) - (boundaryWinRate * 18)) * sharedTrapMultiplier;
+          // Suspect False-Bonus Audit: if a trigger carries a positive bonus (> 0) but hits traps more than clean winners
+          // (or had weak historical accuracy < baseline - 5%), boost its down-revision priority
+          if (curVal > 0 && (intrusiveTrapRate > cleanWinRate || (histHits >= 5 && histTargetAccArr[tId] >= 0 && histTargetAccArr[tId] < histBaselineTargetRate - 0.05))) {
+            tComm += 35 + curVal;
+          }
           if (tComm > 0) trapCommonalityScore[tId] = tComm;
         }
 
@@ -4410,7 +4272,12 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         if (bHits > 0 || allBelowHits >= 2) {
           const sharedWinMultiplier = bHits >= 2 ? (2.4 + Math.min(6, bHits) * 0.45) : 1.0;
           const rateEdge = Math.max(0, boundaryWinRate - intrusiveTrapRate * 0.85) + Math.max(0, overallTargetRate - overallTrapRate * 0.55);
-          const wComm = ((bHits * 12) + (allBelowHits * 2) + (rateEdge * 40) - (topTrapHits * 10)) * sharedWinMultiplier;
+          let wComm = ((bHits * 12) + (allBelowHits * 2) + (rateEdge * 40) - (topTrapHits * 10)) * sharedWinMultiplier;
+          // Suspect False-Penalty Audit: if a trigger carries a negative penalty (< 0) but hits stranded winners
+          // and has strong multi-week historical accuracy (>= baseline + 5%), boost its up-revision priority
+          if (curVal < 0 && boundaryWinRate > intrusiveTrapRate && histHits >= 5 && histTargetAccArr[tId] >= histBaselineTargetRate + 0.05) {
+            wComm += 35 + Math.abs(curVal);
+          }
           if (wComm > 0) winnerCommonalityScore[tId] = wComm;
         }
 
@@ -4745,12 +4612,22 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     };
 
     const finalizeLive = () => {
+      const peakCleanBeforeAudit = allTimeBestPeak.cleanTopMatches;
+      const peakTrapRankBeforeAudit = allTimeBestPeak.firstTrapRank;
+      const savedPeakArrBeforeAudit = new Int16Array(peakPointsArr);
       restoreAllTimeBest();
       try {
         undoLen = 0;
         const activeAuditIds = allWorkingTriggerIds.filter(tId => triggerIndicesArr[tId].length > 0);
         runContributionAudit(activeAuditIds, performance.now() - MAX_FRAME_MS + 12);
       } catch (e) {}
+      // Hard guarantee: never allow audit to reduce peak clean match count or first trap rank
+      recomputeScoresAndBucketsFrom(peakPointsArr);
+      const postAuditEval = fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum);
+      if (postAuditEval.cleanTopMatches < peakCleanBeforeAudit || postAuditEval.firstTrapRank < peakTrapRankBeforeAudit) {
+        peakPointsArr.set(savedPeakArrBeforeAudit);
+      }
+      restoreAllTimeBest();
       updateUiState(true);
 
       try {
@@ -4913,9 +4790,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       }
     };
 
-    // Per-Trigger Marginal Contribution Verification ("Step-Back Proof" Pass):
-    // Steps elevated weights (> +5 or < -5) 5 points back toward baseline; if separation does not drop,
-    // keeps the simpler weight so triggers only earn higher magnitude when they prove marginal value.
+    // Per-Trigger Marginal Contribution & Free-Rider Pruning Pass:
+    // 1. Preserves pre-compute saved weights (savedInitialPointsArr) so proven cross-week drivers are never eroded.
+    // 2. For newly inflated weights during the current run, steps 5 points back toward savedInitialPointsArr;
+    //    only keeps the step-back if cleanTopMatches, firstTrapRank, trapInTopN, and tiedAtBoundary are 100% preserved.
     const runContributionAudit = (triggerList: number[], frameStart: number) => {
       if (inIlsKick || triggerList.length === 0) return;
       for (let i = 0; i < triggerList.length; i++) {
@@ -4924,9 +4802,13 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const indices = triggerIndicesArr[tId];
         if (!indices || indices.length === 0) continue;
         const curVal = bestPointsArr[tId];
-        if (curVal >= -5 && curVal <= 5) continue;
+        const savedVal = savedInitialPointsArr[tId];
+        if (curVal === savedVal || (curVal >= -5 && curVal <= 5)) continue;
 
-        const stepBackVal = curVal > 5 ? curVal - 5 : curVal + 5;
+        let stepBackVal = curVal > savedVal ? curVal - 5 : curVal + 5;
+        if (stepBackVal === 0 && !(isUpsetsCat && profilesByTrigId[tId]?.zeroEligible)) {
+          stepBackVal = curVal > savedVal ? -5 : 5;
+        }
         const band = profilesByTrigId[tId]?.allowedBand;
         if (!band || !band.includes(stepBackVal)) continue;
 
@@ -4952,13 +4834,20 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           }
         }
 
+        const isFalseRiderInflation =
+          (curVal > savedVal && curVal > 0 && triggerTrapCountsArr[tId] >= triggerTargetCountsArr[tId]) ||
+          (curVal < savedVal && curVal < 0 && triggerTargetCountsArr[tId] > triggerTrapCountsArr[tId] * 2);
+
         const separationPreserved = !violated &&
           evalRes.cleanTopMatches >= bestFastEval.cleanTopMatches &&
           evalRes.firstTrapRank >= bestFastEval.firstTrapRank &&
           evalRes.trapInTopN <= bestFastEval.trapInTopN &&
-          evalRes.targetOverTrapPairs >= bestFastEval.targetOverTrapPairs &&
+          (evalRes.tiedAtBoundary ?? 0) <= (bestFastEval.tiedAtBoundary ?? 0) &&
           evalRes.positiveTraps <= bestFastEval.positiveTraps &&
-          evalRes.positiveTargets >= bestFastEval.positiveTargets;
+          (isFalseRiderInflation || (
+            evalRes.targetOverTrapPairs >= bestFastEval.targetOverTrapPairs &&
+            evalRes.positiveTargets >= bestFastEval.positiveTargets
+          ));
 
         if (separationPreserved) {
           undoLen = 0;
@@ -6307,20 +6196,6 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       { preserveExact: true }
     );
 
-    // Category-based locking: If computation turned a league trigger from Pro-Mfav (>= 0) to Pro-Underdog (< 0),
-    // lock it permanently for this day & category so it never reverts to Pro-Mfav.
-    finalRules.forEach(r => {
-      if (isLeagueTrigger(r.description) && r.points < 0) {
-        const prevPts = currentRulePointsMap.get(r.description) ?? 0;
-        if (prevPts >= 0) {
-          lockLeagueAsProUnderdog(r.description, activeCategory, effectiveTargetDay);
-          const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
-            : (activeCategory === 'top_10_value' ? 'top_12_value' : undefined);
-          if (aliasCatId) lockLeagueAsProUnderdog(r.description, aliasCatId, effectiveTargetDay);
-        }
-      }
-    });
-
     const existingSettings = activeSettings || {
       name: activeCategoryConfig.label,
       description: activeCategoryConfig.description,
@@ -6371,6 +6246,12 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     });
 
     const finalPointsMap = new Map(finalRules.map(r => [r.description, r.points]));
+    if (allTimeBestPeakRef.current && allTimeBestPeakRef.current.category === activeCategory) {
+      allTimeBestPeakRef.current = {
+        ...allTimeBestPeakRef.current,
+        points: finalPointsMap
+      };
+    }
     deepPointsCategoryRef.current = activeCategory;
     setDeepPointsMap(finalPointsMap);
     deepCategoryPointsMapRef.current[dayCatKey] = finalPointsMap;
@@ -6886,21 +6767,30 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const isDeepCalibrated = isDeepOptimizing || deepStatus === 'converged' || !!(deepCategoryPointsMap[dayCatKey] && deepCategoryPointsMap[dayCatKey].size > 0);
     const deepMap = deepCategoryPointsMap[dayCatKey];
 
+    const isUpsetsAdopt = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
     let tunedRules: { description: string; points: number }[];
     if (deepMap && deepMap.size > 0) {
-      tunedRules = Array.from(deepMap.entries()).map(([description, points]) => ({
-        description,
-        points: Math.max(-40, Math.min(25, points))
-      }));
+      tunedRules = Array.from(deepMap.entries()).map(([description, points]) => {
+        const minP = isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30;
+        const maxP = isLeagueTrigger(description) ? getLeagueTriggerMaxBonus(description, isUpsetsAdopt) : 40;
+        return {
+          description,
+          points: Math.max(minP, Math.min(maxP, points))
+        };
+      });
     } else {
       tunedRules = effectiveRecommendations
         .filter(r => isDeepCalibrated ? true : (r.totalHits >= 1))
-        .map(r => ({
-          description: r.description,
-          points: isDeepCalibrated
-            ? Math.max(-40, Math.min(25, r.recommendedPoints))
-            : (r.recommendedPoints !== 0 ? Math.max(-40, Math.min(25, r.recommendedPoints)) : 5)
-        }));
+        .map(r => {
+          const minP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxPenalty(r.description) : -30;
+          const maxP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxBonus(r.description, isUpsetsAdopt) : 40;
+          return {
+            description: r.description,
+            points: isDeepCalibrated
+              ? Math.max(minP, Math.min(maxP, r.recommendedPoints))
+              : (r.recommendedPoints !== 0 ? Math.max(minP, Math.min(maxP, r.recommendedPoints)) : 5)
+          };
+        });
     }
 
     const finalRules = populateCategoryWithMasterRules(
