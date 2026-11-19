@@ -1098,33 +1098,105 @@ export function evaluateSeparation(
   };
 }
 
-const LAST_3W_FILTER_CACHE = new WeakMap<Match[], { len: number; filtered: Match[] }>();
-export function filterMatchesLast3Weeks(matchesList: Match[] | undefined): Match[] {
-  if (!Array.isArray(matchesList) || matchesList.length === 0) return [];
-  const cached = LAST_3W_FILTER_CACHE.get(matchesList);
-  if (cached && cached.len === matchesList.length) return cached.filtered;
-  let maxDateStr = '';
-  for (let i = 0; i < matchesList.length; i++) {
-    const m = matchesList[i];
-    if (!m?.date) continue;
-    const dStr = getLogicalDate(m.date, m.time);
-    if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > maxDateStr) {
-      maxDateStr = dStr;
-    }
+const LAST_3W_FILTER_CACHE = new WeakMap<Match[], Map<string, Match[]>>();
+export function filterMatchesLast3Weeks(
+  matchesList: Match[] | undefined,
+  targetDay?: DayOfWeek | 'all',
+  liveMatches?: Match[] | undefined
+): Match[] {
+  const hasBase = Array.isArray(matchesList) && matchesList.length > 0;
+  const hasLive = Array.isArray(liveMatches) && liveMatches.length > 0;
+  if (!hasBase && !hasLive) return [];
+
+  const cacheDayKey = `${targetDay || 'all'}_${hasBase ? matchesList!.length : 0}`;
+  if (hasBase && !hasLive) {
+    const cachedMap = LAST_3W_FILTER_CACHE.get(matchesList!);
+    const cached = cachedMap?.get(cacheDayKey);
+    if (cached) return cached;
   }
-  const anchorMs = maxDateStr ? Date.parse(`${maxDateStr}T12:00:00Z`) : Date.now();
-  const cutoffDate = new Date(anchorMs - 21 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const filtered: Match[] = [];
-  for (let i = 0; i < matchesList.length; i++) {
-    const m = matchesList[i];
-    if (!m?.date) continue;
-    const dStr = getLogicalDate(m.date, m.time);
-    if (!dStr || dStr >= cutoffDate) {
-      filtered.push(m);
+
+  // Merge liveMatches (taking precedence) + historical matchesList deduplicated by match ID / key
+  const merged: Match[] = [];
+  const seenKeys = new Set<string>();
+  const pushDeduped = (list?: Match[]) => {
+    if (!Array.isArray(list)) return;
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      if (!m) continue;
+      const dStr = m.date ? getLogicalDate(m.date, m.time) : '';
+      const key = m.id !== undefined && m.id !== null && String(m.id) !== ''
+        ? String(m.id)
+        : `${(m as any).team1 || m.teams || ''}_${(m as any).team2 || ''}_${dStr}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        merged.push(m);
+      }
     }
+  };
+  if (hasLive) pushDeduped(liveMatches);
+  if (hasBase) pushDeduped(matchesList);
+
+  let out: Match[];
+  if (targetDay && targetDay !== 'all') {
+    const dayMatches: { m: Match; dStr: string }[] = [];
+    const distinctDatesSet = new Set<string>();
+    for (let i = 0; i < merged.length; i++) {
+      const m = merged[i];
+      if (!m?.date) continue;
+      if (getMatchDayOfWeek(m) !== targetDay) continue;
+      const dStr = getLogicalDate(m.date, m.time);
+      dayMatches.push({ m, dStr });
+      if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr)) {
+        distinctDatesSet.add(dStr);
+      }
+    }
+    const distinctDayDates = Array.from(distinctDatesSet).sort((a, b) => b.localeCompare(a));
+    const maxDayDateStr = distinctDayDates[0] || '';
+    const anchorMs = maxDayDateStr ? Date.parse(`${maxDayDateStr}T12:00:00Z`) : Date.now();
+    const cutoffDate = new Date(anchorMs - 21 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Keep all 3 previous occurrences of targetDay + the current targetDay (up to 4 distinct dates / 21 days)
+    const top4DayDates = new Set(distinctDayDates.slice(0, 4));
+
+    const filtered: Match[] = [];
+    for (let i = 0; i < dayMatches.length; i++) {
+      const { m, dStr } = dayMatches[i];
+      if (!dStr || dStr >= cutoffDate || top4DayDates.has(dStr)) {
+        filtered.push(m);
+      }
+    }
+    out = filtered.length > 0 ? filtered : dayMatches.map(x => x.m).slice(-250);
+  } else {
+    let maxDateStr = '';
+    for (let i = 0; i < merged.length; i++) {
+      const m = merged[i];
+      if (!m?.date) continue;
+      const dStr = getLogicalDate(m.date, m.time);
+      if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > maxDateStr) {
+        maxDateStr = dStr;
+      }
+    }
+    const anchorMs = maxDateStr ? Date.parse(`${maxDateStr}T12:00:00Z`) : Date.now();
+    const cutoffDate = new Date(anchorMs - 21 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const filtered: Match[] = [];
+    for (let i = 0; i < merged.length; i++) {
+      const m = merged[i];
+      if (!m?.date) continue;
+      const dStr = getLogicalDate(m.date, m.time);
+      if (!dStr || dStr >= cutoffDate) {
+        filtered.push(m);
+      }
+    }
+    out = filtered.length > 0 ? filtered : merged.slice(-300);
   }
-  const out = filtered.length > 0 ? filtered : matchesList.slice(-300);
-  LAST_3W_FILTER_CACHE.set(matchesList, { len: matchesList.length, filtered: out });
+
+  if (hasBase && !hasLive) {
+    let cachedMap = LAST_3W_FILTER_CACHE.get(matchesList!);
+    if (!cachedMap) {
+      cachedMap = new Map();
+      LAST_3W_FILTER_CACHE.set(matchesList!, cachedMap);
+    }
+    cachedMap.set(cacheDayKey, out);
+  }
   return out;
 }
 
@@ -1200,15 +1272,16 @@ export function computeCategoryRecommendations(
   });
 
   // Persistent module-cached historical day hit stats across the Last 3 Weeks (0ms on repeated category/day renders)
+  const last3WeeksDayHistMatches = filterMatchesLast3Weeks(allMatches, selectedDay);
   const last3WeeksHistMatches = filterMatchesLast3Weeks(allMatches);
-  const dayCacheKey = `${cat.id}_${selectedDay}_3w_${last3WeeksHistMatches.length}`;
+  const dayCacheKey = `${cat.id}_${selectedDay}_3w_${last3WeeksDayHistMatches.length}`;
   let dayHistStatsMap = MODULE_DAY_HIST_CACHE.get(dayCacheKey) || null;
   const getDayHistStats = (desc: string): { mfav: number; draw: number; underdog: number } => {
     if (!dayHistStatsMap) {
       dayHistStatsMap = new Map();
       const daySample: Match[] = [];
-      for (let i = last3WeeksHistMatches.length - 1; i >= 0 && daySample.length < 250; i--) {
-        const m = last3WeeksHistMatches[i];
+      for (let i = last3WeeksDayHistMatches.length - 1; i >= 0 && daySample.length < 250; i--) {
+        const m = last3WeeksDayHistMatches[i];
         const actual = getActualResult(m.result || '');
         if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
         if (selectedDay !== 'all' && getMatchDayOfWeek(m) !== selectedDay) continue;
@@ -2248,7 +2321,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   });
   const [datasetScope, setDatasetScope] = useState<'live' | 'history' | 'all'>('live');
 
-  const last3WeeksMatches = useMemo(() => filterMatchesLast3Weeks(allMatches), [allMatches]);
+  const effectiveHistoryDay: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || 'sunday');
+  const last3WeeksMatches = useMemo(
+    () => filterMatchesLast3Weeks(allMatches, datasetScope === 'history' ? effectiveHistoryDay : selectedDay, matches),
+    [allMatches, matches, datasetScope, effectiveHistoryDay, selectedDay]
+  );
 
   const datasetDay = useMemo<DayOfWeek>(() => {
     if (selectedDay !== 'all') return selectedDay;
@@ -2265,7 +2342,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (best) return best[0];
     }
     return liveMatchDay || 'sunday';
-  }, [selectedDay, datasetScope, allMatches, matches, liveMatchDay]);
+  }, [selectedDay, datasetScope, last3WeeksMatches, matches, liveMatchDay]);
 
   useEffect(() => {
     if (datasetScope === 'live' && !userPickedDayRef.current) {
@@ -2393,6 +2470,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   const prevActiveCategoryRef = useRef(activeCategory);
   const prevDatasetDayRef = useRef(datasetDay);
   const prevSelectedDayRef = useRef(selectedDay);
+  const prevDatasetScopeRef = useRef(datasetScope);
   const deepPointsCategoryRef = useRef<string>(activeCategory);
   const deepCategoryPointsMapRef = useRef(deepCategoryPointsMap);
   const allTimeBestPeakRef = useRef<{
@@ -2409,19 +2487,21 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     deepCategoryPointsMapRef.current = deepCategoryPointsMap;
   }, [deepCategoryPointsMap]);
 
-  // Synchronize Deep Optimizer on initial mount and whenever activeCategory / day changes
+  // Synchronize Deep Optimizer on initial mount and whenever activeCategory / day / datasetScope changes
   useEffect(() => {
     const isInitialMount = !hasInitializedDeepRef.current;
     const catChanged = prevActiveCategoryRef.current !== activeCategory;
     const dayChanged = prevDatasetDayRef.current !== datasetDay;
     const selDayChanged = prevSelectedDayRef.current !== selectedDay;
+    const scopeChanged = prevDatasetScopeRef.current !== datasetScope;
 
     hasInitializedDeepRef.current = true;
     prevActiveCategoryRef.current = activeCategory;
     prevDatasetDayRef.current = datasetDay;
     prevSelectedDayRef.current = selectedDay;
+    prevDatasetScopeRef.current = datasetScope;
 
-    if (!isInitialMount && !catChanged && !dayChanged && !selDayChanged) return;
+    if (!isInitialMount && !catChanged && !dayChanged && !selDayChanged && !scopeChanged) return;
 
     if (isBatchOptimizingRef.current) {
       // During batch optimization, category switching is contextual HUD progression, do not abort!
@@ -2471,33 +2551,45 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (peakMem.trapGaps) setDeepTrapGaps(peakMem.trapGaps);
     }
 
+    const restoreSavedPersistedRules = (): boolean => {
+      const persistedRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory]?.rules
+        || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasCatId]?.rules : undefined);
+      if (persistedRules && persistedRules.length > 0) {
+        const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
+        const sanitizedPersisted = sanitizeRulePolarity(persistedRules, activeCategory, { preserveExact: true, day: targetDay });
+        const restoredMap = new Map<string, number>();
+        sanitizedPersisted.forEach(r => {
+          if (r.description && typeof r.points === 'number' && (isUpsetsCat || r.points !== 0)) {
+            restoredMap.set(r.description, r.points);
+          }
+        });
+        if (restoredMap.size > 0) {
+          deepPointsCategoryRef.current = activeCategory;
+          setDeepPointsMap(restoredMap);
+          setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+          deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+          setDeepStatus(scopeChanged ? 'idle' : 'converged');
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // When switching between Live Matches and History, always re-anchor from the latest saved rules in DAILY_OPTIMIZED_SETTINGS first
+    if (scopeChanged && restoreSavedPersistedRules()) {
+      return;
+    }
+
     const existingPoints = deepCategoryPointsMapRef.current[dayCatKey];
-    if (existingPoints && existingPoints.size > 0) {
+    if (!scopeChanged && existingPoints && existingPoints.size > 0) {
       deepPointsCategoryRef.current = activeCategory;
       setDeepPointsMap(new Map(existingPoints));
       setDeepStatus('converged');
       return;
     }
 
-    const persistedRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory]?.rules
-      || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasCatId]?.rules : undefined);
-    if (persistedRules && persistedRules.length > 0) {
-      const isUpsetsCat = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
-      const sanitizedPersisted = sanitizeRulePolarity(persistedRules, activeCategory, { preserveExact: true, day: targetDay });
-      const restoredMap = new Map<string, number>();
-      sanitizedPersisted.forEach(r => {
-        if (r.description && typeof r.points === 'number' && (isUpsetsCat || r.points !== 0)) {
-          restoredMap.set(r.description, r.points);
-        }
-      });
-      if (restoredMap.size > 0) {
-        deepPointsCategoryRef.current = activeCategory;
-        setDeepPointsMap(restoredMap);
-        setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
-        deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
-        setDeepStatus('converged');
-        return;
-      }
+    if (restoreSavedPersistedRules()) {
+      return;
     }
 
     if (peakMem?.points && Object.keys(peakMem.points).length > 0) {
@@ -2507,12 +2599,12 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       setDeepPointsMap(restoredMap);
       setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
       deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
-      setDeepStatus('converged');
+      setDeepStatus(scopeChanged ? 'idle' : 'converged');
       return;
     }
 
     setDeepPointsMap(null);
-  }, [activeCategory, datasetDay, selectedDay]);
+  }, [activeCategory, datasetDay, selectedDay, datasetScope]);
 
   // Re-sync restored points ONLY when external server rules or runtime weights version actually increments
   useEffect(() => {
@@ -2565,13 +2657,13 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Base raw dataset (History & Combined strictly scoped to Last 3 Weeks / 21 days for zero lag)
+  // Base raw dataset (History strictly scoped to 3 previous occurrences + current weekday; Combined scoped to Last 3 Weeks)
   const rawDataset = useMemo(() => {
     let base: Match[] = [];
     if (datasetScope === 'live') {
       base = matches;
     } else if (datasetScope === 'history') {
-      base = last3WeeksMatches.length > 0 ? last3WeeksMatches : matches;
+      base = last3WeeksMatches;
     } else {
       const combined = new Map<string | number, Match>();
       matches.forEach(m => combined.set(m.id, m));
@@ -6118,10 +6210,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     rowHandlersRef.current.handleToggleLeaguePolarity(desc);
   }, []);
 
-  // Apply Recommendations to Runtime Category Settings
+  // Apply Recommendations to Runtime Category Settings (strictly isolated to active day & active category)
   const handleApplyRecommendations = useCallback(async (persistToCodebase?: any) => {
     const isCodebaseSave = persistToCodebase === true;
-    const effectiveTargetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+    const effectiveTargetDay: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
     const dayCatKey = `${effectiveTargetDay}_${activeCategory}`;
     let deepMap = (allTimeBestPeakRef.current?.category === activeCategory && allTimeBestPeakRef.current.points.size > 0)
       ? allTimeBestPeakRef.current.points
@@ -6193,10 +6285,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       rules: finalRules
     };
 
-    // Strict Day Isolation: Only target the active day unless 'all' days is explicitly selected
-    const targetDaysArray: DayOfWeek[] = selectedDay === 'all'
-      ? (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as DayOfWeek[])
-      : [effectiveTargetDay];
+    // Strict Day & Category Isolation: Only target the active day and active category
+    const targetDaysArray: DayOfWeek[] = [effectiveTargetDay];
 
     const aliasKeyForPeak = activeCategory === 'top_12_value' ? 'top_10_value'
       : (activeCategory === 'top_10_value' ? 'top_12_value'
@@ -6734,13 +6824,17 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     setSelectedAdoptDays(new Set());
   };
 
+  const handleSaveCalibratedRulesToCodeRef = useRef<(() => Promise<void>) | null>(null);
+
   const handleConfirmAdopt = useCallback(async () => {
-    if (selectedAdoptDays.size === 0) {
-      showToast('Please select at least one day to adopt trigger points.');
+    const effectiveTargetDay: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
+    if (handleSaveCalibratedRulesToCodeRef.current) {
+      setShowAdoptModal(false);
+      await handleSaveCalibratedRulesToCodeRef.current();
       return;
     }
 
-    const dayCatKey = `${selectedDay !== 'all' ? selectedDay : datasetDay}_${activeCategory}`;
+    const dayCatKey = `${effectiveTargetDay}_${activeCategory}`;
     const isDeepCalibrated = isDeepOptimizing || deepStatus === 'converged' || !!(deepCategoryPointsMap[dayCatKey] && deepCategoryPointsMap[dayCatKey].size > 0);
     const deepMap = deepCategoryPointsMap[dayCatKey];
 
@@ -6774,7 +6868,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       tunedRules,
       activeCategoryConfig.targetObjective,
       activeCategoryConfig.id,
-      selectedDay !== 'all' ? selectedDay : undefined,
+      effectiveTargetDay,
       { preserveExact: !!isDeepCalibrated || !!(deepMap && deepMap.size > 0) }
     );
 
@@ -6798,14 +6892,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       rules: finalRules
     };
 
-    const adoptedDaysList = Array.from(selectedAdoptDays);
+    const adoptedDaysList: DayOfWeek[] = [effectiveTargetDay];
     adoptedDaysList.forEach(day => {
-      updateDailyOptimizedCategorySettings(day, activeCategory, updated, adoptToMainAlgo);
+      updateDailyOptimizedCategorySettings(day, activeCategory, updated, true, { silent: true, source: 'codebase' });
     });
-
-    if (adoptToMainAlgo) {
-      updateOptimizedCategorySettings(activeCategory, updated);
-    }
 
     clearOptimizedScoreCache();
 
@@ -6928,13 +7018,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     }
 
     setShowAdoptModal(false);
-    const targetDaysLabel = adoptedDaysList.length === 1
-      ? adoptedDaysList[0].toUpperCase()
-      : adoptedDaysList.length === 7
-      ? 'ALL 7 DAYS'
-      : adoptedDaysList.map(d => d.slice(0, 3).toUpperCase()).join(', ');
-    showToast(`Adopted ${finalRules.length} calibrated rules for ${activeCategoryConfig.label} to ${targetDaysLabel}${adoptToMainAlgo ? ' & Main Algo' : ''}!`);
-  }, [selectedAdoptDays, adoptToMainAlgo, activeCategory, activeCategoryConfig, activeSettings, effectiveRecommendations, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay, datasetDay, showToast]);
+    showToast(`Applied ${finalRules.length} calibrated rules for ${activeCategoryConfig.label} to ${effectiveTargetDay.toUpperCase()}!`);
+  }, [activeCategory, activeCategoryConfig, activeSettings, effectiveRecommendations, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, matches, rawDataset, phaStatsMap, matchStars, liveViewType, selectedDay, liveMatchDay, datasetDay, showToast]);
 
   const handleExportJSON = () => {
     const data = {
@@ -7110,20 +7195,15 @@ ${rulesCode}
       }, 8000);
       await new Promise(r => setTimeout(r, 0));
 
-      const targetDay = datasetDay;
-      const dayForBackend = selectedDay === 'all' ? targetDay : selectedDay;
+      const dayForBackend: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
       
-      // Strict Day Isolation: Only target the active day unless 'all' days is explicitly selected
-      const daysArray: DayOfWeek[] = selectedDay === 'all'
-        ? (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as DayOfWeek[])
-        : [dayForBackend];
+      // Strict Day & Category Isolation: Only target the active day and active category
+      const daysArray: DayOfWeek[] = [dayForBackend];
 
       const categoriesPayload: Record<string, { rules: { description: string; points: number; note?: string }[]; targetObjective: string }> = {};
 
-      // Day & Category Isolation: Only process the active category unless in Historical Universe mode with multi-category scope
-      const categoriesToProcess = (datasetScope === 'history') 
-        ? CATEGORIES 
-        : [CATEGORIES.find(c => c.id === activeCategory)!].filter(Boolean);
+      // Strict Category Isolation: Always process ONLY the active category in both Live and History modes
+      const categoriesToProcess = [CATEGORIES.find(c => c.id === activeCategory)!].filter(Boolean);
 
       categoriesToProcess.forEach(cat => {
         const dayCatKey = `${dayForBackend}_${cat.id}`;
@@ -7240,7 +7320,8 @@ ${rulesCode}
       if (safetyTimer) clearTimeout(safetyTimer);
       setIsSavingCode(false);
     }
-  }, [selectedDay, liveMatchDay, datasetDay, deepPointsMap, deepCategoryPointsMap, activeCategory, effectiveRecommendations, rawDataset, phaStatsMap, matchStars, liveViewType, handleApplyRecommendations, showToast]);
+  }, [selectedDay, liveMatchDay, datasetDay, activeCategoryConfig.label, deepPointsMap, deepCategoryPointsMap, activeCategory, effectiveRecommendations, handleApplyRecommendations, showToast]);
+  handleSaveCalibratedRulesToCodeRef.current = handleSaveCalibratedRulesToCode;
 
   const handleCopyReport = () => {
     const lines = [
@@ -7351,11 +7432,12 @@ ${rulesCode}
           </button>
           {datasetScope === 'history' && (
             <button
-              onClick={() => setShowAdoptModal(true)}
+              onClick={handleSaveCalibratedRulesToCode}
+              disabled={isSavingCode}
               className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/30 flex items-center gap-1.5 transition"
-              title="Adopt calibrated trigger points to selected daily algos (Monday - Sunday)"
+              title={`Apply calibrated ${activeCategoryConfig.label} rules to ${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()} algo and overwrite saved codebase rules`}
             >
-              <Layers size={14} /> Adopt to Daily Algos (Mon–Sun)
+              <Layers size={14} /> Apply to {activeCategoryConfig.label} ({(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()}) Algo
             </button>
           )}
           <button
@@ -7472,11 +7554,11 @@ ${rulesCode}
                 onClick={() => {
                   setDatasetScope(scope);
                   userPickedDayRef.current = false;
-                  if (scope === 'history') {
-                    setSelectedDay('all');
-                  } else if (scope === 'live') {
-                    setSelectedDay(initialDay && initialDay !== 'all' ? initialDay : liveMatchDay);
-                  }
+                  const targetSpecificDay = selectedDay !== 'all'
+                    ? selectedDay
+                    : (initialDay && initialDay !== 'all' ? initialDay : liveMatchDay);
+                  setSelectedDay(targetSpecificDay);
+                  setSelectedAdoptDays(new Set([targetSpecificDay]));
                 }}
                 className={`px-3 py-1 rounded-md text-xs font-medium uppercase transition border ${
                   isSel
@@ -7548,7 +7630,7 @@ ${rulesCode}
                 <h3 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
                   <span>
                     {datasetScope === 'history'
-                      ? '🧠 OPW Self-Learn Engine (Last 3 Weeks)'
+                      ? `🧠 OPW Self-Learn Engine (${activeCategoryConfig.label} • ${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()})`
                       : 'Live Continuous Permutation Optimizer'}
                   </span>
                 </h3>
@@ -7565,7 +7647,7 @@ ${rulesCode}
                 </span>
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full font-mono font-bold uppercase tracking-wider bg-indigo-900/60 text-indigo-300 border border-indigo-500/40">
                   {datasetScope === 'history'
-                    ? `Last 3 Weeks (${completedMatches.length.toLocaleString()} matches)`
+                    ? `${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()} • 3 Prev + Current (${completedMatches.length.toLocaleString()} matches)`
                     : datasetScope === 'live'
                     ? `Live Session (${completedMatches.length.toLocaleString()} matches)`
                     : `Combined (${completedMatches.length.toLocaleString()} matches)`}
@@ -7573,7 +7655,7 @@ ${rulesCode}
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
                 {datasetScope === 'history'
-                  ? 'Executes permutation learning across the last 3 weeks of historical matches to discover recent durable trigger points for daily algo adoption.'
+                  ? `Executes permutation learning strictly for ${activeCategoryConfig.label} on ${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()} across the 3 previous occurrences plus the current ${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()}.`
                   : 'Executes continuous permutation search on active live session matches (guided by 3-week trigger point memory) to raise winning matches and distill traps to the bottom.'}
               </p>
             </div>
@@ -7582,7 +7664,7 @@ ${rulesCode}
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
             {datasetScope === 'history' ? (
-              /* HISTORY MODE: Self-Learn & Adopt to Daily Algos ONLY */
+              /* HISTORY MODE: Contextual Self-Learn & Apply to Current Category + Day Algo */
               <>
                 {isDeepOptimizing ? (
                   <button
@@ -7599,16 +7681,17 @@ ${rulesCode}
                     <Zap size={14} className="fill-white" />
                     {deepComputations > 0
                       ? 'Resume Self-Learn Engine'
-                      : '🧠 Start Self-Learn (Last 3 Weeks)'}
+                      : `🧠 Start Self-Learn (${activeCategoryConfig.label} • ${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()})`}
                   </button>
                 )}
 
                 <button
-                  onClick={() => setShowAdoptModal(true)}
+                  onClick={handleSaveCalibratedRulesToCode}
+                  disabled={isSavingCode}
                   className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/40 flex items-center gap-1.5 transition"
-                  title="Adopt calibrated trigger points to selected daily algos (e.g. Saturday only, or all days)"
+                  title={`Apply calibrated trigger points strictly to ${activeCategoryConfig.label} on ${(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()} and overwrite saved codebase rules`}
                 >
-                  <Layers size={14} /> Adopt to Daily Algos (Mon–Sun)
+                  <Layers size={14} /> Apply to {activeCategoryConfig.label} ({(selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay)).toUpperCase()}) Algo
                 </button>
 
 
