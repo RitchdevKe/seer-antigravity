@@ -3441,6 +3441,88 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       matchScores[i] = Math.max(-1499, Math.min(1499, s));
     }
 
+    // Identify which match profiles belong to the current Live Analysis slice (for zero-dilution Live Polish in History Mode)
+    const liveMatchKeySet = new Set<string>();
+    let latestProfileDate = '';
+    for (let i = 0; i < numMatches; i++) {
+      const dStr = profiles[i].date ? getLogicalDate(profiles[i].date, profiles[i].match?.time) : '';
+      if (dStr && dStr > latestProfileDate) latestProfileDate = dStr;
+    }
+    if (Array.isArray(matches) && matches.length > 0) {
+      for (let i = 0; i < matches.length; i++) {
+        const lm = matches[i];
+        if (!lm) continue;
+        if (lm.id !== undefined && lm.id !== null && String(lm.id) !== '') {
+          liveMatchKeySet.add(`id:${String(lm.id)}`);
+        }
+        const ld = lm.date ? getLogicalDate(lm.date, lm.time) : '';
+        const tKey = `${(lm as any).team1 || lm.teams || ''}_${(lm as any).team2 || ''}_${ld}`.toLowerCase();
+        if (tKey !== '__') liveMatchKeySet.add(`tk:${tKey}`);
+      }
+    }
+    const liveTargetIdxList: number[] = [];
+    const liveTrapIdxList: number[] = [];
+    for (let i = 0; i < numMatches; i++) {
+      const pm = profiles[i].match;
+      const pid = pm?.id !== undefined && pm?.id !== null && String(pm.id) !== '' ? `id:${String(pm.id)}` : '';
+      const pld = profiles[i].date ? getLogicalDate(profiles[i].date, pm?.time) : '';
+      const ptk = `tk:${((pm as any)?.team1 || profiles[i].teams || '')}_${(pm as any)?.team2 || ''}_${pld}`.toLowerCase();
+      const isLiveM = liveMatchKeySet.size > 0
+        ? ((pid !== '' && liveMatchKeySet.has(pid)) || liveMatchKeySet.has(ptk) || (latestProfileDate !== '' && pld === latestProfileDate))
+        : (latestProfileDate !== '' && pld === latestProfileDate);
+      if (isLiveM) {
+        if (isTarget[i] === 1) liveTargetIdxList.push(i);
+        else liveTrapIdxList.push(i);
+      }
+    }
+    const liveTargetIndices = new Int32Array(liveTargetIdxList);
+    const liveTrapIndices = new Int32Array(liveTrapIdxList);
+    const hasLiveSlice = isHistoryMode && liveTargetIndices.length > 0 && liveTrapIndices.length > 0;
+
+    const evaluateLiveSlice = () => {
+      if (!hasLiveSlice) {
+        return {
+          liveCleanTopMatches: 0,
+          topLiveTrapIdx: -1,
+          maxLiveTrapScore: -9999,
+          bestStrandedLiveWinnerGap: 0,
+          liveTargetOverTrapPairs: 0
+        };
+      }
+      let maxTrS = -9999;
+      let topTrIdx = -1;
+      for (let i = 0, len = liveTrapIndices.length; i < len; i++) {
+        const idx = liveTrapIndices[i];
+        const s = matchScores[idx];
+        if (s > maxTrS) {
+          maxTrS = s;
+          topTrIdx = idx;
+        }
+      }
+      let liveClean = 0;
+      let maxStrandedW = -9999;
+      let pairs = 0;
+      for (let i = 0, len = liveTargetIndices.length; i < len; i++) {
+        const wIdx = liveTargetIndices[i];
+        const ws = matchScores[wIdx];
+        if (ws > maxTrS) {
+          liveClean++;
+        } else if (ws > maxStrandedW) {
+          maxStrandedW = ws;
+        }
+        for (let j = 0, tLen = liveTrapIndices.length; j < tLen; j++) {
+          if (ws > matchScores[liveTrapIndices[j]]) pairs++;
+        }
+      }
+      return {
+        liveCleanTopMatches: liveClean,
+        topLiveTrapIdx: topTrIdx,
+        maxLiveTrapScore: maxTrS,
+        bestStrandedLiveWinnerGap: maxStrandedW > -9999 ? (maxStrandedW - maxTrS) : 1,
+        liveTargetOverTrapPairs: pairs
+      };
+    };
+
     const triggerIndicesArr: Int32Array[] = new Array(numTriggers);
     for (let tId = 0; tId < numTriggers; tId++) {
       triggerIndicesArr[tId] = new Int32Array(triggerIndicesLists[tId]);
@@ -3459,7 +3541,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (liveHits > 0) activeTriggerIds.push(tId);
       if (isHistoryMode || liveHits >= 1 || histHits >= 20) {
         eligibleTriggerIds.push(tId);
-        if (isHistoryMode ? histHits >= 20 : (liveHits >= 2 || (liveHits >= 1 && histHits >= 20))) {
+        if (isHistoryMode ? (liveHits >= 3 || histHits >= 20) : (liveHits >= 2 || (liveHits >= 1 && histHits >= 20))) {
           broadDriverTriggerIds.push(tId);
         }
       }
@@ -4594,10 +4676,13 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
 
     // Strict All-Time Best Peak Ratchet: First trap rank must NEVER regress from peak
     const peakPointsArr = new Int16Array(bestPointsArr);
+    const initialLiveSlice = evaluateLiveSlice();
     let allTimeBestPeak = {
       cleanTopMatches: bestFastEval.cleanTopMatches,
       firstTrapRank: bestFastEval.firstTrapRank ?? (bestFastEval.cleanTopMatches + 1),
       quality: bestFastEval.quality,
+      liveCleanTopMatches: initialLiveSlice.liveCleanTopMatches,
+      liveTargetOverTrapPairs: initialLiveSlice.liveTargetOverTrapPairs,
       scores: new Int16Array(matchScores),
       trapRanks: bestFastEval.trapRanks ? [...bestFastEval.trapRanks] : [bestFastEval.cleanTopMatches + 1],
       trapScores: bestFastEval.trapScores ? [...bestFastEval.trapScores] : [],
@@ -4624,10 +4709,21 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           (verifiedEval.cleanTopMatches === allTimeBestPeak.cleanTopMatches && vR1 < allTimeBestPeak.firstTrapRank)) {
         return;
       }
+      const vLive = evaluateLiveSlice();
+      // Strict Non-Dilution + Live-Slice Tie-Breaker:
+      // When History cleanTopMatches and firstTrapRank are tied with peak, never regress liveCleanTopMatches
+      if (hasLiveSlice &&
+          verifiedEval.cleanTopMatches === allTimeBestPeak.cleanTopMatches &&
+          vR1 === allTimeBestPeak.firstTrapRank &&
+          vLive.liveCleanTopMatches < allTimeBestPeak.liveCleanTopMatches) {
+        return;
+      }
       peakPointsArr.set(bestPointsArr);
       allTimeBestPeak.cleanTopMatches = verifiedEval.cleanTopMatches;
       allTimeBestPeak.firstTrapRank = vR1;
       allTimeBestPeak.quality = verifiedEval.quality;
+      allTimeBestPeak.liveCleanTopMatches = vLive.liveCleanTopMatches;
+      allTimeBestPeak.liveTargetOverTrapPairs = vLive.liveTargetOverTrapPairs;
       allTimeBestPeak.scores.set(matchScores);
       allTimeBestPeak.trapRanks = verifiedEval.trapRanks ? [...verifiedEval.trapRanks] : [verifiedEval.cleanTopMatches + 1];
       allTimeBestPeak.trapScores = verifiedEval.trapScores ? [...verifiedEval.trapScores] : [];
@@ -4738,16 +4834,29 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       const peakTrapRankBeforeAudit = allTimeBestPeak.firstTrapRank;
       const savedPeakArrBeforeAudit = new Int16Array(peakPointsArr);
       restoreAllTimeBest();
+      inIlsKick = false;
+      // In History Mode, run Pareto-Safe Live-Slice Polish Pass first (strictly 0% dilution on History clean matches)
+      if (hasLiveSlice) {
+        try {
+          undoLen = 0;
+          runLiveSlicePolishPass(performance.now(), 60);
+        } catch (e) {}
+      }
+      const peakLiveCleanAfterPolish = allTimeBestPeak.liveCleanTopMatches;
+      const savedPeakArrAfterPolish = new Int16Array(peakPointsArr);
       try {
         undoLen = 0;
         const activeAuditIds = allWorkingTriggerIds.filter(tId => triggerIndicesArr[tId].length > 0);
         runContributionAudit(activeAuditIds, performance.now() - MAX_FRAME_MS + 12);
       } catch (e) {}
-      // Hard guarantee: never allow audit to reduce peak clean match count or first trap rank
+      // Hard guarantee: never allow audit to reduce peak clean match count, first trap rank, or polished Live clean count
       recomputeScoresAndBucketsFrom(peakPointsArr);
       const postAuditEval = fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum);
+      const postAuditLive = evaluateLiveSlice();
       if (postAuditEval.cleanTopMatches < peakCleanBeforeAudit || postAuditEval.firstTrapRank < peakTrapRankBeforeAudit) {
         peakPointsArr.set(savedPeakArrBeforeAudit);
+      } else if (hasLiveSlice && postAuditLive.liveCleanTopMatches < peakLiveCleanAfterPolish) {
+        peakPointsArr.set(savedPeakArrAfterPolish);
       }
       restoreAllTimeBest();
       updateUiState(true);
@@ -4912,6 +5021,249 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       }
     };
 
+    // Pareto-Safe Live-Slice Polish Pass (History Mode Only):
+    // Strictly preserves 100% of peak History cleanTopMatches, firstTrapRank, and trapInTopN (zero dilution),
+    // while stepping triggers that separate current Live Analysis stranded winners from the #1 Live Analysis trap.
+    const liveTrapFlagsBuf = new Uint8Array(numTriggers);
+    const liveWinFlagsBuf = new Uint8Array(numTriggers);
+    const liveClosestWinFlagsBuf = new Uint8Array(numTriggers);
+    const runLiveSlicePolishPass = (frameStart: number, maxBudgetMs: number = MAX_FRAME_MS) => {
+      if (!hasLiveSlice || inIlsKick) return;
+      restoreAllTimeBest();
+      let lockedHistoryClean = allTimeBestPeak.cleanTopMatches;
+      let lockedHistoryTrapRank = allTimeBestPeak.firstTrapRank;
+      let lockedHistoryTrapInTopN = allTimeBestPeak.fastEval.trapInTopN;
+
+      const isHistoryStrictlyPreserved = (evalRes: FastEvalSnapshot): boolean => {
+        if (evalRes.cleanTopMatches < lockedHistoryClean) return false;
+        if (evalRes.firstTrapRank < lockedHistoryTrapRank) return false;
+        if (evalRes.trapInTopN > lockedHistoryTrapInTopN) return false;
+        if (currentPhase >= 2 && establishedRanks.length > 0) {
+          for (let k = 0; k < establishedRanks.length; k++) {
+            const curR = k < trapRanksCount ? trapRanksBuf[k] : (evalRes.cleanTopMatches + 1);
+            if (curR < establishedRanks[k]) return false;
+          }
+        }
+        return true;
+      };
+
+      for (let round = 0; round < 6; round++) {
+        if (performance.now() - frameStart >= maxBudgetMs) break;
+        const baseLive = evaluateLiveSlice();
+        if (baseLive.topLiveTrapIdx < 0 || baseLive.liveCleanTopMatches >= liveTargetIndices.length) break;
+
+        const maxLiveTrapS = baseLive.maxLiveTrapScore;
+        const strandedLiveWins: { idx: number; score: number }[] = [];
+        for (let i = 0, len = liveTargetIndices.length; i < len; i++) {
+          const wIdx = liveTargetIndices[i];
+          if (matchScores[wIdx] <= maxLiveTrapS) {
+            strandedLiveWins.push({ idx: wIdx, score: matchScores[wIdx] });
+          }
+        }
+        if (strandedLiveWins.length === 0) break;
+        strandedLiveWins.sort((a, b) => b.score - a.score);
+        const topStrandedLive = strandedLiveWins.slice(0, Math.min(8, strandedLiveWins.length));
+
+        liveTrapFlagsBuf.fill(0);
+        liveWinFlagsBuf.fill(0);
+        liveClosestWinFlagsBuf.fill(0);
+        // Flag all live traps at or within 5 points of maxLiveTrapS so tied/co-blocking traps are covered safely
+        for (let i = 0, len = liveTrapIndices.length; i < len; i++) {
+          const trIdx = liveTrapIndices[i];
+          if (matchScores[trIdx] >= maxLiveTrapS - 5) {
+            const trTrigs = matchTriggerIds[trIdx];
+            const weight = matchScores[trIdx] === maxLiveTrapS ? 2 : 1;
+            for (let k = 0; k < trTrigs.length; k++) liveTrapFlagsBuf[trTrigs[k]] += weight;
+          }
+        }
+        for (let w = 0; w < topStrandedLive.length; w++) {
+          const wTrigs = matchTriggerIds[topStrandedLive[w].idx];
+          for (let i = 0; i < wTrigs.length; i++) {
+            liveWinFlagsBuf[wTrigs[i]]++;
+            if (w < 2) liveClosestWinFlagsBuf[wTrigs[i]]++;
+          }
+        }
+
+        const winUpTrigs: number[] = [];
+        const trapDownTrigs: number[] = [];
+        for (let i = 0; i < allWorkingTriggerIds.length; i++) {
+          const tId = allWorkingTriggerIds[i];
+          if (triggerIndicesArr[tId].length === 0) continue;
+          const inLiveWin = liveWinFlagsBuf[tId];
+          const inClosestWin = liveClosestWinFlagsBuf[tId];
+          const inLiveTrap = liveTrapFlagsBuf[tId];
+          if (inLiveWin > 0 && inLiveTrap === 0 && bestPointsArr[tId] < bandMaxArr[tId]) {
+            winUpTrigs.push(tId);
+          }
+          if (inLiveTrap > 0 && inClosestWin === 0 && bestPointsArr[tId] > bandMinArr[tId]) {
+            trapDownTrigs.push(tId);
+          }
+        }
+        winUpTrigs.sort((a, b) => (liveClosestWinFlagsBuf[b] * 30 + liveWinFlagsBuf[b] * 15 + winnerCommonalityScore[b]) - (liveClosestWinFlagsBuf[a] * 30 + liveWinFlagsBuf[a] * 15 + winnerCommonalityScore[a]));
+        trapDownTrigs.sort((a, b) => {
+          const scoreB = liveTrapFlagsBuf[b] * 25 + (liveWinFlagsBuf[b] === 0 ? 40 : 0) + trapCommonalityScore[b] - liveWinFlagsBuf[b] * 12;
+          const scoreA = liveTrapFlagsBuf[a] * 25 + (liveWinFlagsBuf[a] === 0 ? 40 : 0) + trapCommonalityScore[a] - liveWinFlagsBuf[a] * 12;
+          return scoreB - scoreA;
+        });
+
+        let committedInRound = false;
+
+        // 1. Single-trigger Pareto-safe steps (winner triggers UP, live blocking trap triggers DOWN)
+        const singlePool: { tId: number; dir: 'up' | 'down' }[] = [];
+        for (let i = 0; i < Math.min(20, winUpTrigs.length); i++) singlePool.push({ tId: winUpTrigs[i], dir: 'up' });
+        for (let i = 0; i < Math.min(20, trapDownTrigs.length); i++) singlePool.push({ tId: trapDownTrigs[i], dir: 'down' });
+
+        for (let sIdx = 0; sIdx < singlePool.length; sIdx++) {
+          if (performance.now() - frameStart >= maxBudgetMs) break;
+          const { tId, dir } = singlePool[sIdx];
+          const indices = triggerIndicesArr[tId];
+          const curVal = bestPointsArr[tId];
+          const slot = tId * PTS_SPAN + Math.max(0, Math.min(80, curVal + PTS_OFFSET));
+          const cands = dir === 'up'
+            ? (escalateUpTable[slot].length > 0 ? escalateUpTable[slot] : stretchUpTable[slot])
+            : (escalateDownTable[slot].length > 0 ? escalateDownTable[slot] : stretchDownTable[slot]);
+          if (cands.length === 0) continue;
+
+          const curLiveBefore = evaluateLiveSlice();
+          let bestVal = curVal;
+          let bestLiveClean = curLiveBefore.liveCleanTopMatches;
+          let bestLiveGap = curLiveBefore.bestStrandedLiveWinnerGap;
+          let bestLivePairs = curLiveBefore.liveTargetOverTrapPairs;
+          let bestSnap: FastEvalSnapshot | null = null;
+          let bestReg = runningRegSum;
+
+          for (let cIdx = 0; cIdx < cands.length; cIdx++) {
+            const testVal = cands[cIdx];
+            const delta = testVal - curVal;
+            bestPointsArr[tId] = testVal;
+            const testRegSum = runningRegSum + (getNormReg(testVal) - getNormReg(curVal));
+            const mark = undoLen;
+            applyDelta(indices, delta);
+            totalComps++;
+
+            const evalRes = fastEvaluateBuckets(targetBuckets, trapBuckets, testRegSum);
+            // Strict Zero-Dilution Gate on History
+            if (isHistoryStrictlyPreserved(evalRes)) {
+              const testLive = evaluateLiveSlice();
+              const liveClimbed = testLive.liveCleanTopMatches > bestLiveClean;
+              const liveGapImproved =
+                testLive.liveCleanTopMatches === bestLiveClean &&
+                (testLive.bestStrandedLiveWinnerGap > bestLiveGap ||
+                 (testLive.bestStrandedLiveWinnerGap === bestLiveGap && testLive.liveTargetOverTrapPairs > bestLivePairs));
+              if (liveClimbed || liveGapImproved) {
+                bestVal = testVal;
+                bestLiveClean = testLive.liveCleanTopMatches;
+                bestLiveGap = testLive.bestStrandedLiveWinnerGap;
+                bestLivePairs = testLive.liveTargetOverTrapPairs;
+                bestSnap = cloneEvalSnapshot(evalRes);
+                bestReg = testRegSum;
+              }
+            }
+            bestPointsArr[tId] = curVal;
+            rollbackTo(mark);
+          }
+
+          if (bestSnap && bestVal !== curVal) {
+            const delta = bestVal - curVal;
+            bestPointsArr[tId] = bestVal;
+            applyDelta(indices, delta);
+            undoLen = 0;
+            runningRegSum = bestReg;
+            bestFastEval = bestSnap;
+            bestTrapRanks = [...bestSnap.trapRanks];
+            bestTrapGaps = [...bestSnap.trapGaps];
+            targetingDirty = true;
+            frontierDirty = true;
+            snapshotAllTimeBest(bestSnap);
+            snapshotElite();
+            lockedHistoryClean = allTimeBestPeak.cleanTopMatches;
+            lockedHistoryTrapRank = allTimeBestPeak.firstTrapRank;
+            lockedHistoryTrapInTopN = Math.min(lockedHistoryTrapInTopN, allTimeBestPeak.fastEval.trapInTopN);
+            committedInRound = true;
+          }
+        }
+
+        // 2. Pairwise Pareto-safe steps (1 Live stranded winner trigger UP + 1 Live blocking trap trigger DOWN)
+        if (performance.now() - frameStart < maxBudgetMs && winUpTrigs.length > 0 && trapDownTrigs.length > 0) {
+          const wLim = Math.min(10, winUpTrigs.length);
+          const trLim = Math.min(10, trapDownTrigs.length);
+          pairLoop: for (let w = 0; w < wLim; w++) {
+            const wId = winUpTrigs[w];
+            const wCur = bestPointsArr[wId];
+            const wSlot = wId * PTS_SPAN + Math.max(0, Math.min(80, wCur + PTS_OFFSET));
+            const wCands = stretchUpTable[wSlot];
+            if (wCands.length === 0) continue;
+
+            for (let t = 0; t < trLim; t++) {
+              if (performance.now() - frameStart >= maxBudgetMs) break pairLoop;
+              const trId = trapDownTrigs[t];
+              if (trId === wId) continue;
+              const trCur = bestPointsArr[trId];
+              const trSlot = trId * PTS_SPAN + Math.max(0, Math.min(80, trCur + PTS_OFFSET));
+              const trCands = stretchDownTable[trSlot];
+              if (trCands.length === 0) continue;
+
+              let pairAccepted = false;
+              const wMaxC = Math.min(2, wCands.length);
+              const trMaxC = Math.min(2, trCands.length);
+              for (let wc = 0; wc < wMaxC && !pairAccepted; wc++) {
+                const wNew = wCands[wc];
+                for (let tc = 0; tc < trMaxC && !pairAccepted; tc++) {
+                  const trNew = trCands[tc];
+                  const curLiveBefore = evaluateLiveSlice();
+                  const mark = undoLen;
+                  bestPointsArr[wId] = wNew;
+                  bestPointsArr[trId] = trNew;
+                  const testRegSum = runningRegSum + (getNormReg(wNew) - getNormReg(wCur)) + (getNormReg(trNew) - getNormReg(trCur));
+                  applyDelta(triggerIndicesArr[wId], wNew - wCur);
+                  applyDelta(triggerIndicesArr[trId], trNew - trCur);
+                  totalComps++;
+
+                  const evalRes = fastEvaluateBuckets(targetBuckets, trapBuckets, testRegSum);
+                  let acceptPair = false;
+                  if (isHistoryStrictlyPreserved(evalRes)) {
+                    const testLive = evaluateLiveSlice();
+                    if (testLive.liveCleanTopMatches > curLiveBefore.liveCleanTopMatches ||
+                        (testLive.liveCleanTopMatches === curLiveBefore.liveCleanTopMatches &&
+                         testLive.liveTargetOverTrapPairs >= curLiveBefore.liveTargetOverTrapPairs &&
+                         (testLive.bestStrandedLiveWinnerGap > curLiveBefore.bestStrandedLiveWinnerGap ||
+                          testLive.liveTargetOverTrapPairs > curLiveBefore.liveTargetOverTrapPairs))) {
+                      acceptPair = true;
+                    }
+                  }
+
+                  if (acceptPair) {
+                    undoLen = 0;
+                    const snap = cloneEvalSnapshot(evalRes);
+                    runningRegSum = testRegSum;
+                    bestFastEval = snap;
+                    bestTrapRanks = [...snap.trapRanks];
+                    bestTrapGaps = [...snap.trapGaps];
+                    targetingDirty = true;
+                    frontierDirty = true;
+                    snapshotAllTimeBest(snap);
+                    snapshotElite();
+                    lockedHistoryClean = allTimeBestPeak.cleanTopMatches;
+                    lockedHistoryTrapRank = allTimeBestPeak.firstTrapRank;
+                    lockedHistoryTrapInTopN = Math.min(lockedHistoryTrapInTopN, allTimeBestPeak.fastEval.trapInTopN);
+                    committedInRound = true;
+                    pairAccepted = true;
+                  } else {
+                    bestPointsArr[wId] = wCur;
+                    bestPointsArr[trId] = trCur;
+                    rollbackTo(mark);
+                  }
+                }
+              }
+              if (pairAccepted) break;
+            }
+          }
+        }
+
+        if (!committedInRound) break;
+      }
+    };
+
     // Per-Trigger Marginal Contribution & Free-Rider Pruning Pass:
     // 1. Preserves pre-compute saved weights (savedInitialPointsArr) so proven cross-week drivers are never eroded.
     // 2. For newly inflated weights during the current run, steps 5 points back toward savedInitialPointsArr;
@@ -4934,6 +5286,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const band = profilesByTrigId[tId]?.allowedBand;
         if (!band || !band.includes(stepBackVal)) continue;
 
+        const preAuditLive = hasLiveSlice ? evaluateLiveSlice() : null;
         const delta = stepBackVal - curVal;
         bestPointsArr[tId] = stepBackVal;
         const testRegSum = runningRegSum + (getNormReg(stepBackVal) - getNormReg(curVal));
@@ -4960,7 +5313,15 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           (curVal > savedVal && curVal > 0 && triggerTrapCountsArr[tId] >= triggerTargetCountsArr[tId]) ||
           (curVal < savedVal && curVal < 0 && triggerTargetCountsArr[tId] > triggerTrapCountsArr[tId] * 2);
 
+        const postAuditLive = hasLiveSlice ? evaluateLiveSlice() : null;
+        const livePreserved = !hasLiveSlice || (
+          postAuditLive!.liveCleanTopMatches >= preAuditLive!.liveCleanTopMatches &&
+          postAuditLive!.liveTargetOverTrapPairs >= preAuditLive!.liveTargetOverTrapPairs &&
+          postAuditLive!.liveCleanTopMatches >= allTimeBestPeak.liveCleanTopMatches
+        );
+
         const separationPreserved = !violated &&
+          livePreserved &&
           evalRes.cleanTopMatches >= bestFastEval.cleanTopMatches &&
           evalRes.firstTrapRank >= bestFastEval.firstTrapRank &&
           evalRes.trapInTopN <= bestFastEval.trapInTopN &&
@@ -5136,6 +5497,13 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             undoLen = 0;
             runBreakthroughSweep(activeTrapMatchIdx, frameStart);
             lastSweepComp = totalComps;
+            refreshFrontierIfNeeded();
+          }
+
+          // Zero-Dilution Live-Slice Polish Pass on History Mode plateaus (strictly preserves 100% of History peak clean matches)
+          if (hasLiveSlice && !inIlsKick && staleCleanComps > 0 && staleCleanComps % 12000 === 0) {
+            undoLen = 0;
+            runLiveSlicePolishPass(frameStart);
             refreshFrontierIfNeeded();
           }
 
@@ -5489,8 +5857,13 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
               bestFastEval = acceptedSnap;
 
               const curPeakTrapR = acceptedSnap.firstTrapRank;
+              const liveTieClimbed = hasLiveSlice &&
+                acceptedSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches &&
+                curPeakTrapR === allTimeBestPeak.firstTrapRank &&
+                evaluateLiveSlice().liveCleanTopMatches > allTimeBestPeak.liveCleanTopMatches;
               if (acceptedSnap.cleanTopMatches > allTimeBestPeak.cleanTopMatches ||
                   (acceptedSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && curPeakTrapR > allTimeBestPeak.firstTrapRank) ||
+                  liveTieClimbed ||
                   (acceptedSnap.cleanTopMatches === allTimeBestPeak.cleanTopMatches && curPeakTrapR === allTimeBestPeak.firstTrapRank && acceptedSnap.quality > allTimeBestPeak.quality)) {
                 snapshotAllTimeBest(acceptedSnap);
               }
