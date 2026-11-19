@@ -576,9 +576,15 @@ export const saveUploadedMatches = async (matches: Match[], sync: boolean = true
 
     // 2. Always persist full array to IndexedDB (supports gigabytes without localStorage quota limits)
     try {
+      const nowStr = Date.now().toString();
       await idbSet('seer_uploaded_matches_idb_cache_v2', uniqueMatches);
+      await idbSet('seer_uploaded_matches_idb_cache_v5', uniqueMatches);
       await idbSet(KEYS.UPLOADED_MATCHES, uniqueMatches);
-      localStorage.setItem('seer_uploaded_matches_idb_cache_time_v2', Date.now().toString());
+      localStorage.setItem('seer_uploaded_matches_idb_cache_time_v2', nowStr);
+      localStorage.setItem('seer_uploaded_matches_idb_cache_time_v5', nowStr);
+      if (sync) {
+        localStorage.removeItem('seer_uploaded_matches_idb_cache_meta_v5');
+      }
     } catch (idbErr) {
       console.warn("Failed to persist uploaded matches to IndexedDB:", idbErr);
     }

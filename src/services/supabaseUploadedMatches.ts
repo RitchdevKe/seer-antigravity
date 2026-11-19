@@ -13,6 +13,7 @@ import { safeSupabaseUpsert } from './supabaseHelper';
 
 const UPLOADED_CACHE_KEY = 'seer_uploaded_matches_idb_cache_v5';
 const UPLOADED_CACHE_TIME_KEY = 'seer_uploaded_matches_idb_cache_time_v5';
+const UPLOADED_CACHE_META_KEY = 'seer_uploaded_matches_idb_cache_meta_v5';
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 let memoryUploadedMatches: Match[] | null = null;
 
@@ -107,8 +108,12 @@ export const saveUploadedMatchesToSupabase = async (matches: Match[]): Promise<b
     try {
       await idbSet(UPLOADED_CACHE_KEY, uniqueMatches);
       localStorage.setItem(UPLOADED_CACHE_TIME_KEY, Date.now().toString());
+      localStorage.removeItem(UPLOADED_CACHE_META_KEY);
       memoryUploadedMatches = uniqueMatches;
     } catch(e) {}
+    if (typeof window !== 'undefined') {
+      fetch('/api/db/uploaded-matches/invalidate', { method: 'POST' }).catch(() => {});
+    }
     console.log(`Successfully backed up ${uniqueMatches.length} user-uploaded matches to Supabase user_uploaded_matches table.`);
     return true;
   } catch (error) {
@@ -164,12 +169,33 @@ export const deleteUploadedMatchesFromSupabaseBulk = async (ids: (string | numbe
  * Paginated in intervals of 1000 to keep the response streaming stable and fast.
  */
 export const loadUploadedMatchesFromSupabase = async (forceRefresh = false): Promise<Match[]> => {
-  if (!forceRefresh && memoryUploadedMatches && memoryUploadedMatches.length > 0) {
+  const now = Date.now();
+  const baseUrl = typeof window === 'undefined' ? 'http://localhost:3000' : '';
+
+  // Check lightweight server meta so browser IDB/memory caches never stay stale when RDS has new matches
+  let serverMetaKey: string | null = null;
+  try {
+    const metaRes = await fetch(`${baseUrl}/api/db/uploaded-matches/meta`);
+    if (metaRes.ok) {
+      const meta = await metaRes.json();
+      if (typeof meta?.count === 'number') {
+        serverMetaKey = `${meta.count}|${meta.maxUpdatedAt || ''}`;
+      }
+    }
+  } catch (e) {}
+
+  let localMetaKey: string | null = null;
+  try {
+    localMetaKey = localStorage.getItem(UPLOADED_CACHE_META_KEY);
+  } catch (e) {}
+
+  const isCacheFreshWithServer = !serverMetaKey || (localMetaKey !== null && localMetaKey === serverMetaKey);
+
+  if (!forceRefresh && isCacheFreshWithServer && memoryUploadedMatches && memoryUploadedMatches.length > 0) {
     return filterTombstoned(memoryUploadedMatches);
   }
-  const now = Date.now();
   const cachedTimeStr = localStorage.getItem(UPLOADED_CACHE_TIME_KEY);
-  if (!forceRefresh && cachedTimeStr) {
+  if (!forceRefresh && isCacheFreshWithServer && cachedTimeStr) {
     const cachedTime = parseInt(cachedTimeStr, 10);
     if (now - cachedTime < CACHE_EXPIRY_MS) {
       try {
@@ -191,7 +217,6 @@ export const loadUploadedMatchesFromSupabase = async (forceRefresh = false): Pro
   try {
     let fetchedFromFastApi = false;
     try {
-      const baseUrl = typeof window === 'undefined' ? 'http://localhost:3000' : '';
       const response = await fetch(`${baseUrl}/api/db/uploaded-matches`);
       if (response.ok) {
         const json = await response.json();
@@ -273,6 +298,9 @@ export const loadUploadedMatchesFromSupabase = async (forceRefresh = false): Pro
       await idbSet(UPLOADED_CACHE_KEY, matches);
       await idbSet('prm_uploaded_matches', matches);
       localStorage.setItem(UPLOADED_CACHE_TIME_KEY, now.toString());
+      if (serverMetaKey) {
+        localStorage.setItem(UPLOADED_CACHE_META_KEY, serverMetaKey);
+      }
     } catch(e) {}
     memoryUploadedMatches = matches;
   } catch (error) {

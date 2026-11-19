@@ -53,6 +53,7 @@ pgPool.query(`
 
 // Fast, gzipped endpoint for full historical universe with multi-layer disk and stream caching
 const diskGzipPath = path.join(process.cwd(), 'data', 'uploaded_matches.json.gz');
+const diskMetaPath = path.join(process.cwd(), 'data', 'uploaded_matches.meta.json');
 const diskJsonPath = path.join(process.cwd(), 'data', 'prm_uploaded_matches.json');
 
 export const invalidateUploadedMatchesCache = () => {
@@ -60,7 +61,16 @@ export const invalidateUploadedMatchesCache = () => {
     if (fs.existsSync(diskGzipPath)) {
       fs.unlinkSync(diskGzipPath);
     }
+    if (fs.existsSync(diskMetaPath)) {
+      fs.unlinkSync(diskMetaPath);
+    }
   } catch (e) {}
+};
+
+const getUploadedMatchesDbMeta = async (): Promise<{ count: number; maxUpdatedAt: string }> => {
+  const res = await pgPool.query('SELECT COUNT(*)::int AS cnt, COALESCE(MAX(updated_at)::text, \'\') AS max_upd FROM user_uploaded_matches');
+  const row = res.rows[0] || {};
+  return { count: Number(row.cnt || 0), maxUpdatedAt: String(row.max_upd || '') };
 };
 
 router.post('/uploaded-matches/invalidate', (req, res) => {
@@ -68,11 +78,45 @@ router.post('/uploaded-matches/invalidate', (req, res) => {
   res.json({ success: true, message: 'Uploaded matches cache invalidated' });
 });
 
+router.get('/uploaded-matches/meta', async (req, res) => {
+  try {
+    const meta = await getUploadedMatchesDbMeta();
+    res.json(meta);
+  } catch (err: any) {
+    res.status(500).json({ count: 0, maxUpdatedAt: '', error: err.message });
+  }
+});
+
 router.get('/uploaded-matches', async (req, res) => {
   const forceRefresh = req.query.fresh === '1' || req.query.fresh === 'true';
 
-  // 1. Instant Disk Gzip Streaming (Zero Heap Memory, 5ms Delivery, Immune to OOM)
-  if (!forceRefresh && fs.existsSync(diskGzipPath)) {
+  // Verify disk gzip cache freshness against RDS row count + max updated_at
+  let dbMeta: { count: number; maxUpdatedAt: string } | null = null;
+  let diskCacheFresh = false;
+  if (!forceRefresh && fs.existsSync(diskGzipPath) && fs.existsSync(diskMetaPath)) {
+    try {
+      const cachedMeta = JSON.parse(fs.readFileSync(diskMetaPath, 'utf-8'));
+      dbMeta = await getUploadedMatchesDbMeta();
+      if (
+        cachedMeta &&
+        cachedMeta.count === dbMeta.count &&
+        cachedMeta.maxUpdatedAt === dbMeta.maxUpdatedAt &&
+        dbMeta.count > 0
+      ) {
+        diskCacheFresh = true;
+      } else {
+        invalidateUploadedMatchesCache();
+      }
+    } catch (e) {
+      invalidateUploadedMatchesCache();
+    }
+  } else if (!forceRefresh && fs.existsSync(diskGzipPath) && !fs.existsSync(diskMetaPath)) {
+    // Legacy unversioned gzip cache without meta sidecar — rebuild once so RDS updates are reflected
+    invalidateUploadedMatchesCache();
+  }
+
+  // 1. Instant Disk Gzip Streaming (Zero Heap Memory, 5ms Delivery, Verified Fresh)
+  if (!forceRefresh && diskCacheFresh && fs.existsSync(diskGzipPath)) {
     try {
       const stat = fs.statSync(diskGzipPath);
       if (stat.size > 1000) {
@@ -85,31 +129,21 @@ router.get('/uploaded-matches', async (req, res) => {
     } catch (e) {}
   }
 
-  // 2. Fallback to Disk JSON Streaming with On-The-Fly Gzip & Disk Cache Writing
-  if (!forceRefresh && fs.existsSync(diskJsonPath)) {
-    try {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Encoding', 'gzip');
-      res.setHeader('X-Cache', 'DISK_JSON_STREAM');
-      const readStream = fs.createReadStream(diskJsonPath);
-      const gzip = zlib.createGzip({ level: 6 });
-      const cacheOut = fs.createWriteStream(diskGzipPath);
-      readStream.pipe(gzip);
-      gzip.pipe(res);
-      gzip.pipe(cacheOut);
-      return;
-    } catch (e) {
-      console.warn("Disk JSON streaming fallback failed, proceeding to chunked query:", e);
-    }
-  }
-
-  // 3. Chunked Database Stream (Fetches in 2,500 batches to strictly preserve V8 Heap < 50 MB)
+  // 2. Chunked Database Stream (Fetches in 2,500 batches to strictly preserve V8 Heap < 50 MB)
   try {
+    if (!dbMeta) {
+      try { dbMeta = await getUploadedMatchesDbMeta(); } catch (_) {}
+    }
+    const dataDir = path.dirname(diskGzipPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Encoding', 'gzip');
     res.setHeader('X-Cache', 'DB_CHUNKED_STREAM');
     const gzip = zlib.createGzip({ level: 6 });
-    const cacheOut = fs.createWriteStream(diskGzipPath);
+    const tmpGzipPath = `${diskGzipPath}.tmp`;
+    const cacheOut = fs.createWriteStream(tmpGzipPath);
     gzip.pipe(res);
     gzip.pipe(cacheOut);
 
@@ -135,6 +169,14 @@ router.get('/uploaded-matches', async (req, res) => {
       if (result.rows.length < batchSize) break;
     }
     gzip.write(`],"count":${offset},"error":null}`);
+    cacheOut.on('finish', () => {
+      try {
+        fs.renameSync(tmpGzipPath, diskGzipPath);
+        if (dbMeta) {
+          fs.writeFileSync(diskMetaPath, JSON.stringify({ count: offset, maxUpdatedAt: dbMeta.maxUpdatedAt }), 'utf-8');
+        }
+      } catch (_) {}
+    });
     gzip.end();
   } catch (err: any) {
     console.error("Error streaming uploaded-matches:", err.message);
@@ -447,6 +489,10 @@ router.post('/query', async (req, res) => {
 
     // console.log("Executing SQL:", sql);
     const result = await pgPool.query(sql, values);
+
+    if (action !== 'select' && table === 'user_uploaded_matches') {
+      invalidateUploadedMatchesCache();
+    }
 
     let responseData = result.rows;
     if (single) {

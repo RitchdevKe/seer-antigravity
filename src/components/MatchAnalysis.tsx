@@ -140,6 +140,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   const [archives, setArchives] = useState<{date: string, matches: Match[]}[]>([]); 
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSupabaseSynced, setIsSupabaseSynced] = useState(false);
+  const [isRefreshingSubPatt, setIsRefreshingSubPatt] = useState(false);
   const lastSavedUploadedRef = useRef<Match[] | null>(null);
   const lastSavedLiveRef = useRef<Match[] | null>(null);
   
@@ -933,9 +934,19 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
   const phaTargetDate = useMemo(() => {
       let targetDate = isArchiveMode && selectedArchiveDate ? selectedArchiveDate : getAnalysisDateString();
       if (!isArchiveMode && !isAnalysisMode && liveMatches && liveMatches.length > 0) {
-          const liveLogicalDates = liveMatches
+          const activeLiveMatches = liveMatches.filter(m =>
+              liveViewType === 'jackpot' ? Boolean(m.isJackpot) : (m.isDaily !== undefined ? m.isDaily : !m.isJackpot)
+          );
+          const targetDateMs = new Date(`${targetDate}T00:00:00Z`).getTime();
+          const maxBacktrackMs = 3 * 24 * 60 * 60 * 1000;
+          const liveLogicalDates = activeLiveMatches
               .map(m => getLogicalDate(m.date || '', m.time))
-              .filter(d => Boolean(d));
+              .filter(d => {
+                  if (!d) return false;
+                  const dMs = new Date(`${d}T00:00:00Z`).getTime();
+                  if (Number.isNaN(dMs) || Number.isNaN(targetDateMs)) return true;
+                  return targetDateMs - dMs <= maxBacktrackMs;
+              });
           if (liveLogicalDates.length > 0) {
               const earliestLive = [...liveLogicalDates].sort()[0];
               if (earliestLive && earliestLive < targetDate) {
@@ -944,7 +955,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           }
       }
       return targetDate;
-  }, [isArchiveMode, isAnalysisMode, selectedArchiveDate, liveMatches]);
+  }, [isArchiveMode, isAnalysisMode, selectedArchiveDate, liveMatches, liveViewType]);
 
   const phaStatsMap = useMemo(() => {
       const stats: Record<string, { total: number; paaTotal: number; correct: number; outcomes: { '1': number; 'X': number; '2': number }; favWin: number; draw: number; upsetWin: number }> = {};
@@ -2699,13 +2710,43 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
           lightText: 'text-indigo-100', activeBg: 'bg-white', shadow: 'shadow-sm', border: 'border-indigo-600'
       };
   };
-  // NEW: Sub Pattern Recommendations Logic
-  const subPatternRecommendations = useMemo(() => {
-    if (!showSubPattModal) return [];
+  // NEW: Sub Pattern Recommendations Logic (analyzes ALL completed matches including recent & completed live matches without mutating leakage-free phaStatsMap)
+  const subPatternAnalysis = useMemo(() => {
+    if (!showSubPattModal) return { recs: [] as Array<{ sub: string; prim: string; fin: string; p1: number; px: number; p2: number; c1: number; cx: number; c2: number; total: number; shortCopyText: string }>, analyzedCount: 0 };
 
+    // Deduplicate all matches across fullProcessedHistory and liveMatches so completed live matches are included
+    const completedById = new Map<string, Match>();
+    for (const m of fullProcessedHistory) {
+      if (getActualResult(m.result) !== 'pending') {
+        completedById.set(String(m.id), m);
+      }
+    }
+    for (const m of (liveMatches || [])) {
+      if (getActualResult(m.result) !== 'pending') {
+        const key = String(m.id);
+        const processed = m.patternAnalysis?.subPattern ? m : processMatch(m, mlData);
+        completedById.set(key, processed);
+      }
+    }
+
+    const completeStats: Record<string, { total: number; outcomes: { '1': number; 'X': number; '2': number } }> = {};
+    completedById.forEach(m => {
+      const sub = m.patternAnalysis?.subPattern;
+      if (!sub) return;
+      const actual = getActualResult(m.result);
+      if (actual === '1' || actual === 'X' || actual === '2') {
+        if (!completeStats[sub]) {
+          completeStats[sub] = { total: 0, outcomes: { '1': 0, 'X': 0, '2': 0 } };
+        }
+        completeStats[sub].total++;
+        completeStats[sub].outcomes[actual]++;
+      }
+    });
+
+    const analyzedSubPatterns = Object.keys(completeStats);
     const recs = [];
-    for (const sub of Object.keys(phaStatsMap)) {
-      const stats = phaStatsMap[sub];
+    for (const sub of analyzedSubPatterns) {
+      const stats = completeStats[sub];
       // Only show recommendations for sub-patterns that have actual results
       if (!stats || stats.total === 0) continue;
 
@@ -2788,8 +2829,34 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
     }
 
     // Sort by total matches descending to put more confident ones first
-    return recs.sort((a, b) => b.total - a.total);
-  }, [showSubPattModal, phaStatsMap]);
+    return {
+      recs: recs.sort((a, b) => b.total - a.total),
+      analyzedCount: analyzedSubPatterns.length
+    };
+  }, [showSubPattModal, fullProcessedHistory, liveMatches, mlData]);
+
+  const subPatternRecommendations = subPatternAnalysis.recs;
+  const analyzedSubPatternsCount = subPatternAnalysis.analyzedCount;
+
+  const handleRefreshSubPattData = async () => {
+    setIsRefreshingSubPatt(true);
+    try {
+      const freshUploaded = await loadUploadedMatchesFromSupabase(true);
+      if (freshUploaded && freshUploaded.length > 0) {
+        lastSavedUploadedRef.current = freshUploaded;
+        setUploadedMatches(freshUploaded);
+        Storage.saveUploadedMatches(freshUploaded, false, false);
+        showNotification(`Refreshed ${freshUploaded.length.toLocaleString()} historical matches from database.`);
+      } else {
+        showNotification("No new historical matches found.", "error");
+      }
+    } catch (err) {
+      console.error("Failed to refresh Sub Pattern data:", err);
+      showNotification("Failed to refresh Sub Pattern data from database.", "error");
+    } finally {
+      setIsRefreshingSubPatt(false);
+    }
+  };
 
   const handleCopySubPattRecommendations = () => {
       const textToCopy = subPatternRecommendations.map(r => r.shortCopyText).join('\n');
@@ -4306,6 +4373,14 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                           <h3 className="text-xl font-bold text-gray-800">Sub Pattern Recommendations</h3>
                       </div>
                       <div className="flex gap-2">
+                          <button
+                             onClick={handleRefreshSubPattData}
+                             disabled={isRefreshingSubPatt}
+                             className="px-3 py-2 bg-white text-gray-700 border border-gray-300 rounded-md font-bold text-sm hover:bg-gray-100 disabled:opacity-50 flex items-center gap-2"
+                             title="Force refresh historical matches from database"
+                          >
+                             <RefreshCw size={16} className={isRefreshingSubPatt ? 'animate-spin' : ''} /> {isRefreshingSubPatt ? 'Refreshing...' : 'Refresh'}
+                          </button>
                           <button onClick={handleCopySubPattRecommendations} className="px-4 py-2 bg-indigo-600 text-white rounded-md font-bold text-sm hover:bg-indigo-700 flex flex-center gap-2">
                              <Copy size={16} /> Copy All Format
                           </button>
@@ -4323,7 +4398,13 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                               {subPatternRecommendations.map((r, i) => (
                                   <div key={i}>{r.shortCopyText}</div>
                               ))}
-                              {subPatternRecommendations.length === 0 && <div className="text-gray-400">No data available</div>}
+                              {subPatternRecommendations.length === 0 && (
+                                  <div className="text-gray-400">
+                                      {analyzedSubPatternsCount > 0
+                                          ? `All ${analyzedSubPatternsCount} sub-patterns already match Patterns.tsx (0 updates needed)`
+                                          : 'No data available'}
+                                  </div>
+                              )}
                           </div>
                       </div>
                       <div className="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col min-h-0">
@@ -4351,7 +4432,13 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                                           </tr>
                                       ))}
                                       {subPatternRecommendations.length === 0 && (
-                                          <tr><td colSpan={6} className="text-center p-8 text-gray-400">No sub pattern data to analyze.</td></tr>
+                                          <tr>
+                                              <td colSpan={6} className="text-center p-8 text-gray-500">
+                                                  {analyzedSubPatternsCount > 0
+                                                      ? `All ${analyzedSubPatternsCount} analyzed sub-patterns already match Patterns.tsx (0 updates needed).`
+                                                      : 'No sub pattern data to analyze.'}
+                                              </td>
+                                          </tr>
                                       )}
                                   </tbody>
                               </table>
