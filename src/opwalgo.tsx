@@ -71,7 +71,8 @@ import {
   MASTER_BOTB_RULES,
   UPSETS_EXPLICIT_PENALTIES,
   DYNAMIC_LEAGUE_TRIGGERS,
-  registerDiscoveredLeagueTrigger
+  registerDiscoveredLeagueTrigger,
+  REMOVED_TRIGGER_DESCRIPTIONS
 } from './utils/opwCatalog';
 import {
   DAILY_OPTIMIZED_SETTINGS,
@@ -86,7 +87,8 @@ import {
   clearOptimizedScoreCache,
   loadServerOpwRules,
   invalidateServerRulesCache,
-  setDailySettingsMeta
+  setDailySettingsMeta,
+  get3WeekTriggerConsistencyMap
 } from './utils/optimizedweights';
 import { getMatchEvaluatorTags } from './utils/matchEvaluator';
 import { deleteLockedSlip, getLockedSlip, invalidateLockedSlipsForWeights, saveLockedSlip, saveLockedSlipsBulk, SESSION_SLIP_CACHE, SeerLockedSlip } from './services/seerSlips';
@@ -1096,6 +1098,36 @@ export function evaluateSeparation(
   };
 }
 
+const LAST_3W_FILTER_CACHE = new WeakMap<Match[], { len: number; filtered: Match[] }>();
+export function filterMatchesLast3Weeks(matchesList: Match[] | undefined): Match[] {
+  if (!Array.isArray(matchesList) || matchesList.length === 0) return [];
+  const cached = LAST_3W_FILTER_CACHE.get(matchesList);
+  if (cached && cached.len === matchesList.length) return cached.filtered;
+  let maxDateStr = '';
+  for (let i = 0; i < matchesList.length; i++) {
+    const m = matchesList[i];
+    if (!m?.date) continue;
+    const dStr = getLogicalDate(m.date, m.time);
+    if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > maxDateStr) {
+      maxDateStr = dStr;
+    }
+  }
+  const anchorMs = maxDateStr ? Date.parse(`${maxDateStr}T12:00:00Z`) : Date.now();
+  const cutoffDate = new Date(anchorMs - 21 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const filtered: Match[] = [];
+  for (let i = 0; i < matchesList.length; i++) {
+    const m = matchesList[i];
+    if (!m?.date) continue;
+    const dStr = getLogicalDate(m.date, m.time);
+    if (!dStr || dStr >= cutoffDate) {
+      filtered.push(m);
+    }
+  }
+  const out = filtered.length > 0 ? filtered : matchesList.slice(-300);
+  LAST_3W_FILTER_CACHE.set(matchesList, { len: matchesList.length, filtered: out });
+  return out;
+}
+
 const MODULE_DAY_HIST_CACHE = new Map<string, Map<string, { mfav: number; draw: number; underdog: number }>>();
 const MODULE_OVERALL_HIST_CACHE = new Map<string, Map<string, {
   mfav: number;
@@ -1167,29 +1199,28 @@ export function computeCategoryRecommendations(
     return actual === '1' || actual === 'X' || actual === '2';
   });
 
-  // Persistent module-cached historical day hit stats across the full historical archive (0ms on repeated category/day renders)
-  const dayCacheKey = `${cat.id}_${selectedDay}_${allMatches ? allMatches.length : 0}`;
+  // Persistent module-cached historical day hit stats across the Last 3 Weeks (0ms on repeated category/day renders)
+  const last3WeeksHistMatches = filterMatchesLast3Weeks(allMatches);
+  const dayCacheKey = `${cat.id}_${selectedDay}_3w_${last3WeeksHistMatches.length}`;
   let dayHistStatsMap = MODULE_DAY_HIST_CACHE.get(dayCacheKey) || null;
   const getDayHistStats = (desc: string): { mfav: number; draw: number; underdog: number } => {
     if (!dayHistStatsMap) {
       dayHistStatsMap = new Map();
       const daySample: Match[] = [];
-      if (allMatches && allMatches.length > 0) {
-        for (let i = allMatches.length - 1; i >= 0; i--) {
-          const m = allMatches[i];
-          const actual = getActualResult(m.result || '');
-          if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
-          if (selectedDay !== 'all' && getMatchDayOfWeek(m) !== selectedDay) continue;
-          let tags = m.evaluatorTags;
-          if (!tags || tags.length === 0) {
-            tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
-            m.evaluatorTags = tags;
-          }
-          const inCat = isTop12Cat
-            ? tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'))
-            : (!prefix || tags.some(t => t.startsWith(prefix)));
-          if (inCat) daySample.push(m);
+      for (let i = last3WeeksHistMatches.length - 1; i >= 0 && daySample.length < 250; i--) {
+        const m = last3WeeksHistMatches[i];
+        const actual = getActualResult(m.result || '');
+        if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
+        if (selectedDay !== 'all' && getMatchDayOfWeek(m) !== selectedDay) continue;
+        let tags = m.evaluatorTags;
+        if (!tags || tags.length === 0) {
+          tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+          m.evaluatorTags = tags;
         }
+        const inCat = isTop12Cat
+          ? tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'))
+          : (!prefix || tags.some(t => t.startsWith(prefix)));
+        if (inCat) daySample.push(m);
       }
       daySample.forEach(m => {
         const actual = getActualResult(m.result || '');
@@ -1227,29 +1258,27 @@ export function computeCategoryRecommendations(
     return dayHistStatsMap.get(desc) || EMPTY_HIST_COUNTS;
   };
 
-  // Persistent module-cached overall historical hit stats across the full historical archive (0ms on repeated renders)
-  const overallCacheKey = `${cat.id}_${allMatches ? allMatches.length : 0}`;
+  // Persistent module-cached overall historical hit stats across the Last 3 Weeks (0ms on repeated renders)
+  const overallCacheKey = `${cat.id}_3w_${last3WeeksHistMatches.length}`;
   let overallHistStatsMap = MODULE_OVERALL_HIST_CACHE.get(overallCacheKey) || null;
 
   const getOverallHistStats = (desc: string) => {
     if (!overallHistStatsMap) {
       overallHistStatsMap = new Map();
       const overallSample: Match[] = [];
-      if (allMatches && allMatches.length > 0) {
-        for (let i = allMatches.length - 1; i >= 0; i--) {
-          const m = allMatches[i];
-          const actual = getActualResult(m.result || '');
-          if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
-          let tags = m.evaluatorTags;
-          if (!tags || tags.length === 0) {
-            tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
-            m.evaluatorTags = tags;
-          }
-          const inCat = isTop12Cat
-            ? tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'))
-            : (!prefix || tags.some(t => t.startsWith(prefix)));
-          if (inCat) overallSample.push(m);
+      for (let i = last3WeeksHistMatches.length - 1; i >= 0 && overallSample.length < 400; i--) {
+        const m = last3WeeksHistMatches[i];
+        const actual = getActualResult(m.result || '');
+        if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
+        let tags = m.evaluatorTags;
+        if (!tags || tags.length === 0) {
+          tags = getMatchEvaluatorTags(m, phaStatsMap, liveViewType === 'jackpot', true, matchStars);
+          m.evaluatorTags = tags;
         }
+        const inCat = isTop12Cat
+          ? tags.some(t => t.startsWith('top12:') || t.startsWith('top10:'))
+          : (!prefix || tags.some(t => t.startsWith(prefix)));
+        if (inCat) overallSample.push(m);
       }
       overallSample.forEach(m => {
         const actual = getActualResult(m.result || '');
@@ -1772,7 +1801,9 @@ export function computeCategoryRecommendations(
     totalComputations++;
   });
 
-  // Final Trigger Recommendation Generation (Live-Analysis-First Bayesian Blending)
+  // Final Trigger Recommendation Generation (Live-Analysis-First Bayesian Blending + 3-Week Trigger Memory)
+  const memDay = selectedDay !== 'all' ? selectedDay : 'saturday';
+  const threeWeekMemMap = get3WeekTriggerConsistencyMap(memDay, cat.id);
   const recs: TriggerRecommendation[] = catalogTriggers.map(desc => {
     const rawCounts = hitStats.get(desc) || { mfav: 0, draw: 0, underdog: 0 };
     const liveTotalHits = rawCounts.mfav + rawCounts.draw + rawCounts.underdog;
@@ -1861,16 +1892,20 @@ export function computeCategoryRecommendations(
     else if (liveTotalHits >= 4 || totalHits >= 8) confidence = 'Medium';
     else if (liveTotalHits >= 1 || totalHits >= 2) confidence = 'Low';
 
+    const memEntry = threeWeekMemMap.get(desc);
+    const memTag = memEntry && memEntry.weeks.length > 0
+      ? ` [3W: ${memEntry.weeks.map(w => (w.points > 0 ? `+${w.points}` : `${w.points}`)).join('/')}${memEntry.consistency === 1 ? ' ★Bonus' : memEntry.consistency === -1 ? ' ⚑Trap' : ''}]`
+      : '';
     let rationale = '';
     if (liveTotalHits === 0) {
-      rationale = `0 live hits today (${dayTotalHits} day hist, ${overallTotalHits} overall hist). Preserved calibrated ${basePoints > 0 ? '+' : ''}${basePoints} pts.`;
+      rationale = `0 live hits today (${dayTotalHits} day 3W hist, ${overallTotalHits} overall 3W hist). Preserved calibrated ${basePoints > 0 ? '+' : ''}${basePoints} pts.${memTag}`;
     } else {
       const volTag = profile.isVolatileSignal ? ' [Volatile]' : '';
       const dps = triggerDPS.get(desc) ?? 0;
       const liveMfavPct = (rawCounts.mfav / liveTotalHits) * 100;
       const liveDrawPct = (rawCounts.draw / liveTotalHits) * 100;
       const liveUdPct = (rawCounts.underdog / liveTotalHits) * 100;
-      rationale = `Live (${liveTotalHits} hits): ${liveMfavPct.toFixed(0)}% Mfav, ${liveDrawPct.toFixed(0)}% Draw, ${liveUdPct.toFixed(0)}% UD (DPS ${dps > 0 ? '+' : ''}${dps.toFixed(2)})${volTag}.`;
+      rationale = `Live (${liveTotalHits} hits): ${liveMfavPct.toFixed(0)}% Mfav, ${liveDrawPct.toFixed(0)}% Draw, ${liveUdPct.toFixed(0)}% UD (DPS ${dps > 0 ? '+' : ''}${dps.toFixed(2)})${volTag}${memTag}.`;
     }
 
     const netEdge = objective === 'underdog_only'
@@ -2213,9 +2248,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   });
   const [datasetScope, setDatasetScope] = useState<'live' | 'history' | 'all'>('live');
 
+  const last3WeeksMatches = useMemo(() => filterMatchesLast3Weeks(allMatches), [allMatches]);
+
   const datasetDay = useMemo<DayOfWeek>(() => {
     if (selectedDay !== 'all') return selectedDay;
-    const targetDataset = datasetScope === 'history' ? (allMatches && allMatches.length > 0 ? allMatches : matches) : matches;
+    const targetDataset = datasetScope === 'history' ? (last3WeeksMatches.length > 0 ? last3WeeksMatches : matches) : matches;
     if (targetDataset && targetDataset.length > 0) {
       const counts: Partial<Record<DayOfWeek, number>> = {};
       targetDataset.forEach(m => {
@@ -2528,17 +2565,17 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Base raw dataset
+  // Base raw dataset (History & Combined strictly scoped to Last 3 Weeks / 21 days for zero lag)
   const rawDataset = useMemo(() => {
     let base: Match[] = [];
     if (datasetScope === 'live') {
       base = matches;
     } else if (datasetScope === 'history') {
-      base = allMatches.length > 0 ? allMatches : matches;
+      base = last3WeeksMatches.length > 0 ? last3WeeksMatches : matches;
     } else {
       const combined = new Map<string | number, Match>();
       matches.forEach(m => combined.set(m.id, m));
-      allMatches.forEach(m => {
+      last3WeeksMatches.forEach(m => {
         if (!combined.has(m.id)) combined.set(m.id, m);
       });
       base = Array.from(combined.values());
@@ -2552,7 +2589,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       return base.filter(m => getMatchDayOfWeek(m) === selectedDay);
     }
     return base;
-  }, [datasetScope, matches, allMatches, selectedDay]);
+  }, [datasetScope, matches, last3WeeksMatches, selectedDay]);
 
   // Filter category matches
   const categoryMatches = useMemo(() => {
@@ -3204,22 +3241,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         });
       });
 
-      // Populate full Historical Archive memory (700+ matches) for the active category and day
+      // Keep startDeepOptimization fast & purely on active matches (no 700+ historical match scanning).
+      // Use lightweight 3-Week Trigger Point Memory for cross-week intelligence.
       const histHitsMap = new Map<string, { mfav: number; draw: number; underdog: number; total: number }>();
-      const effectiveHistDay = selectedDay !== 'all' ? selectedDay : datasetDay;
-      recommendations.forEach(r => {
-        const dayDist = r.weekdayDistribution?.[effectiveHistDay];
-        if (dayDist && dayDist.total >= 3) {
-          histHitsMap.set(r.description, { mfav: dayDist.mfav, draw: dayDist.draw, underdog: dayDist.underdog, total: dayDist.total });
-        } else if (r.overallHits && r.overallHits > 0) {
-          histHitsMap.set(r.description, {
-            mfav: r.overallMfavHits || 0,
-            draw: r.overallDrawHits || 0,
-            underdog: r.overallUnderdogHits || 0,
-            total: r.overallHits
-          });
-        }
-      });
+      const effectiveOptDay = selectedDay !== 'all' ? selectedDay : datasetDay;
+      const threeWeekMem = get3WeekTriggerConsistencyMap(effectiveOptDay, activeCategory);
 
       const launchCoreOptimizer = () => {
     const isUpsetsCat = activeCategoryConfig.targetObjective === 'underdog_only';
@@ -3249,14 +3275,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       }
     }
 
-    // Preserve a read-only snapshot of pre-compute saved points for Cross-Week Driver Preservation & Free-Rider Pruning
+    // Lightweight snapshot of pre-compute saved weights + 3-Week Trigger Point Memory arrays (< 0.1ms, 0 historical matches)
     const savedInitialPointsArr = new Int16Array(bestPointsArr);
-    const histTargetAccArr = new Float32Array(numTriggers);
-    const histBaselineTargetRate = activeCategoryConfig.targetObjective === 'underdog_only'
-      ? 0.25
-      : activeCategoryConfig.targetObjective === 'mfav_only'
-      ? 0.62
-      : 0.78;
+    const threeWeekConsistencyArr = new Int8Array(numTriggers); // 1 = consistent bonus, -1 = consistent penalty, 0 = mixed/unknown
+    const threeWeekAvgArr = new Float32Array(numTriggers);
+    const threeWeekFlippedArr = new Uint8Array(numTriggers);
 
     const buildPointsMapFromArr = (arr: Int16Array): Map<string, number> => {
       const m = new Map<string, number>();
@@ -3280,18 +3303,13 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const triggerTrapCountsArr = new Int32Array(numTriggers);
     const histTotalCountsArr = new Int32Array(numTriggers);
     for (let tId = 0; tId < numTriggers; tId++) {
-      const hStat = histHitsMap.get(allCatalogTriggers[tId]);
-      const hTot = hStat?.total || 0;
-      histTotalCountsArr[tId] = hTot;
-      if (hStat && hTot >= 3) {
-        const hTargets = activeCategoryConfig.targetObjective === 'underdog_only'
-          ? hStat.underdog
-          : activeCategoryConfig.targetObjective === 'mfav_only'
-          ? hStat.mfav
-          : (hStat.mfav + hStat.draw);
-        histTargetAccArr[tId] = hTargets / hTot;
-      } else {
-        histTargetAccArr[tId] = -1;
+      const desc = allCatalogTriggers[tId];
+      histTotalCountsArr[tId] = 0;
+      const mem = threeWeekMem.get(desc);
+      if (mem) {
+        threeWeekConsistencyArr[tId] = mem.consistency;
+        threeWeekAvgArr[tId] = mem.avgPoints;
+        threeWeekFlippedArr[tId] = mem.flippedSign ? 1 : 0;
       }
     }
 
@@ -4256,13 +4274,20 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const overallTrapRate = trHits / totalTrapsCount;
 
         // 1. Failure Commonality Score: prioritizes triggers shared across >= 2 intrusive/lost traps
+        const cons3W = threeWeekConsistencyArr[tId];
+        const avg3W = threeWeekAvgArr[tId];
         if (topTrapHits > 0 || inFocusTrap) {
           const sharedTrapMultiplier = topTrapHits >= 2 ? (2.8 + topTrapHits * 0.9) : (inFocusTrap ? 1.4 : 1.0);
           const rateEdge = Math.max(0, intrusiveTrapRate - cleanWinRate * 0.65) + Math.max(0, overallTrapRate - overallTargetRate * 0.55);
           let tComm = ((topTrapHits * 14) + (inFocusTrap ? 10 : 0) + (rateEdge * 45) - (boundaryWinRate * 18)) * sharedTrapMultiplier;
-          // Suspect False-Bonus Audit: if a trigger carries a positive bonus (> 0) but hits traps more than clean winners
-          // (or had weak historical accuracy < baseline - 5%), boost its down-revision priority
-          if (curVal > 0 && (intrusiveTrapRate > cleanWinRate || (histHits >= 5 && histTargetAccArr[tId] >= 0 && histTargetAccArr[tId] < histBaselineTargetRate - 0.05))) {
+          // 3-Week Trigger Point Memory Priority: triggers consistently penalized over the last 3 weeks
+          // that appear on today's Live traps get prioritized for penalty addition/deepening
+          if (cons3W === -1) {
+            tComm += 30 + Math.abs(avg3W);
+          }
+          // Safe Suspect False-Bonus Audit: if a trigger carries a positive bonus (> 0) but hits traps more than
+          // clean winners in Live Analysis (or was NOT a consistent 3-week bonus), prioritize testing a step-down
+          if (curVal > 0 && (intrusiveTrapRate > cleanWinRate || (topTrapHits >= 2 && bHits === 0) || (cons3W <= 0 && curVal > Math.max(5, avg3W + 5)))) {
             tComm += 35 + curVal;
           }
           if (tComm > 0) trapCommonalityScore[tId] = tComm;
@@ -4273,9 +4298,14 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           const sharedWinMultiplier = bHits >= 2 ? (2.4 + Math.min(6, bHits) * 0.45) : 1.0;
           const rateEdge = Math.max(0, boundaryWinRate - intrusiveTrapRate * 0.85) + Math.max(0, overallTargetRate - overallTrapRate * 0.55);
           let wComm = ((bHits * 12) + (allBelowHits * 2) + (rateEdge * 40) - (topTrapHits * 10)) * sharedWinMultiplier;
-          // Suspect False-Penalty Audit: if a trigger carries a negative penalty (< 0) but hits stranded winners
-          // and has strong multi-week historical accuracy (>= baseline + 5%), boost its up-revision priority
-          if (curVal < 0 && boundaryWinRate > intrusiveTrapRate && histHits >= 5 && histTargetAccArr[tId] >= histBaselineTargetRate + 0.05) {
+          // 3-Week Trigger Point Memory Priority: triggers consistently rewarded as bonuses over the last 3 weeks
+          // that appear on today's Live stranded/boundary winners get prioritized for bonus addition/elevation
+          if (cons3W === 1) {
+            wComm += 30 + Math.max(0, avg3W);
+          }
+          // Safe Suspect False-Penalty Audit: if a trigger carries a negative penalty (< 0) but helps boundary winners
+          // without hitting traps in Live Analysis (or was a consistent 3-week bonus), prioritize testing relief
+          if (curVal < 0 && ((boundaryWinRate > intrusiveTrapRate && topTrapHits === 0) || cons3W === 1)) {
             wComm += 35 + Math.abs(curVal);
           }
           if (wComm > 0) winnerCommonalityScore[tId] = wComm;
@@ -5614,61 +5644,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       setTimeout(runChunk, 4);
     };
 
-    if (isHistoryMode || !allMatches || allMatches.length === 0 || datasetScope === 'live') {
-      if (isHistoryMode) {
-        hitStatsMap.forEach((stat, t) => {
-          histHitsMap.set(t, { mfav: stat.mfav, draw: stat.draw, underdog: stat.underdog, total: stat.mfav + stat.draw + stat.underdog });
-        });
-      }
-      launchCoreOptimizer();
-    } else {
-      // Sliced non-blocking processing of 3,000+ historical matches (guarantees zero UI freeze)
-      let histIdx = 0;
-      const sampleLimit = Math.min(allMatches.length, 3000);
-      const processHistBatch = () => {
-        if (stopDeepRef.current) return;
-        const sliceStart = performance.now();
-        while (histIdx < sampleLimit && performance.now() - sliceStart < 15) {
-          const m = allMatches[histIdx++];
-          const actual = getActualResult(m.result || '');
-          if (actual !== '1' && actual !== 'X' && actual !== '2') continue;
-          const moStr = m.mo || (m as any).odds || (m as any).data?.mo || (m as any).data?.odds || '';
-          const moParts = String(moStr).split(/[- ,]+/).map(s => parseFloat(s.replace(/[^0-9.]/g, '').trim())).filter(p => !isNaN(p));
-          const homeOdds = moParts[0] || (m.homeOdds ? parseFloat(String(m.homeOdds).replace(/[^0-9.]/g, '')) : 0) || 0;
-          const awayOdds = moParts.length >= 3 ? (moParts[2] || 0) : (moParts.length === 2 ? (moParts[1] || 0) : ((m.awayOdds ? parseFloat(String(m.awayOdds).replace(/[^0-9.]/g, '')) : 0)));
-          if (homeOdds <= 0 || awayOdds <= 0) continue;
-          const mFav = getMarketFavorite(m);
-          const out: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
-          let trigs: Set<string> = (m as any)._opwCatalogTriggers;
-          if (!trigs) {
-            try {
-              const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
-              trigs = evaluateAllCatalogTriggers(stats, m);
-              (m as any)._opwCatalogTriggers = trigs;
-            } catch (e) {
-              continue;
-            }
-          }
-          trigs.forEach(t => {
-            let h = histHitsMap.get(t);
-            if (!h) {
-              h = { mfav: 0, draw: 0, underdog: 0, total: 0 };
-              histHitsMap.set(t, h);
-            }
-            if (out === 'mfav') h.mfav++;
-            else if (out === 'draw') h.draw++;
-            else h.underdog++;
-            h.total++;
-          });
-        }
-        if (histIdx < sampleLimit) {
-          setTimeout(processHistBatch, 0);
-        } else {
-          launchCoreOptimizer();
-        }
-      };
-      processHistBatch();
-    }
+    // Launch directly on evaluatedCategoryProfiles (Live Analysis or Last-3-Weeks History) with 0 lag
+    launchCoreOptimizer();
     } catch (err: any) {
       console.error('Failed to start deep optimization:', err);
       setIsDeepOptimizing(false);
@@ -7571,7 +7548,7 @@ ${rulesCode}
                 <h3 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
                   <span>
                     {datasetScope === 'history'
-                      ? '🧠 OPW Self-Learn Engine (Historical Universe)'
+                      ? '🧠 OPW Self-Learn Engine (Last 3 Weeks)'
                       : 'Live Continuous Permutation Optimizer'}
                   </span>
                 </h3>
@@ -7588,7 +7565,7 @@ ${rulesCode}
                 </span>
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full font-mono font-bold uppercase tracking-wider bg-indigo-900/60 text-indigo-300 border border-indigo-500/40">
                   {datasetScope === 'history'
-                    ? `Historical Universe (${completedMatches.length.toLocaleString()} matches)`
+                    ? `Last 3 Weeks (${completedMatches.length.toLocaleString()} matches)`
                     : datasetScope === 'live'
                     ? `Live Session (${completedMatches.length.toLocaleString()} matches)`
                     : `Combined (${completedMatches.length.toLocaleString()} matches)`}
@@ -7596,8 +7573,8 @@ ${rulesCode}
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
                 {datasetScope === 'history'
-                  ? 'Executes high-compute permutation learning across thousands of historical matches to discover durable trigger points for daily algo adoption.'
-                  : 'Executes continuous permutation search on active live session matches to raise winning matches and distill underdog traps to the bottom.'}
+                  ? 'Executes permutation learning across the last 3 weeks of historical matches to discover recent durable trigger points for daily algo adoption.'
+                  : 'Executes continuous permutation search on active live session matches (guided by 3-week trigger point memory) to raise winning matches and distill traps to the bottom.'}
               </p>
             </div>
           </div>
@@ -7622,7 +7599,7 @@ ${rulesCode}
                     <Zap size={14} className="fill-white" />
                     {deepComputations > 0
                       ? 'Resume Self-Learn Engine'
-                      : '🧠 Start Self-Learn on Historical Universe'}
+                      : '🧠 Start Self-Learn (Last 3 Weeks)'}
                   </button>
                 )}
 

@@ -2367,20 +2367,31 @@ async function startServer() {
   });
 
   // OPW P-Recom: Get Calibrated Rules across days from persistent server storage + RDS PostgreSQL
+  const getIsoWeekKey = (dateInput: Date | string = new Date()): string => {
+    const d = typeof dateInput === 'string' ? new Date(dateInput) : new Date(dateInput.getTime());
+    if (isNaN(d.getTime())) return getIsoWeekKey(new Date());
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+  };
+
   app.get("/api/opw/rules", async (req, res) => {
     try {
       const dataDir = path.join(process.cwd(), "data");
       const rulesFilePath = path.join(dataDir, "opw_rules.json");
-      let allRulesData: { rules: Record<string, any> } = { rules: {} };
+      let allRulesData: { rules: Record<string, any>; weeklyMemory?: Record<string, Record<string, any[]>> } = { rules: {}, weeklyMemory: {} };
       if (fsSync.existsSync(rulesFilePath)) {
         try {
           const raw = await fs.readFile(rulesFilePath, "utf-8");
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object' && parsed.rules) {
-            allRulesData = parsed;
+            allRulesData = { rules: parsed.rules, weeklyMemory: parsed.weeklyMemory || {} };
           }
         } catch (e) {}
       }
+      if (!allRulesData.weeklyMemory) allRulesData.weeklyMemory = {};
 
       // Merge with RDS PostgreSQL opw_calibrated_rules so saved rules survive deployments & disk resets
       // RULE: The source with the NEWER timestamp wins entirely for each category. No partial merging.
@@ -2389,6 +2400,36 @@ async function startServer() {
         let dirtyDisk = false;
         for (const row of dbRes.rows || []) {
           const d = String(row.day || '').toLowerCase();
+          if (d === '_weekly_memory' && row.categories && typeof row.categories === 'object') {
+            const dbMem = row.categories.weeklyMemory || row.categories;
+            if (dbMem && typeof dbMem === 'object') {
+              for (const [mDay, catMap] of Object.entries<any>(dbMem)) {
+                if (!catMap || typeof catMap !== 'object') continue;
+                if (!allRulesData.weeklyMemory![mDay]) allRulesData.weeklyMemory![mDay] = {};
+                for (const [mCat, snaps] of Object.entries<any>(catMap)) {
+                  if (!Array.isArray(snaps)) continue;
+                  const existing = Array.isArray(allRulesData.weeklyMemory![mDay][mCat]) ? allRulesData.weeklyMemory![mDay][mCat] : [];
+                  const byWeek = new Map<string, any>();
+                  existing.forEach((s: any) => { if (s?.weekKey) byWeek.set(s.weekKey, s); });
+                  snaps.forEach((s: any) => {
+                    if (!s?.weekKey) return;
+                    const prev = byWeek.get(s.weekKey);
+                    const sTs = Date.parse(s.savedAt || '') || 0;
+                    const pTs = prev ? (Date.parse(prev.savedAt || '') || 0) : -1;
+                    if (sTs >= pTs) byWeek.set(s.weekKey, s);
+                  });
+                  const merged = Array.from(byWeek.values())
+                    .sort((a, b) => String(a.weekKey).localeCompare(String(b.weekKey)))
+                    .slice(-3);
+                  if (JSON.stringify(merged) !== JSON.stringify(existing)) {
+                    allRulesData.weeklyMemory![mDay][mCat] = merged;
+                    dirtyDisk = true;
+                  }
+                }
+              }
+            }
+            continue;
+          }
           if (!d || !row.categories || typeof row.categories !== 'object') continue;
           const dbSavedAt = row.saved_at ? new Date(row.saved_at).toISOString() : new Date().toISOString();
           const dbTs = Date.parse(dbSavedAt) || 0;
@@ -2493,19 +2534,41 @@ async function startServer() {
           await fs.mkdir(dataDir, { recursive: true });
         }
         const rulesFilePath = path.join(dataDir, "opw_rules.json");
-        let allRulesData: { rules: Record<string, any> } = { rules: {} };
+        let allRulesData: { rules: Record<string, any>; weeklyMemory?: Record<string, Record<string, any[]>> } = { rules: {}, weeklyMemory: {} };
         if (fsSync.existsSync(rulesFilePath)) {
           try {
             const raw = await fs.readFile(rulesFilePath, "utf-8");
-            allRulesData = JSON.parse(raw) || { rules: {} };
+            allRulesData = JSON.parse(raw) || { rules: {}, weeklyMemory: {} };
             if (!allRulesData.rules) allRulesData.rules = {};
+            if (!allRulesData.weeklyMemory) allRulesData.weeklyMemory = {};
           } catch (e) {}
         }
+        if (!allRulesData.weeklyMemory) allRulesData.weeklyMemory = {};
 
         try {
-          const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules WHERE day = ANY($1)", [targetDaysList]);
+          const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules WHERE day = ANY($1) OR day = '_weekly_memory'", [targetDaysList]);
           for (const row of dbRes.rows || []) {
             const d = String(row.day || '').toLowerCase();
+            if (d === '_weekly_memory' && row.categories && typeof row.categories === 'object') {
+              const dbMem = row.categories.weeklyMemory || row.categories;
+              if (dbMem && typeof dbMem === 'object') {
+                for (const [mDay, catMap] of Object.entries<any>(dbMem)) {
+                  if (!catMap || typeof catMap !== 'object') continue;
+                  if (!allRulesData.weeklyMemory![mDay]) allRulesData.weeklyMemory![mDay] = {};
+                  for (const [mCat, snaps] of Object.entries<any>(catMap)) {
+                    if (!Array.isArray(snaps)) continue;
+                    const existing = Array.isArray(allRulesData.weeklyMemory![mDay][mCat]) ? allRulesData.weeklyMemory![mDay][mCat] : [];
+                    const byWeek = new Map<string, any>();
+                    existing.forEach((s: any) => { if (s?.weekKey) byWeek.set(s.weekKey, s); });
+                    snaps.forEach((s: any) => { if (s?.weekKey && !byWeek.has(s.weekKey)) byWeek.set(s.weekKey, s); });
+                    allRulesData.weeklyMemory![mDay][mCat] = Array.from(byWeek.values())
+                      .sort((a, b) => String(a.weekKey).localeCompare(String(b.weekKey)))
+                      .slice(-3);
+                  }
+                }
+              }
+              continue;
+            }
             if (!d || !row.categories || typeof row.categories !== 'object') continue;
             // Pre-populate allRulesData with existing DB categories for categories NOT being saved now.
             // expandedCategories (the incoming save payload) always takes absolute precedence.
@@ -2529,10 +2592,50 @@ async function startServer() {
         }
 
         const nowIso = new Date().toISOString();
+        const currentWeekKey = getIsoWeekKey(nowIso);
         for (const d of targetDaysList) {
+          const prevSavedAt = allRulesData.rules[d]?.savedAt;
           const prevCategories = (allRulesData.rules[d] && typeof allRulesData.rules[d].categories === 'object')
             ? allRulesData.rules[d].categories
             : {};
+
+          if (!allRulesData.weeklyMemory![d]) allRulesData.weeklyMemory![d] = {};
+          const prevWeekKey = prevSavedAt ? getIsoWeekKey(prevSavedAt) : '';
+
+          for (const [catId, catPayload] of Object.entries<any>(expandedCategories)) {
+            if (!catPayload || !Array.isArray(catPayload.rules)) continue;
+            const existingSnaps: any[] = Array.isArray(allRulesData.weeklyMemory![d][catId])
+              ? [...allRulesData.weeklyMemory![d][catId]]
+              : [];
+
+            // Seed previous week snapshot automatically if it was from an earlier ISO week and not yet captured
+            if (existingSnaps.length === 0 && prevWeekKey && prevWeekKey !== currentWeekKey && Array.isArray(prevCategories[catId]?.rules)) {
+              const prevPts: Record<string, number> = {};
+              prevCategories[catId].rules.forEach((r: any) => {
+                if (r && typeof r.description === 'string' && typeof r.points === 'number') {
+                  prevPts[r.description] = r.points;
+                }
+              });
+              existingSnaps.push({ weekKey: prevWeekKey, savedAt: prevSavedAt, points: prevPts });
+            }
+
+            const newPts: Record<string, number> = {};
+            catPayload.rules.forEach((r: any) => {
+              if (r && typeof r.description === 'string' && typeof r.points === 'number') {
+                newPts[r.description] = r.points;
+              }
+            });
+
+            const idx = existingSnaps.findIndex(s => s?.weekKey === currentWeekKey);
+            const snapEntry = { weekKey: currentWeekKey, savedAt: nowIso, points: newPts };
+            if (idx >= 0) existingSnaps[idx] = snapEntry;
+            else existingSnaps.push(snapEntry);
+
+            allRulesData.weeklyMemory![d][catId] = existingSnaps
+              .sort((a, b) => String(a.weekKey).localeCompare(String(b.weekKey)))
+              .slice(-3);
+          }
+
           // Merge category-level map while completely replacing the rules array inside each saved category
           const nextCategories = {
             ...prevCategories,
@@ -2545,7 +2648,7 @@ async function startServer() {
         }
 
         await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8");
-        console.log(`[OPW SAVE-TO-CODE] Persisted merged JSON rules to ${rulesFilePath} for [${targetDaysList.join(', ')}]`);
+        console.log(`[OPW SAVE-TO-CODE] Persisted merged JSON rules + 3-week trigger memory to ${rulesFilePath} for [${targetDaysList.join(', ')}]`);
 
         // 2. Persist to RDS PostgreSQL opw_calibrated_rules table so rules survive server restarts & deployments
         for (const d of targetDaysList) {
@@ -2561,6 +2664,18 @@ async function startServer() {
           } catch (dbWriteErr: any) {
             console.warn(`[OPW SAVE-TO-CODE] RDS write notice for ${d}:`, dbWriteErr.message);
           }
+        }
+        try {
+          await pgPool.query(
+            `INSERT INTO opw_calibrated_rules (day, categories, saved_at)
+             VALUES ($1, $2::jsonb, $3)
+             ON CONFLICT (day) DO UPDATE
+             SET categories = EXCLUDED.categories,
+                 saved_at = EXCLUDED.saved_at`,
+            ['_weekly_memory', JSON.stringify({ weeklyMemory: allRulesData.weeklyMemory }), nowIso]
+          );
+        } catch (memDbErr: any) {
+          console.warn(`[OPW SAVE-TO-CODE] RDS 3-week memory write notice:`, memDbErr.message);
         }
 
         if (Array.isArray(customTriggers) && customTriggers.length > 0) {

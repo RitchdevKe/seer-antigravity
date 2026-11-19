@@ -423,6 +423,9 @@ export function updateDailyOptimizedCategorySettings(
     // Always persist updated settings to localStorage so runtime & codebase updates never revert
     if (options.source !== 'server') {
         setDailySettingsMeta([day], Date.now());
+        if (sanitizedRules.length > 0) {
+            record3WeekTriggerSnapshot(day, categoryId, sanitizedRules);
+        }
     }
     savePersistedDailySettings();
     if (typeof window !== 'undefined' && !options.silent) {
@@ -478,6 +481,195 @@ export function updateOptimizedCategorySettings(categoryId: string, settings: Op
     }
 }
 
+export interface ThreeWeekTriggerSnapshot {
+    weekKey: string;
+    savedAt: string;
+    points: Record<string, number>;
+}
+
+export interface ThreeWeekTriggerConsistency {
+    weeks: { weekKey: string; points: number }[];
+    avgPoints: number;
+    consistency: 1 | -1 | 0; // 1 = consistent bonus, -1 = consistent penalty, 0 = mixed/neutral
+    flippedSign: boolean;
+}
+
+const THREE_WEEK_MEMORY_KEY = 'seer_opw_3week_trigger_memory_v1';
+export const THREE_WEEK_TRIGGER_MEMORY: Record<string, Record<string, ThreeWeekTriggerSnapshot[]>> = (() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            const raw = window.localStorage.getItem(THREE_WEEK_MEMORY_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') return parsed;
+            }
+        } catch (_) {}
+    }
+    return {};
+})();
+
+export function getIsoWeekKey(dateInput: Date | string = new Date()): string {
+    const d = typeof dateInput === 'string' ? new Date(dateInput) : new Date(dateInput.getTime());
+    if (isNaN(d.getTime())) return getIsoWeekKey(new Date());
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
+function persist3WeekTriggerMemory() {
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            window.localStorage.setItem(THREE_WEEK_MEMORY_KEY, JSON.stringify(THREE_WEEK_TRIGGER_MEMORY));
+        } catch (_) {}
+    }
+}
+
+export function hydrate3WeekTriggerMemory(serverMemory: any) {
+    if (!serverMemory || typeof serverMemory !== 'object') return;
+    let changed = false;
+    for (const [dayKey, catMap] of Object.entries<any>(serverMemory)) {
+        if (!catMap || typeof catMap !== 'object') continue;
+        const normDay = dayKey.toLowerCase();
+        if (!THREE_WEEK_TRIGGER_MEMORY[normDay]) THREE_WEEK_TRIGGER_MEMORY[normDay] = {};
+        for (const [catId, snaps] of Object.entries<any>(catMap)) {
+            if (!Array.isArray(snaps)) continue;
+            const normCat = normalizeOpwCategoryId(catId);
+            const existing = Array.isArray(THREE_WEEK_TRIGGER_MEMORY[normDay][normCat])
+                ? THREE_WEEK_TRIGGER_MEMORY[normDay][normCat]
+                : [];
+            const byWeek = new Map<string, ThreeWeekTriggerSnapshot>();
+            existing.forEach(s => { if (s?.weekKey) byWeek.set(s.weekKey, s); });
+            snaps.forEach((s: any) => {
+                if (!s?.weekKey || !s?.points || typeof s.points !== 'object') return;
+                const prev = byWeek.get(s.weekKey);
+                const sTs = Date.parse(s.savedAt || '') || 0;
+                const pTs = prev ? (Date.parse(prev.savedAt || '') || 0) : -1;
+                if (sTs >= pTs) {
+                    byWeek.set(s.weekKey, { weekKey: s.weekKey, savedAt: s.savedAt || new Date().toISOString(), points: s.points });
+                }
+            });
+            const merged = Array.from(byWeek.values())
+                .sort((a, b) => a.weekKey.localeCompare(b.weekKey))
+                .slice(-3);
+            if (JSON.stringify(merged) !== JSON.stringify(existing)) {
+                THREE_WEEK_TRIGGER_MEMORY[normDay][normCat] = merged;
+                changed = true;
+            }
+        }
+    }
+    if (changed) persist3WeekTriggerMemory();
+}
+
+export function record3WeekTriggerSnapshot(
+    day: DayOfWeek | string,
+    categoryId: string,
+    rulesOrMap: { description: string; points: number }[] | Map<string, number> | Record<string, number>,
+    weekKeyInput?: string
+) {
+    const normDay = String(day || 'saturday').toLowerCase();
+    const normCat = normalizeOpwCategoryId(categoryId);
+    const nowIso = new Date().toISOString();
+    const weekKey = weekKeyInput || getIsoWeekKey(nowIso);
+    const pointsObj: Record<string, number> = {};
+    if (Array.isArray(rulesOrMap)) {
+        rulesOrMap.forEach(r => {
+            if (r?.description && typeof r.points === 'number' && !isNaN(r.points)) {
+                pointsObj[r.description] = r.points;
+            }
+        });
+    } else if (rulesOrMap instanceof Map) {
+        rulesOrMap.forEach((pts, desc) => {
+            if (desc && typeof pts === 'number' && !isNaN(pts)) {
+                pointsObj[desc] = pts;
+            }
+        });
+    } else if (rulesOrMap && typeof rulesOrMap === 'object') {
+        Object.entries(rulesOrMap).forEach(([desc, pts]) => {
+            if (desc && typeof pts === 'number' && !isNaN(pts)) {
+                pointsObj[desc] = pts;
+            }
+        });
+    }
+    if (Object.keys(pointsObj).length === 0) return;
+
+    if (!THREE_WEEK_TRIGGER_MEMORY[normDay]) THREE_WEEK_TRIGGER_MEMORY[normDay] = {};
+    const list = Array.isArray(THREE_WEEK_TRIGGER_MEMORY[normDay][normCat])
+        ? [...THREE_WEEK_TRIGGER_MEMORY[normDay][normCat]]
+        : [];
+    const idx = list.findIndex(s => s.weekKey === weekKey);
+    const entry: ThreeWeekTriggerSnapshot = { weekKey, savedAt: nowIso, points: pointsObj };
+    if (idx >= 0) list[idx] = entry;
+    else list.push(entry);
+
+    THREE_WEEK_TRIGGER_MEMORY[normDay][normCat] = list
+        .sort((a, b) => a.weekKey.localeCompare(b.weekKey))
+        .slice(-3);
+    persist3WeekTriggerMemory();
+}
+
+export function get3WeekTriggerConsistencyMap(
+    day: DayOfWeek | string,
+    categoryId: string
+): Map<string, ThreeWeekTriggerConsistency> {
+    const normDay = String(day || 'saturday').toLowerCase() as DayOfWeek;
+    const normCat = normalizeOpwCategoryId(categoryId);
+    const result = new Map<string, ThreeWeekTriggerConsistency>();
+    let snapshots = THREE_WEEK_TRIGGER_MEMORY[normDay]?.[normCat]
+        || THREE_WEEK_TRIGGER_MEMORY[normDay]?.[categoryId]
+        || [];
+
+    // If no multi-week snapshots exist yet, seed an initial virtual Week-0 baseline from saved/default rules
+    if (snapshots.length === 0) {
+        const baselineRules = DAILY_OPTIMIZED_SETTINGS[normDay]?.[normCat]?.rules
+            || DAILY_OPTIMIZED_SETTINGS[normDay]?.[categoryId]?.rules
+            || DAILY_DEFAULT_CATEGORY_SETTINGS[normDay]?.[normCat]?.rules
+            || [];
+        if (baselineRules.length > 0) {
+            const ptsObj: Record<string, number> = {};
+            baselineRules.forEach(r => { if (r?.description && typeof r.points === 'number') ptsObj[r.description] = r.points; });
+            snapshots = [{ weekKey: 'Baseline', savedAt: '', points: ptsObj }];
+        }
+    }
+    if (snapshots.length === 0) return result;
+
+    const allDescs = new Set<string>();
+    snapshots.forEach(s => Object.keys(s.points || {}).forEach(d => allDescs.add(d)));
+
+    allDescs.forEach(desc => {
+        const weeks: { weekKey: string; points: number }[] = [];
+        let sum = 0;
+        let posCount = 0;
+        let negCount = 0;
+        snapshots.forEach(s => {
+            const p = s.points?.[desc];
+            if (typeof p === 'number' && !isNaN(p) && p !== 0) {
+                weeks.push({ weekKey: s.weekKey, points: p });
+                sum += p;
+                if (p > 0) posCount++;
+                else if (p < 0) negCount++;
+            }
+        });
+        if (weeks.length === 0) return;
+        const avgPoints = sum / weeks.length;
+        const flippedSign = posCount > 0 && negCount > 0;
+        let consistency: 1 | -1 | 0 = 0;
+        if (!flippedSign) {
+            if (weeks.length >= 2) {
+                if (posCount === weeks.length && avgPoints >= 10) consistency = 1;
+                else if (negCount === weeks.length && avgPoints <= -10) consistency = -1;
+            } else {
+                if (avgPoints >= 15) consistency = 1;
+                else if (avgPoints <= -15) consistency = -1;
+            }
+        }
+        result.set(desc, { weeks, avgPoints, consistency, flippedSign });
+    });
+
+    return result;
+}
+
 /**
  * Loads rules persisted by "Save to codebase" / "Apply to Runtime" (server JSON + RDS at /api/opw/rules) and applies
  * them per day on startup so saved rules permanently replace old trigger points across reloads.
@@ -492,6 +684,9 @@ export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]>
             const res = await fetch('/api/opw/rules', { cache: 'no-store' });
             if (!res.ok) return applied;
             const json = await res.json();
+            if (json && typeof json === 'object' && json.weeklyMemory) {
+                hydrate3WeekTriggerMemory(json.weeklyMemory);
+            }
             const rulesByDay = (json && typeof json === 'object' && json.rules) ? json.rules : {};
             const localMeta = getDailySettingsMeta();
             for (const day of ALL_WEEK_DAYS) {
