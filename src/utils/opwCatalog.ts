@@ -217,6 +217,10 @@ export const ALL_MASTER_CATALOG_TRIGGERS: string[] = [
     "Mfav L10(wins) >7",
     "Underdog L10(wins) >5 to 7",
     "Underdog L10(wins) >7",
+    "Mfav L10(wins)>Und L10 but >=5",
+    "Mfav L10(wins)>Und L10 but <5",
+    "Und L10(wins)>Mfav L10 but >=5",
+    "Und L10(wins)>Mfav L10 but <5",
     "Mfav was away and won last Encounter <=1 goal",
     "Mfav was home and won last Encounter <=1 goal",
     "Mfav was home and won last Encounter >1 to =<3 goal",
@@ -419,6 +423,10 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "Mfav L10(wins) >7": 25,
     "Underdog L10(wins) >5 to 7": -5,
     "Underdog L10(wins) >7": -5,
+    "Mfav L10(wins)>Und L10 but >=5": 5,
+    "Mfav L10(wins)>Und L10 but <5": 5,
+    "Und L10(wins)>Mfav L10 but >=5": -5,
+    "Und L10(wins)>Mfav L10 but <5": -5,
     "Mfav was away and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter >1 to =<3 goal": 10,
@@ -613,6 +621,10 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "Mfav L10(wins) >7": 25,
     "Underdog L10(wins) >5 to 7": -5,
     "Underdog L10(wins) >7": -5,
+    "Mfav L10(wins)>Und L10 but >=5": 5,
+    "Mfav L10(wins)>Und L10 but <5": 5,
+    "Und L10(wins)>Mfav L10 but >=5": -5,
+    "Und L10(wins)>Mfav L10 but <5": -5,
     "Mfav was away and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter >1 to =<3 goal": 10,
@@ -809,6 +821,10 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "Mfav L10(wins) >7": -25,
     "Underdog L10(wins) >5 to 7": 20,
     "Underdog L10(wins) >7": 25,
+    "Mfav L10(wins)>Und L10 but >=5": -5,
+    "Mfav L10(wins)>Und L10 but <5": -5,
+    "Und L10(wins)>Mfav L10 but >=5": 5,
+    "Und L10(wins)>Mfav L10 but <5": 5,
     "Mfav was away and won last Encounter <=1 goal": 5,
     "Mfav was home and won last Encounter <=1 goal": 5,
     "Mfav was home and won last Encounter >1 to =<3 goal": -10,
@@ -872,6 +888,8 @@ export const UPSETS_EXPLICIT_PENALTIES: Record<string, number> = {
 export const USER_EXPLICIT_UNDERDOG_PENALTIES: Record<string, number> = {
     "Underdog L10(wins) >5 to 7": -5,
     "Underdog L10(wins) >7": -5,
+    "Und L10(wins)>Mfav L10 but >=5": -5,
+    "Und L10(wins)>Mfav L10 but <5": -5,
     "Both team L10 <= 5": -15,
     "L10: Mfav Wins+ Draws < Underdog wins +Draws": -15,
     "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0": -5,
@@ -960,6 +978,8 @@ export const PRO_MFAV_TRIGGERS = new Set<string>([
     "Mfav L10(wins) >7",
     "Underdog L10(wins) >5 to 7",
     "Underdog L10(wins) >7",
+    "Mfav L10(wins)>Und L10 but >=5",
+    "Mfav L10(wins)>Und L10 but <5",
     "Mfav was home and won last Encounter >1 to =<3 goal",
     "Mfav was Away and won last Encounter >1 to =<3 goal",
     "Mfav was away and won last Encounter >1 to =<3 goal",
@@ -994,6 +1014,8 @@ export const PRO_MFAV_TRIGGERS = new Set<string>([
 export const PRO_UNDERDOG_TRIGGERS = new Set<string>([
     "Underdog L10(wins) >5 to 7",
     "Underdog L10(wins) >7",
+    "Und L10(wins)>Mfav L10 but >=5",
+    "Und L10(wins)>Mfav L10 but <5",
     "L10: Mfav Wins+ Draws < Underdog wins +Draws",
     "1X2 pred supports the underdog",
     "1X2 supports the underdog",
@@ -1167,6 +1189,47 @@ export function getLeagueTriggerMaxBonus(triggerName: string, isUpsets: boolean 
     return 30;
 }
 
+/**
+ * The 8 high-priority L10 triggers with expanded ±35 point bounds across all categories
+ * and elevated computation priority alongside league triggers.
+ */
+export const PRIORITY_L10_TRIGGERS = new Set<string>([
+    "L10: Mfav Wins+ Draws < Underdog wins +Draws",
+    "L10: Mfav Wins+ Draws > Underdog wins +Draws",
+    "L10: Mfav Wins+ Draws = Underdog wins +Draws",
+    "Mfav L10(wins) >5 to 7",
+    "Mfav L10(wins)>Und L10 but >=5",
+    "Mfav L10(wins)>Und L10 but <5",
+    "Und L10(wins)>Mfav L10 but >=5",
+    "Und L10(wins)>Mfav L10 but <5",
+]);
+
+export function isPriorityL10Trigger(triggerName: string): boolean {
+    return PRIORITY_L10_TRIGGERS.has((triggerName || '').trim());
+}
+
+/**
+ * High-priority triggers during OPW P RECOM computation:
+ * the 8 Priority L10 triggers + all League triggers.
+ */
+export function isPriorityComputationTrigger(triggerName: string): boolean {
+    return isPriorityL10Trigger(triggerName) || isLeagueTrigger(triggerName);
+}
+
+export function getTriggerMaxPenalty(triggerName: string): number {
+    if (isEnglishPremierLeagueTrigger(triggerName)) return -40;
+    if (isPriorityL10Trigger(triggerName)) return -35;
+    if (isLeagueTrigger(triggerName)) return getLeagueTriggerMaxPenalty(triggerName);
+    return -30;
+}
+
+export function getTriggerMaxBonus(triggerName: string, isUpsets: boolean = false): number {
+    if (isEnglishPremierLeagueTrigger(triggerName)) return 40;
+    if (isPriorityL10Trigger(triggerName)) return 35;
+    if (isLeagueTrigger(triggerName)) return getLeagueTriggerMaxBonus(triggerName, isUpsets);
+    return 30;
+}
+
 const PRO_UD_STORAGE_KEY = 'opw_manual_pro_underdog_leagues_v2';
 
 // League triggers are strictly NEUTRAL and never permanently locked to PRO_UNDERDOG
@@ -1307,7 +1370,8 @@ export function getTriggerSemanticPolarity(triggerName: string, categoryIdOrObje
         lower.includes('banned:draw risk') ||
         lower.includes('both teams gs < 1.0') ||
         lower.includes('mfav wins+ draws < underdog wins +draws') ||
-        lower.includes('mfav wins+draws < underdog wins+draws')
+        lower.includes('mfav wins+draws < underdog wins+draws') ||
+        lower.includes('und l10(wins)>mfav l10')
     ) {
         return 'PRO_UNDERDOG';
     }
@@ -1419,10 +1483,8 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
     const isUpsets = normCategory === 'upsets' || normCategory === 'upset' || normCategory === 'underdog_upsets' || normCategory === 'underdog_only';
 
     const cleanPoints = (desc: string, pts: number): number => {
-        const maxBonus = 40;
-        const maxPenalty = -30;
-        const leagueMaxPenalty = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : maxPenalty;
-        const leagueMaxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUpsets) : maxBonus;
+        const triggerMaxPenalty = getTriggerMaxPenalty(desc);
+        const triggerMaxBonus = getTriggerMaxBonus(desc, isUpsets);
 
         if (typeof pts !== 'number' || isNaN(pts)) {
             return 0;
@@ -1457,9 +1519,9 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
 
         // Enforce user guarantee: minimum +5 bonus or -5 penalty (for Upsets only, 0 is also allowed).
         if (orientedPts > 0) {
-            return Math.max(5, Math.min(leagueMaxBonus, orientedPts));
+            return Math.max(5, Math.min(triggerMaxBonus, orientedPts));
         } else {
-            return Math.min(-5, Math.max(leagueMaxPenalty, orientedPts));
+            return Math.min(-5, Math.max(triggerMaxPenalty, orientedPts));
         }
     };
 
@@ -2253,6 +2315,12 @@ export const MASTER_VALUE_BETS_RULES: { description: string; points: number }[] 
  */
 export function getNewTriggerDefaultPoints(description: string, isUpsets: boolean = false): number {
     const d = (description || '').trim();
+    if (d === "Mfav L10(wins)>Und L10 but >=5" || d === "Mfav L10(wins)>Und L10 but <5") {
+        return isUpsets ? -5 : 5;
+    }
+    if (d === "Und L10(wins)>Mfav L10 but >=5" || d === "Und L10(wins)>Mfav L10 but <5") {
+        return isUpsets ? 5 : -5;
+    }
     if (isUpsets && isLeagueTrigger(d)) {
         return 5;
     }

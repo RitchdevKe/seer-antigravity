@@ -53,6 +53,10 @@ import {
   isLeagueTrigger,
   getLeagueTriggerMaxPenalty,
   getLeagueTriggerMaxBonus,
+  isPriorityL10Trigger,
+  isPriorityComputationTrigger,
+  getTriggerMaxPenalty,
+  getTriggerMaxBonus,
   isManuallyAdjustedProUnderdogLeague,
   isLeagueLockedProUnderdog,
   lockLeagueAsProUnderdog,
@@ -172,9 +176,9 @@ export const saveOptimizerPeakMemory = (day: string, categoryId: string, peakDat
     const sanitizePeakVal = (desc: string, val: number): number | null => {
       if (typeof val !== 'number' || isNaN(val)) return null;
       if (val === 0) return isUd ? 0 : null;
-      const leagueMaxPenalty = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
-      const leagueMaxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUd) : 40;
-      return val > 0 ? Math.max(5, Math.min(leagueMaxBonus, val)) : Math.min(-5, Math.max(leagueMaxPenalty, val));
+      const trigMaxPenalty = getTriggerMaxPenalty(desc);
+      const trigMaxBonus = getTriggerMaxBonus(desc, isUd);
+      return val > 0 ? Math.max(5, Math.min(trigMaxBonus, val)) : Math.min(-5, Math.max(trigMaxPenalty, val));
     };
     if (peakData.points instanceof Map) {
       peakData.points.forEach((v, k) => {
@@ -217,9 +221,9 @@ export const loadOptimizerPeakMemory = (day: string, categoryId: string): Optimi
           if (v === 0) {
             if (isUd) cleanPoints[k] = 0;
           } else {
-            const leagueMaxPenalty = isLeagueTrigger(k) ? getLeagueTriggerMaxPenalty(k) : -30;
-            const leagueMaxBonus = isLeagueTrigger(k) ? getLeagueTriggerMaxBonus(k, isUd) : 40;
-            cleanPoints[k] = v > 0 ? Math.max(5, Math.min(leagueMaxBonus, v)) : Math.min(-5, Math.max(leagueMaxPenalty, v));
+            const trigMaxPenalty = getTriggerMaxPenalty(k);
+            const trigMaxBonus = getTriggerMaxBonus(k, isUd);
+            cleanPoints[k] = v > 0 ? Math.max(5, Math.min(trigMaxBonus, v)) : Math.min(-5, Math.max(trigMaxPenalty, v));
           }
         }
       });
@@ -334,7 +338,7 @@ export interface SeparationEvaluation {
   trapDispersionHealth?: 'HEALTHY' | 'MODERATE' | 'CLUSTERED';
 }
 
-export const ALLOWED_POINT_VALUES = [-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30, 35, 40];
+export const ALLOWED_POINT_VALUES = [-40, -35, -30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30, 35, 40];
 
 export function getFullActiveCatalogTriggers(): string[] {
   const set = new Set(ALL_MASTER_CATALOG_TRIGGERS);
@@ -583,13 +587,12 @@ export function getTriggerAccuracyProfile(
   day?: string,
   histCounts?: { mfav: number; draw: number; underdog: number }
 ): TriggerAccuracyProfile {
-  const isBig5 = /^match belongs? to (?:english\s+|england\s*:\s*|england\s*-\s*)?premier\s+league$/i.test((desc || '').trim());
   const isUpsets = objective === 'underdog_only';
   const zeroEligible = isUpsets ? isUpsetTriggerZeroEligible(desc, counts, histCounts, categoryId, day) : false;
-  const leagueMaxPen = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
-  const leagueMaxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUpsets) : (isBig5 && !isUpsets ? 40 : 30);
-  const minFull = Math.min(-30, leagueMaxPen);
-  const maxFull = Math.max(30, leagueMaxBonus);
+  const trigMaxPen = getTriggerMaxPenalty(desc);
+  const trigMaxBonus = getTriggerMaxBonus(desc, isUpsets);
+  const minFull = Math.min(-30, trigMaxPen);
+  const maxFull = Math.max(30, trigMaxBonus);
   const fullBand = [-40, -35, -30, -25, -20, -15, -10, -5, ...(zeroEligible ? [0] : []), 5, 10, 15, 20, 25, 30, 35, 40].filter(v => v >= minFull && v <= maxFull);
 
   const polarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc))
@@ -598,34 +601,34 @@ export function getTriggerAccuracyProfile(
   const isMfavDraw = objective === 'mfav_draw';
 
   // Allowed candidate bounds based strictly on user-approved domain polarity (0 is allowed ONLY in Upsets when zeroEligible):
-  // 1. Neutral triggers (League triggers, DUAL_BONUS_TRIGGERS, NEUTRAL_TRIGGERS): [minPenalty, maxBonus] (can flip between bonus & penalty)
-  // 2. Pro-underdog on Mfav/Draw: strictly penalties [-30, -5]
-  // 3. Pro-Mfav on Mfav/Draw: strictly bonuses [+5, +30]
-  // 4. Upsets: Pro-underdog [+5, +30] (0 allowed ONLY if zeroEligible), Pro-Mfav [-30, -5] (0 allowed ONLY if zeroEligible)
+  // 1. Neutral triggers (League triggers, DUAL_BONUS_TRIGGERS, NEUTRAL_TRIGGERS): [trigMaxPen, trigMaxBonus] (can flip between bonus & penalty)
+  // 2. Pro-underdog on Mfav/Draw: strictly penalties [trigMaxPen, -5] (-35..-5 for Priority L10, -30..-5 others)
+  // 3. Pro-Mfav on Mfav/Draw: strictly bonuses [+5, trigMaxBonus] (+5..+35 for Priority L10, +5..+30 others, +40 EPL)
+  // 4. Upsets: Pro-underdog [+5, trigMaxBonus] (0 allowed ONLY if zeroEligible), Pro-Mfav [trigMaxPen, -5] (0 allowed ONLY if zeroEligible)
   let minPolarityBound: number;
   let maxPolarityBound: number;
 
   if (isLeagueTrigger(desc) || polarity === 'NEUTRAL') {
-    minPolarityBound = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
-    maxPolarityBound = isLeagueTrigger(desc) ? leagueMaxBonus : 30;
+    minPolarityBound = trigMaxPen;
+    maxPolarityBound = trigMaxBonus;
   } else if (isUpsets && UPSETS_EXPLICIT_PENALTIES[desc] !== undefined) {
-    minPolarityBound = -30;
+    minPolarityBound = trigMaxPen;
     maxPolarityBound = zeroEligible ? 0 : -5;
   } else if (isUpsets) {
     if (polarity === 'PRO_UNDERDOG') {
       minPolarityBound = zeroEligible ? 0 : 5;
-      maxPolarityBound = 30;
+      maxPolarityBound = trigMaxBonus;
     } else {
-      minPolarityBound = -30;
+      minPolarityBound = trigMaxPen;
       maxPolarityBound = zeroEligible ? 0 : -5;
     }
   } else {
     if (polarity === 'PRO_UNDERDOG') {
-      minPolarityBound = -30;
+      minPolarityBound = trigMaxPen;
       maxPolarityBound = -5;
     } else {
       minPolarityBound = 5;
-      maxPolarityBound = isBig5 ? 40 : 30;
+      maxPolarityBound = trigMaxBonus;
     }
   }
 
@@ -1042,13 +1045,15 @@ export function evaluateSeparation(
   ) : 0;
 
   // Weight Regularization: meaningful parsimony guard against arbitrary extreme weights
+  // Priority computation triggers (8 Priority L10 triggers + League triggers) pay 0.5x regularization friction
   const isUpsets = objective === 'underdog_only';
   let regSum = 0;
   pointsMap.forEach((pts, desc) => {
-    const isBig5 = desc === "Match belongs to England: Premier League";
-    const maxBonus = isBig5 ? (isUpsets ? 25 : 40) : 30;
-    const normalized = pts < 0 ? Math.abs(pts) / 45 : pts / maxBonus;
-    regSum += normalized * normalized;
+    const maxBonus = getTriggerMaxBonus(desc, isUpsets);
+    const maxPenAbs = Math.abs(getTriggerMaxPenalty(desc));
+    const normalized = pts < 0 ? Math.abs(pts) / Math.max(30, maxPenAbs) : pts / Math.max(30, maxBonus);
+    const regWeight = isPriorityComputationTrigger(desc) ? 0.5 : 1.0;
+    regSum += normalized * normalized * regWeight;
   });
   const regularizationCost = regSum * 8.0;
 
@@ -1200,6 +1205,22 @@ export function filterMatchesLast3Weeks(
   return out;
 }
 
+// Non-serializable WeakMap cache for evaluated catalog triggers (never attaches a Set onto Match objects,
+// preventing JSON.stringify from serializing `_opwCatalogTriggers: {}` into RDS/localStorage/IndexedDB).
+const CATALOG_TRIGGERS_WEAK_CACHE = new WeakMap<Match, Set<string>>();
+function getCachedCatalogTriggers(
+  match: Match,
+  phaStatsMap: Record<string, any>,
+  categoryId: string
+): Set<string> {
+  const cached = CATALOG_TRIGGERS_WEAK_CACHE.get(match);
+  if (cached instanceof Set) return cached;
+  const stats = extractMatchEvaluationStats(match, phaStatsMap, categoryId);
+  const computed = evaluateAllCatalogTriggers(stats, match);
+  CATALOG_TRIGGERS_WEAK_CACHE.set(match, computed);
+  return computed;
+}
+
 const MODULE_DAY_HIST_CACHE = new Map<string, Map<string, { mfav: number; draw: number; underdog: number }>>();
 const MODULE_OVERALL_HIST_CACHE = new Map<string, Map<string, {
   mfav: number;
@@ -1301,12 +1322,7 @@ export function computeCategoryRecommendations(
         const mFav = getMarketFavorite(m);
         const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
 
-        let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
-        if (!allTriggers) {
-          const stats = extractMatchEvaluationStats(m, phaStatsMap, cat.id);
-          allTriggers = evaluateAllCatalogTriggers(stats, m);
-          (m as any)._opwCatalogTriggers = allTriggers;
-        }
+        const allTriggers = getCachedCatalogTriggers(m, phaStatsMap, cat.id);
         const combinedTriggers = new Set<string>(allTriggers);
         const lInfo = getMatchCountryAndLeague(m);
         if (lInfo?.display && lInfo.display !== 'Unknown') {
@@ -1360,12 +1376,7 @@ export function computeCategoryRecommendations(
         const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
         const matchDay = getMatchDayOfWeek(m);
 
-        let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
-        if (!allTriggers) {
-          const stats = extractMatchEvaluationStats(m, phaStatsMap, cat.id);
-          allTriggers = evaluateAllCatalogTriggers(stats, m);
-          (m as any)._opwCatalogTriggers = allTriggers;
-        }
+        const allTriggers = getCachedCatalogTriggers(m, phaStatsMap, cat.id);
         const combinedTriggers = new Set<string>(allTriggers);
         const lInfo = getMatchCountryAndLeague(m);
         if (lInfo?.display && lInfo.display !== 'Unknown') {
@@ -1466,13 +1477,8 @@ export function computeCategoryRecommendations(
     const baseInfo = getOptimizedBaseWeight(match, phaStatsMap, cat.id, matchDay);
     const baseScore = baseInfo?.points ?? 0;
 
-    // Cache catalog triggers on match object for 0ms repeated lookups
-    let allTriggers: Set<string> = (match as any)._opwCatalogTriggers;
-    if (!allTriggers) {
-      const stats = extractMatchEvaluationStats(match, phaStatsMap, cat.id);
-      allTriggers = evaluateAllCatalogTriggers(stats, match);
-      (match as any)._opwCatalogTriggers = allTriggers;
-    }
+    // Cache catalog triggers in WeakMap for 0ms repeated lookups without polluting Match objects
+    const allTriggers = getCachedCatalogTriggers(match, phaStatsMap, cat.id);
 
     const triggersHit = new Set<string>();
     allTriggers.forEach(t => {
@@ -1793,19 +1799,23 @@ export function computeCategoryRecommendations(
       return;
     }
 
+    const isPrioL10 = isPriorityL10Trigger(desc);
     let pts = 0;
     if (objective === 'underdog_only') {
       // Upsets: Pro-underdog/volatile gets natural bonus, pro-Mfav gets natural penalty
       const udRate = profile.underdogRate;
       const mfavRate = profile.mfavRate;
       if (profile.isVolatileSignal || udRate >= 0.22 || udRate > mfavRate) {
-        if (udRate >= 0.45) pts = 25;
+        if (isPrioL10 && udRate >= 0.55) pts = 35;
+        else if (isPrioL10 && udRate >= 0.50) pts = 30;
+        else if (udRate >= 0.45) pts = 25;
         else if (udRate >= 0.38) pts = 20;
         else if (udRate >= 0.30 || profile.underdogLift >= 1.40) pts = 15;
         else if (udRate >= 0.24 || profile.underdogLift >= 1.25) pts = 10;
         else pts = 5;
       } else if (mfavRate >= 0.55 || udRate <= 0.12) {
-        if (mfavRate >= 0.70) pts = -30;
+        if (isPrioL10 && mfavRate >= 0.78) pts = -35;
+        else if (mfavRate >= 0.70) pts = -30;
         else if (mfavRate >= 0.65) pts = -25;
         else if (mfavRate >= 0.58) pts = -20;
         else pts = -10;
@@ -1818,12 +1828,15 @@ export function computeCategoryRecommendations(
       const udRate = profile.underdogRate;
       const trapRate = profile.trapFrequency;
       if (profile.isVolatileSignal || udRate >= 0.25 || trapRate >= 0.52 || mfavRate < 0.48) {
-        if (udRate >= 0.35 || mfavRate <= 0.30) pts = -30;
+        if (isPrioL10 && (udRate >= 0.42 || mfavRate <= 0.25)) pts = -35;
+        else if (udRate >= 0.35 || mfavRate <= 0.30) pts = -30;
         else if (udRate >= 0.30 || mfavRate <= 0.38) pts = -25;
         else if (udRate >= 0.25 || mfavRate <= 0.45 || profile.isVolatileSignal) pts = -20;
         else pts = -10;
       } else if (mfavRate >= 0.52 && udRate <= 0.20) {
-        if (mfavRate >= 0.80) pts = 25;
+        if (isPrioL10 && mfavRate >= 0.85) pts = 35;
+        else if (isPrioL10 && mfavRate >= 0.82) pts = 30;
+        else if (mfavRate >= 0.80) pts = 25;
         else if (mfavRate >= 0.70) pts = 20;
         else if (mfavRate >= 0.60) pts = 15;
         else pts = 10;
@@ -1836,13 +1849,16 @@ export function computeCategoryRecommendations(
       const udRate = profile.underdogRate;
       const netEdge = targetAcc - udRate;
       if (targetAcc > udRate && udRate <= 0.25) {
-        if (targetAcc >= 0.85 || netEdge >= 0.70) pts = 25;
+        if (isPrioL10 && (targetAcc >= 0.90 || netEdge >= 0.80)) pts = 35;
+        else if (isPrioL10 && (targetAcc >= 0.88 || netEdge >= 0.75)) pts = 30;
+        else if (targetAcc >= 0.85 || netEdge >= 0.70) pts = 25;
         else if (targetAcc >= 0.75 || netEdge >= 0.50) pts = 20;
         else if (targetAcc >= 0.68 || netEdge >= 0.35) pts = 15;
         else if (targetAcc >= 0.60 || netEdge >= 0.20) pts = 10;
         else pts = 5;
       } else if (udRate > 0.25 || udRate >= targetAcc) {
-        if (udRate >= 0.50) pts = -30;
+        if (isPrioL10 && udRate >= 0.55) pts = -35;
+        else if (udRate >= 0.50) pts = -30;
         else if (udRate >= 0.42) pts = -25;
         else if (udRate >= 0.35) pts = -20;
         else if (udRate >= 0.28) pts = -15;
@@ -1947,9 +1963,8 @@ export function computeCategoryRecommendations(
       recommendedPoints = profile.allowedBand.reduce((prev, curr) => Math.abs(curr - recommendedPoints) < Math.abs(prev - recommendedPoints) ? curr : prev);
     }
 
-    const isBig5 = /^match belongs? to (?:english\s+|england\s*:\s*|england\s*-\s*)?premier\s+league$/i.test((desc || '').trim());
-    const maxBonus = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUnderdogCat) : (isBig5 ? (isUnderdogCat ? 30 : 40) : 30);
-    const maxPenalty = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
+    const maxBonus = getTriggerMaxBonus(desc, isUnderdogCat);
+    const maxPenalty = getTriggerMaxPenalty(desc);
     if (recommendedPoints > 0) {
       recommendedPoints = Math.max(5, Math.min(maxBonus, recommendedPoints));
     } else if (recommendedPoints < 0) {
@@ -2752,12 +2767,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       const baseInfo = getOptimizedBaseWeight(m, phaStatsMap, evalCat, matchDay);
       const baseScore = baseInfo?.points ?? 0;
 
-      let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
-      if (!allTriggers) {
-        const stats = extractMatchEvaluationStats(m, phaStatsMap, activeCategory);
-        allTriggers = evaluateAllCatalogTriggers(stats, m);
-        (m as any)._opwCatalogTriggers = allTriggers;
-      }
+      const allTriggers = getCachedCatalogTriggers(m, phaStatsMap, activeCategory);
       const triggersHit = new Set<string>();
       allTriggers.forEach(t => {
         if (!REMOVED_TRIGGER_DESCRIPTIONS.has(t)) {
@@ -3046,8 +3056,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     const clean = new Map<string, number>();
     const isUpsets = activeCategoryConfig.targetObjective === 'underdog_only';
     ptsMap.forEach((v, k) => {
-      const minFloor = isLeagueTrigger(k) ? getLeagueTriggerMaxPenalty(k) : -30;
-      const maxBonus = isLeagueTrigger(k) ? getLeagueTriggerMaxBonus(k, isUpsets) : 40;
+      const minFloor = getTriggerMaxPenalty(k);
+      const maxBonus = getTriggerMaxBonus(k, isUpsets);
       clean.set(k, Math.max(minFloor, Math.min(maxBonus, v)));
     });
     return clean;
@@ -3098,8 +3108,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     // 1. Seed with existing saved points so untuned triggers retain their exact trigger points (never muted or zeroed except Upsets where 0 is allowed)
     currentRulePointsMap.forEach((pts, description) => {
       if (description && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
-        const minP = isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30;
-        const maxP = isLeagueTrigger(description) ? getLeagueTriggerMaxBonus(description, isUpsetsCat) : 40;
+        const minP = getTriggerMaxPenalty(description);
+        const maxP = getTriggerMaxBonus(description, isUpsetsCat);
         pointsLookup.set(description, Math.max(minP, Math.min(maxP, Number(pts))));
       }
     });
@@ -3108,16 +3118,16 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       // 2. Overlay calibrated points from the optimizer (tuned triggers replace old trigger points)
       activeCalibratedMap!.forEach((pts, description) => {
         if (description && typeof pts === 'number' && (isUpsetsCat || pts !== 0)) {
-          const minP = isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30;
-          const maxP = isLeagueTrigger(description) ? getLeagueTriggerMaxBonus(description, isUpsetsCat) : 40;
+          const minP = getTriggerMaxPenalty(description);
+          const maxP = getTriggerMaxBonus(description, isUpsetsCat);
           pointsLookup.set(description, Math.max(minP, Math.min(maxP, Number(pts))));
         }
       });
     } else if (effectiveRecommendations.length > 0) {
       effectiveRecommendations.forEach(r => {
         if (r.description && typeof r.recommendedPoints === 'number' && (isUpsetsCat || r.recommendedPoints !== 0) && !pointsLookup.has(r.description)) {
-          const minP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxPenalty(r.description) : -30;
-          const maxP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxBonus(r.description, isUpsetsCat) : 40;
+          const minP = getTriggerMaxPenalty(r.description);
+          const maxP = getTriggerMaxBonus(r.description, isUpsetsCat);
           pointsLookup.set(r.description, Math.max(minP, Math.min(maxP, r.recommendedPoints)));
         }
       });
@@ -3246,9 +3256,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     if (!pointsMap || pointsMap.size === 0) return;
     const effectiveTargetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
 
+    const isUpsetsAdoptPeak = activeCategory === 'upsets' || activeCategory === 'upset' || activeCategoryConfig.targetObjective === 'underdog_only';
     const tunedRules = Array.from(pointsMap.entries()).map(([description, points]) => ({
       description,
-      points: Math.max(isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30, Math.min(40, points))
+      points: Math.max(getTriggerMaxPenalty(description), Math.min(getTriggerMaxBonus(description, isUpsetsAdoptPeak), points))
     }));
 
     const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
@@ -3351,14 +3362,20 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       }
     });
     const numTriggers = allCatalogTriggers.length;
+    const isPriorityTrigArr = new Uint8Array(numTriggers);
+    for (let tId = 0; tId < numTriggers; tId++) {
+      if (isPriorityComputationTrigger(allCatalogTriggers[tId])) {
+        isPriorityTrigArr[tId] = 1;
+      }
+    }
     const bestPointsArr = new Int16Array(numTriggers);
 
     for (let tId = 0; tId < numTriggers; tId++) {
       const desc = allCatalogTriggers[tId];
       const existingSaved = (deepPointsCategoryRef.current === activeCategory ? deepPointsMap?.get(desc) : undefined)
         ?? currentRulePointsMap.get(desc);
-      const minP = isLeagueTrigger(desc) ? getLeagueTriggerMaxPenalty(desc) : -30;
-      const maxP = isLeagueTrigger(desc) ? getLeagueTriggerMaxBonus(desc, isUpsetsCat) : 40;
+      const minP = getTriggerMaxPenalty(desc);
+      const maxP = getTriggerMaxBonus(desc, isUpsetsCat);
 
       if (existingSaved !== undefined && ((isUpsetsCat && existingSaved === 0) || (existingSaved !== 0 && (existingSaved >= 5 || existingSaved <= -5)))) {
         bestPointsArr[tId] = Math.max(minP, Math.min(maxP, existingSaved));
@@ -3960,10 +3977,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       const steps = Math.abs(pts) / 5;
       return steps * steps;
     };
+    const getNormRegFor = (tId: number, pts: number) => getNormReg(pts) * (isPriorityTrigArr[tId] === 1 ? 0.5 : 1.0);
 
     let runningRegSum = 0;
     for (let tId = 0; tId < numTriggers; tId++) {
-      runningRegSum += getNormReg(bestPointsArr[tId]);
+      runningRegSum += getNormRegFor(tId, bestPointsArr[tId]);
     }
     let bestFastEval = cloneEvalSnapshot(fastEvaluateBuckets(targetBuckets, trapBuckets, runningRegSum));
     let compsSinceMilestone = 0;
@@ -4106,7 +4124,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       if (minActiveBucket > maxActiveBucket) minActiveBucket = 0;
       runningRegSum = 0;
       for (let tId = 0; tId < numTriggers; tId++) {
-        runningRegSum += getNormReg(ptsArr[tId]);
+        runningRegSum += getNormRegFor(tId, ptsArr[tId]);
       }
     };
 
@@ -4273,8 +4291,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       }
       const isLeague = isLeagueTrigger(desc);
       const isNeutralTrig = isLeague || DUAL_BONUS_TRIGGERS.has(desc) || getTriggerSemanticPolarity(desc, activeCategory) === 'NEUTRAL';
-      const minFloor = isLeague ? getLeagueTriggerMaxPenalty(desc) : -30;
-      const maxBonus = isLeague ? getLeagueTriggerMaxBonus(desc, isUpsetsCat) : 40;
+      const minFloor = getTriggerMaxPenalty(desc);
+      const maxBonus = getTriggerMaxBonus(desc, isUpsetsCat);
       const isUniversalBonus = false;
       const baseSlot = tId * PTS_SPAN;
       for (let val = -40; val <= 40; val++) {
@@ -4464,7 +4482,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           if (curVal > 0 && (intrusiveTrapRate > cleanWinRate || (topTrapHits >= 2 && bHits === 0) || (cons3W <= 0 && curVal > Math.max(5, avg3W + 5)))) {
             tComm += 35 + curVal;
           }
-          if (tComm > 0) trapCommonalityScore[tId] = tComm;
+          if (tComm > 0) {
+            if (isPriorityTrigArr[tId] === 1) tComm = tComm * 1.85 + 25;
+            trapCommonalityScore[tId] = tComm;
+          }
         }
 
         // 2. Success Commonality Score: prioritizes triggers shared across >= 2 stranded/clean winners
@@ -4482,7 +4503,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           if (curVal < 0 && ((boundaryWinRate > intrusiveTrapRate && topTrapHits === 0) || cons3W === 1)) {
             wComm += 35 + Math.abs(curVal);
           }
-          if (wComm > 0) winnerCommonalityScore[tId] = wComm;
+          if (wComm > 0) {
+            if (isPriorityTrigArr[tId] === 1) wComm = wComm * 1.85 + 25;
+            winnerCommonalityScore[tId] = wComm;
+          }
         }
 
         if (canStepUp) {
@@ -4586,7 +4610,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       bestPointsArr.set(elitePointsArr);
       runningRegSum = 0;
       for (let tId = 0; tId < numTriggers; tId++) {
-        runningRegSum += getNormReg(bestPointsArr[tId]);
+        runningRegSum += getNormRegFor(tId, bestPointsArr[tId]);
       }
       bestFastEval = eliteEval;
       targetingDirty = true;
@@ -4921,10 +4945,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         }
       }
 
-      // Order sweepTriggerIds by Failure + Success Commonality Score (with slight jitter) so root-cause triggers are swept first
+      // Order sweepTriggerIds by Failure + Success Commonality Score (prioritizing Priority L10 & League triggers first)
       sweepTriggerIds.sort((a, b) => {
-        const sA = trapCommonalityScore[a] + winnerCommonalityScore[a] + triggerImpactMomentum[a] * 0.5 + Math.random() * 4;
-        const sB = trapCommonalityScore[b] + winnerCommonalityScore[b] + triggerImpactMomentum[b] * 0.5 + Math.random() * 4;
+        const sA = trapCommonalityScore[a] + winnerCommonalityScore[a] + triggerImpactMomentum[a] * 0.5 + (isPriorityTrigArr[a] ? 60 : 0) + Math.random() * 4;
+        const sB = trapCommonalityScore[b] + winnerCommonalityScore[b] + triggerImpactMomentum[b] * 0.5 + (isPriorityTrigArr[b] ? 60 : 0) + Math.random() * 4;
         return sB - sA;
       });
 
@@ -4939,7 +4963,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const isLayer2Sweep = totalComps >= LAYER_1_INCREMENTAL_COMPS;
         const bandValues = isLayer2Sweep
           ? (escalateAnyTable[slot].length > 0 ? escalateAnyTable[slot] : stretchAnyTable[slot])
-          : ((staleCleanComps >= 15000 || inIlsKick) ? stretchAnyTable[slot] : stepAnyTable[slot]);
+          : ((staleCleanComps >= 15000 || inIlsKick || isPriorityTrigArr[tId] === 1) ? stretchAnyTable[slot] : stepAnyTable[slot]);
 
         let bestStepVal = currentVal;
         let bestStepClimbed = false;
@@ -4952,7 +4976,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           const testVal = bandValues[bIdx];
           const delta = testVal - currentVal;
           bestPointsArr[tId] = testVal;
-          const testRegSum = runningRegSum + (getNormReg(testVal) - getNormReg(currentVal));
+          const testRegSum = runningRegSum + (getNormRegFor(tId, testVal) - getNormRegFor(tId, currentVal));
           const sweepMark = undoLen;
           applyDelta(indices, delta);
           totalComps++;
@@ -5099,10 +5123,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             trapDownTrigs.push(tId);
           }
         }
-        winUpTrigs.sort((a, b) => (liveClosestWinFlagsBuf[b] * 30 + liveWinFlagsBuf[b] * 15 + winnerCommonalityScore[b]) - (liveClosestWinFlagsBuf[a] * 30 + liveWinFlagsBuf[a] * 15 + winnerCommonalityScore[a]));
+        winUpTrigs.sort((a, b) => (liveClosestWinFlagsBuf[b] * 30 + liveWinFlagsBuf[b] * 15 + winnerCommonalityScore[b] + (isPriorityTrigArr[b] ? 50 : 0)) - (liveClosestWinFlagsBuf[a] * 30 + liveWinFlagsBuf[a] * 15 + winnerCommonalityScore[a] + (isPriorityTrigArr[a] ? 50 : 0)));
         trapDownTrigs.sort((a, b) => {
-          const scoreB = liveTrapFlagsBuf[b] * 25 + (liveWinFlagsBuf[b] === 0 ? 40 : 0) + trapCommonalityScore[b] - liveWinFlagsBuf[b] * 12;
-          const scoreA = liveTrapFlagsBuf[a] * 25 + (liveWinFlagsBuf[a] === 0 ? 40 : 0) + trapCommonalityScore[a] - liveWinFlagsBuf[a] * 12;
+          const scoreB = liveTrapFlagsBuf[b] * 25 + (liveWinFlagsBuf[b] === 0 ? 40 : 0) + trapCommonalityScore[b] + (isPriorityTrigArr[b] ? 50 : 0) - liveWinFlagsBuf[b] * 12;
+          const scoreA = liveTrapFlagsBuf[a] * 25 + (liveWinFlagsBuf[a] === 0 ? 40 : 0) + trapCommonalityScore[a] + (isPriorityTrigArr[a] ? 50 : 0) - liveWinFlagsBuf[a] * 12;
           return scoreB - scoreA;
         });
 
@@ -5136,7 +5160,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             const testVal = cands[cIdx];
             const delta = testVal - curVal;
             bestPointsArr[tId] = testVal;
-            const testRegSum = runningRegSum + (getNormReg(testVal) - getNormReg(curVal));
+            const testRegSum = runningRegSum + (getNormRegFor(tId, testVal) - getNormRegFor(tId, curVal));
             const mark = undoLen;
             applyDelta(indices, delta);
             totalComps++;
@@ -5214,7 +5238,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
                   const mark = undoLen;
                   bestPointsArr[wId] = wNew;
                   bestPointsArr[trId] = trNew;
-                  const testRegSum = runningRegSum + (getNormReg(wNew) - getNormReg(wCur)) + (getNormReg(trNew) - getNormReg(trCur));
+                  const testRegSum = runningRegSum + (getNormRegFor(wId, wNew) - getNormRegFor(wId, wCur)) + (getNormRegFor(trId, trNew) - getNormRegFor(trId, trCur));
                   applyDelta(triggerIndicesArr[wId], wNew - wCur);
                   applyDelta(triggerIndicesArr[trId], trNew - trCur);
                   totalComps++;
@@ -5270,9 +5294,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     //    only keeps the step-back if cleanTopMatches, firstTrapRank, trapInTopN, and tiedAtBoundary are 100% preserved.
     const runContributionAudit = (triggerList: number[], frameStart: number) => {
       if (inIlsKick || triggerList.length === 0) return;
-      for (let i = 0; i < triggerList.length; i++) {
+      // Audit non-priority triggers FIRST so priority L10 & League triggers keep their weight when overlapping
+      const orderedAuditList = [...triggerList].sort((a, b) => isPriorityTrigArr[a] - isPriorityTrigArr[b]);
+      for (let i = 0; i < orderedAuditList.length; i++) {
         if (performance.now() - frameStart >= MAX_FRAME_MS) break;
-        const tId = triggerList[i];
+        const tId = orderedAuditList[i];
         const indices = triggerIndicesArr[tId];
         if (!indices || indices.length === 0) continue;
         const curVal = bestPointsArr[tId];
@@ -5289,7 +5315,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const preAuditLive = hasLiveSlice ? evaluateLiveSlice() : null;
         const delta = stepBackVal - curVal;
         bestPointsArr[tId] = stepBackVal;
-        const testRegSum = runningRegSum + (getNormReg(stepBackVal) - getNormReg(curVal));
+        const testRegSum = runningRegSum + (getNormRegFor(tId, stepBackVal) - getNormRegFor(tId, curVal));
         const auditMark = undoLen;
         applyDelta(indices, delta);
         totalComps++;
@@ -5417,8 +5443,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
               trapOnlyList.push(tId);
             }
           }
-          winOnlyList.sort((a, b) => (winnerCommonalityScore[b] + wFlagsBuf[b] * 8) - (winnerCommonalityScore[a] + wFlagsBuf[a] * 8));
-          trapOnlyList.sort((a, b) => (trapCommonalityScore[b] + focusTrapFlagsBuf[b] * 10) - (trapCommonalityScore[a] + focusTrapFlagsBuf[a] * 10));
+          winOnlyList.sort((a, b) => (winnerCommonalityScore[b] + wFlagsBuf[b] * 8 + (isPriorityTrigArr[b] ? 45 : 0)) - (winnerCommonalityScore[a] + wFlagsBuf[a] * 8 + (isPriorityTrigArr[a] ? 45 : 0)));
+          trapOnlyList.sort((a, b) => (trapCommonalityScore[b] + focusTrapFlagsBuf[b] * 10 + (isPriorityTrigArr[b] ? 45 : 0)) - (trapCommonalityScore[a] + focusTrapFlagsBuf[a] * 10 + (isPriorityTrigArr[a] ? 45 : 0)));
         }
       }
       cachedFrameWinOnlyIds = new Int32Array(winOnlyList);
@@ -5455,8 +5481,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     if (epochTriggerIds.length === 0) epochTriggerIds.push(...allWorkingTriggerIds);
     const shuffleEpochTriggers = () => {
       epochTriggerIds.sort((a, b) => {
-        const prioA = (trapCommonalityScore[a] + winnerCommonalityScore[a] + triggerImpactMomentum[a] + 5) * (0.80 + Math.random() * 0.40);
-        const prioB = (trapCommonalityScore[b] + winnerCommonalityScore[b] + triggerImpactMomentum[b] + 5) * (0.80 + Math.random() * 0.40);
+        const baseA = (trapCommonalityScore[a] + winnerCommonalityScore[a] + triggerImpactMomentum[a] + 5) * (isPriorityTrigArr[a] ? 1.85 : 1.0) + (isPriorityTrigArr[a] ? 25 : 0);
+        const baseB = (trapCommonalityScore[b] + winnerCommonalityScore[b] + triggerImpactMomentum[b] + 5) * (isPriorityTrigArr[b] ? 1.85 : 1.0) + (isPriorityTrigArr[b] ? 25 : 0);
+        const prioA = baseA * (0.80 + Math.random() * 0.40);
+        const prioB = baseB * (0.80 + Math.random() * 0.40);
         return prioB - prioA;
       });
     };
@@ -5537,7 +5565,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
                   const delta = newVal - curVal;
                   const ind = triggerIndicesArr[tId];
                   bestPointsArr[tId] = newVal;
-                  runningRegSum += getNormReg(newVal) - getNormReg(curVal);
+                  runningRegSum += getNormRegFor(tId, newVal) - getNormRegFor(tId, curVal);
                   if (ind.length > 0) applyDelta(ind, delta);
                 }
               }
@@ -5746,7 +5774,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
               const tId = mutTrigIds[m];
               const oldV = mutOldVals[m];
               const newV = mutNewVals[m];
-              batchRegDelta += getNormReg(newV) - getNormReg(oldV);
+              batchRegDelta += getNormRegFor(tId, newV) - getNormRegFor(tId, oldV);
               bestPointsArr[tId] = newV;
               const indices = triggerIndicesArr[tId];
               if (indices.length > 0) {
@@ -5930,7 +5958,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
                     const oldV = rebOldVals[m];
                     const newV = rebNewVals[m];
                     bestPointsArr[tId] = newV;
-                    rebDelta += getNormReg(newV) - getNormReg(oldV);
+                    rebDelta += getNormRegFor(tId, newV) - getNormRegFor(tId, oldV);
                     applyDelta(triggerIndicesArr[tId], rebDeltas[m]);
                   }
 
@@ -6227,12 +6255,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
           const mFav = getMarketFavorite(m);
           const outcome: 'mfav' | 'draw' | 'underdog' = actual === mFav ? 'mfav' : actual === 'X' ? 'draw' : 'underdog';
           
-          let allTriggers: Set<string> = (m as any)._opwCatalogTriggers;
-          if (!allTriggers) {
-            const stats = extractMatchEvaluationStats(m, phaStatsMap, cat.id);
-            allTriggers = evaluateAllCatalogTriggers(stats, m);
-            (m as any)._opwCatalogTriggers = allTriggers;
-          }
+          const allTriggers = getCachedCatalogTriggers(m, phaStatsMap, cat.id);
           const triggersHit = new Set<string>();
           allTriggers.forEach(t => {
             triggersHit.add(t);
@@ -6266,8 +6289,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         const batchHistStats = new Map<string, { mfav: number; draw: number; underdog: number }>();
         if (allMatches && allMatches.length > 0) {
           allMatches.forEach(m => {
-            const trigs: Set<string> | undefined = (m as any)._opwCatalogTriggers;
-            if (!trigs) return;
+            const trigs = CATALOG_TRIGGERS_WEAK_CACHE.get(m);
+            if (!(trigs instanceof Set)) return;
             const actual = getActualResult(m.result || '');
             if (actual !== '1' && actual !== 'X' && actual !== '2') return;
             const mFav = getMarketFavorite(m);
@@ -6342,10 +6365,15 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         if (bestEval.horizonMetrics) setDeepHorizonMetrics(bestEval.horizonMetrics);
         setDeepPointsMap(new Map(bestPoints));
 
-        // Self-aware incremental batch convergence: round-robin ±5 coordinate steps across all active triggers
+        // Self-aware incremental batch convergence: prioritize Priority L10 & League triggers first
         let iter = 0;
         let batchCursor = 0;
-        const batchPool = activeTriggers.length > 0 ? activeTriggers : catalogTriggers;
+        const rawBatchPool = activeTriggers.length > 0 ? activeTriggers : catalogTriggers;
+        const priorityBatchPool = rawBatchPool.filter(t => isPriorityComputationTrigger(t));
+        const batchPool = [
+          ...priorityBatchPool,
+          ...rawBatchPool.filter(t => !isPriorityComputationTrigger(t))
+        ];
         while (!bestEval.ceilingMet && !stopDeepRef.current) {
           const topNPure = bestEval.trapInTopN === 0 || 
             bestEval.cleanTopMatches >= cat.targetCapacity ||
@@ -6359,9 +6387,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             iter++;
             categoryComps++;
             totalBatchComps++;
-            const targetTrigger = (batchPool.length > 0 && Math.random() < 0.75)
-              ? batchPool[(batchCursor++) % batchPool.length]
-              : batchPool[Math.floor(Math.random() * batchPool.length)];
+            const targetTrigger = (priorityBatchPool.length > 0 && Math.random() < 0.45)
+              ? priorityBatchPool[Math.floor(Math.random() * priorityBatchPool.length)]
+              : ((batchPool.length > 0 && Math.random() < 0.75)
+                ? batchPool[(batchCursor++) % batchPool.length]
+                : batchPool[Math.floor(Math.random() * batchPool.length)]);
             if (!targetTrigger) continue;
 
             const currentVal = bestPoints.get(targetTrigger) ?? 0;
@@ -6627,7 +6657,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
 
     const tunedRules: { description: string; points: number }[] = Array.from(mergedPoints.entries()).map(([description, points]) => ({
       description,
-      points: Math.max(isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30, Math.min(40, points))
+      points: Math.max(getTriggerMaxPenalty(description), Math.min(getTriggerMaxBonus(description, isUpsetsCat), points))
     }));
 
     const finalRules = populateCategoryWithMasterRules(
@@ -6961,17 +6991,18 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         }
       }
 
+      const isCatUpsetsSave = cat.id === 'upsets' || cat.id === 'upset' || cat.targetObjective === 'underdog_only';
       if (deepMap && deepMap.size > 0) {
         rulesToApply = Array.from(deepMap.entries())
           .map(([description, points]) => ({
             description,
-            points: Math.max(isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30, Math.min(40, points))
+            points: Math.max(getTriggerMaxPenalty(description), Math.min(getTriggerMaxBonus(description, isCatUpsetsSave), points))
           }));
       } else if (cat.id === activeCategory && effectiveRecommendations.length > 0) {
         rulesToApply = effectiveRecommendations
           .map(r => ({
             description: r.description,
-            points: Math.max(isLeagueTrigger(r.description) ? getLeagueTriggerMaxPenalty(r.description) : -30, Math.min(40, r.recommendedPoints))
+            points: Math.max(getTriggerMaxPenalty(r.description), Math.min(getTriggerMaxBonus(r.description, isCatUpsetsSave), r.recommendedPoints))
           }));
       } else {
         const aliasKey = cat.id === 'upsets' ? 'upset' : (cat.id === 'upset' ? 'upsets' : (cat.id === 'top_12_value' ? 'top_10_value' : (cat.id === 'top_10_value' ? 'top_12_value' : (cat.id === 'value_bets' ? 'value_bet' : (cat.id === 'value_bet' ? 'value_bets' : cat.id)))));
@@ -7215,8 +7246,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     let tunedRules: { description: string; points: number }[];
     if (deepMap && deepMap.size > 0) {
       tunedRules = Array.from(deepMap.entries()).map(([description, points]) => {
-        const minP = isLeagueTrigger(description) ? getLeagueTriggerMaxPenalty(description) : -30;
-        const maxP = isLeagueTrigger(description) ? getLeagueTriggerMaxBonus(description, isUpsetsAdopt) : 40;
+        const minP = getTriggerMaxPenalty(description);
+        const maxP = getTriggerMaxBonus(description, isUpsetsAdopt);
         return {
           description,
           points: Math.max(minP, Math.min(maxP, points))
@@ -7226,8 +7257,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       tunedRules = effectiveRecommendations
         .filter(r => isDeepCalibrated ? true : (r.totalHits >= 1))
         .map(r => {
-          const minP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxPenalty(r.description) : -30;
-          const maxP = isLeagueTrigger(r.description) ? getLeagueTriggerMaxBonus(r.description, isUpsetsAdopt) : 40;
+          const minP = getTriggerMaxPenalty(r.description);
+          const maxP = getTriggerMaxBonus(r.description, isUpsetsAdopt);
           return {
             description: r.description,
             points: isDeepCalibrated

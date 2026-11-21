@@ -128,10 +128,17 @@ function hydrateParsedDailySettings(
                     })
                     .filter(Boolean) as { id: string; description: string; points: number }[];
                 const existingTemplate = base[d]?.[catKey] || DAILY_DEFAULT_CATEGORY_SETTINGS[d]?.[catKey];
+                const normCatKey = normalizeOpwCategoryId(catKey);
+                const inferredObjective: 'mfav_draw' | 'mfav_only' | 'underdog_only' =
+                    normCatKey === 'upsets'
+                        ? 'underdog_only'
+                        : (normCatKey === 'top_12_value' || normCatKey === 'value_bets')
+                            ? 'mfav_draw'
+                            : 'mfav_only';
                 const mergedCat: OptimizedCategorySettings = {
                     ...(existingTemplate || {}),
                     ...catVal,
-                    rules: sanitizeRulePolarity(hydratedRules, catKey, { preserveExact: true, day: d })
+                    rules: populateCategoryWithMasterRules(hydratedRules, inferredObjective, catKey, d, { preserveExact: true })
                 };
                 const aliasKeys = (catKey === 'top_12_value' || catKey === 'top_10_value')
                     ? ['top_12_value', 'top_10_value', 'top12', 'top10']

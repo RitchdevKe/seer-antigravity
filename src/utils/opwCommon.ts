@@ -3347,6 +3347,18 @@ export function evaluateAllCatalogTriggers(
     const isUndL10Gt7 = stats.hasValidL10 && stats.underdogL10 > 7;
     applyRule("Underdog L10(wins) >7", isUndL10Gt7, -5);
 
+    const isMfavL10GtUndL10Ge5 = stats.hasValidL10 && stats.mFavL10 > stats.underdogL10 && stats.mFavL10 >= 5;
+    applyRule("Mfav L10(wins)>Und L10 but >=5", isMfavL10GtUndL10Ge5, 5);
+
+    const isMfavL10GtUndL10Lt5 = stats.hasValidL10 && stats.mFavL10 > stats.underdogL10 && stats.mFavL10 < 5;
+    applyRule("Mfav L10(wins)>Und L10 but <5", isMfavL10GtUndL10Lt5, 5);
+
+    const isUndL10GtMfavL10Ge5 = stats.hasValidL10 && stats.underdogL10 > stats.mFavL10 && stats.underdogL10 >= 5;
+    applyRule("Und L10(wins)>Mfav L10 but >=5", isUndL10GtMfavL10Ge5, -5);
+
+    const isUndL10GtMfavL10Lt5 = stats.hasValidL10 && stats.underdogL10 > stats.mFavL10 && stats.underdogL10 < 5;
+    applyRule("Und L10(wins)>Mfav L10 but <5", isUndL10GtMfavL10Lt5, -5);
+
     // --- 8f. 12 New Last Encounter (LE) & L10 Form Triggers ---
     const leGoalDiff = (stats.leData && stats.leData.mFavWon) 
         ? (stats.leData.mFavGoals - stats.leData.underdogGoals) 
