@@ -3264,10 +3264,17 @@ export function evaluateAllCatalogTriggers(
     // --- 8b. High-Impact Compound Trap Triggers & Underdog Odds ---
     applyRule("Underdog odds >3.0", stats.udOdds > 3.0, 5);
     applyRule("LE : Underdog won the last encounter+ Underdog has higher L10 than Mfav", !!stats.leData?.underdogWon && stats.underdogHasHigherL10, 0);
-    const isYouthLeagueU21U20U19 = /\b(u21|u20|u19)\b/i.test(match.league || '') || /\b(u21|u20|u19)\b/i.test(match.teams || '');
-    applyRule("Youth League (U21,U20,U19)", isYouthLeagueU21U20U19, -15);
-    applyRule("Youth League (U21,U20,U19)+ Both team GS => 1.8", (hitSet.has("Youth League (U21,U20,U19)") || isYouthLeagueU21U20U19) && hitSet.has("Both team GS => 1.8"), -25);
-    applyRule("Match belongs to Estonia Leagues +Youth League (U21,U20,U19)", (hitSet.has("Match belongs to Estonia Leagues") || stats.isEstoniaMatch) && (hitSet.has("Youth League (U21,U20,U19)") || isYouthLeagueU21U20U19), -30);
+    const isYouthLeagueU19 = /\bu[- ]?19\b/i.test(match.league || '') || /\bu[- ]?19\b/i.test(match.teams || '');
+    const isYouthLeagueU20 = /\bu[- ]?20\b/i.test(match.league || '') || /\bu[- ]?20\b/i.test(match.teams || '');
+    const isYouthLeagueU21 = /\bu[- ]?21\b/i.test(match.league || '') || /\bu[- ]?21\b/i.test(match.teams || '');
+    const isYouthLeagueU23 = /\bu[- ]?23\b/i.test(match.league || '') || /\bu[- ]?23\b/i.test(match.teams || '');
+    const isYouthLeagueU21U20U19 = isYouthLeagueU19 || isYouthLeagueU20 || isYouthLeagueU21;
+    applyRule("Youth League U19", isYouthLeagueU19, -15);
+    applyRule("Youth League U20", isYouthLeagueU20, -15);
+    applyRule("Youth League U21", isYouthLeagueU21, -15);
+    applyRule("Youth League U23", isYouthLeagueU23, 5);
+    applyRule("Youth League (U21,U20,U19)+ Both team GS => 1.8", (hitSet.has("Youth League U19") || hitSet.has("Youth League U20") || hitSet.has("Youth League U21") || isYouthLeagueU21U20U19) && hitSet.has("Both team GS => 1.8"), -25);
+    applyRule("Match belongs to Estonia Leagues +Youth League (U21,U20,U19)", (hitSet.has("Match belongs to Estonia Leagues") || stats.isEstoniaMatch) && (hitSet.has("Youth League U19") || hitSet.has("Youth League U20") || hitSet.has("Youth League U21") || isYouthLeagueU21U20U19), -30);
     const isYouthLeague = /\b(u21|u23|u20|u19)\b/i.test(match.league || '') || /\b(u21|u23|u20|u19)\b/i.test(match.teams || '');
     applyRule("LE : Underdog won the last encounter+Youth League (U21,U23,U20,U19)", !!stats.leData?.underdogWon && isYouthLeague, 0);
     applyRule("TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)", isTsDiffClose && stats.isVolatile, 0);
@@ -3494,12 +3501,12 @@ export function evaluateAllCatalogTriggers(
             ["Seer score on draw >= 35% to <40%", "Seer score on draw >= 40%"]
         ],
         "Youth League (U21,U20,U19)+ Both team GS => 1.8": [
-            ["Youth League (U21,U20,U19)"],
+            ["Youth League U19", "Youth League U20", "Youth League U21"],
             ["Both team GS => 1.8"]
         ],
         "Match belongs to Estonia Leagues +Youth League (U21,U20,U19)": [
             ["Match belongs to Estonia Leagues"],
-            ["Youth League (U21,U20,U19)"]
+            ["Youth League U19", "Youth League U20", "Youth League U21"]
         ],
         "Mfav L10 = Und L10+ Both teams GA >= 1.1 (volatile match)": [
             ["Mfav L10 = Und L10"],

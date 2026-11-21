@@ -2377,17 +2377,51 @@ async function startServer() {
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
   };
 
+  const migrateYouthLeagueRulesInCategories = (categories: Record<string, any> | undefined | null): boolean => {
+    if (!categories || typeof categories !== 'object') return false;
+    let modified = false;
+    for (const catObj of Object.values<any>(categories)) {
+      if (!catObj || !Array.isArray(catObj.rules)) continue;
+      const rules = catObj.rules;
+      const legacyIdx = rules.findIndex((r: any) => r && r.description === 'Youth League (U21,U20,U19)');
+      if (legacyIdx === -1) continue;
+      const legacyPts = typeof rules[legacyIdx]?.points === 'number' ? rules[legacyIdx].points : -15;
+      const existingSet = new Set(rules.map((r: any) => r?.description));
+      const nextRules: any[] = [];
+      for (const r of rules) {
+        if (!r || !r.description) continue;
+        if (r.description === 'Youth League (U21,U20,U19)') {
+          if (!existingSet.has('Youth League U19')) { nextRules.push({ description: 'Youth League U19', points: legacyPts }); existingSet.add('Youth League U19'); }
+          if (!existingSet.has('Youth League U20')) { nextRules.push({ description: 'Youth League U20', points: legacyPts }); existingSet.add('Youth League U20'); }
+          if (!existingSet.has('Youth League U21')) { nextRules.push({ description: 'Youth League U21', points: legacyPts }); existingSet.add('Youth League U21'); }
+          if (!existingSet.has('Youth League U23')) { nextRules.push({ description: 'Youth League U23', points: 5 }); existingSet.add('Youth League U23'); }
+          modified = true;
+        } else {
+          nextRules.push(r);
+        }
+      }
+      catObj.rules = nextRules;
+    }
+    return modified;
+  };
+
   app.get("/api/opw/rules", async (req, res) => {
     try {
       const dataDir = path.join(process.cwd(), "data");
       const rulesFilePath = path.join(dataDir, "opw_rules.json");
       let allRulesData: { rules: Record<string, any>; weeklyMemory?: Record<string, Record<string, any[]>> } = { rules: {}, weeklyMemory: {} };
+      let dirtyDisk = false;
       if (fsSync.existsSync(rulesFilePath)) {
         try {
           const raw = await fs.readFile(rulesFilePath, "utf-8");
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object' && parsed.rules) {
             allRulesData = { rules: parsed.rules, weeklyMemory: parsed.weeklyMemory || {} };
+            for (const dayEntry of Object.values<any>(allRulesData.rules)) {
+              if (migrateYouthLeagueRulesInCategories(dayEntry?.categories)) {
+                dirtyDisk = true;
+              }
+            }
           }
         } catch (e) {}
       }
@@ -2397,7 +2431,6 @@ async function startServer() {
       // RULE: The source with the NEWER timestamp wins entirely for each category. No partial merging.
       try {
         const dbRes = await pgPool.query("SELECT day, categories, saved_at FROM opw_calibrated_rules");
-        let dirtyDisk = false;
         for (const row of dbRes.rows || []) {
           const d = String(row.day || '').toLowerCase();
           if (d === '_weekly_memory' && row.categories && typeof row.categories === 'object') {
@@ -2431,6 +2464,9 @@ async function startServer() {
             continue;
           }
           if (!d || !row.categories || typeof row.categories !== 'object') continue;
+          if (migrateYouthLeagueRulesInCategories(row.categories)) {
+            pgPool.query("UPDATE opw_calibrated_rules SET categories = $2::jsonb WHERE day = $1", [d, JSON.stringify(row.categories)]).catch(() => {});
+          }
           const dbSavedAt = row.saved_at ? new Date(row.saved_at).toISOString() : new Date().toISOString();
           const dbTs = Date.parse(dbSavedAt) || 0;
           const diskEntry = allRulesData.rules[d];
@@ -2469,14 +2505,15 @@ async function startServer() {
             };
           }
         }
-        if (dirtyDisk) {
-          if (!fsSync.existsSync(dataDir)) {
-            await fs.mkdir(dataDir, { recursive: true });
-          }
-          await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8").catch(() => {});
-        }
       } catch (dbErr: any) {
         console.warn("[OPW RULES GET] RDS fallback notice:", dbErr.message);
+      }
+
+      if (dirtyDisk) {
+        if (!fsSync.existsSync(dataDir)) {
+          await fs.mkdir(dataDir, { recursive: true });
+        }
+        await fs.writeFile(rulesFilePath, JSON.stringify(allRulesData, null, 2), "utf-8").catch(() => {});
       }
 
       return res.json(allRulesData);
@@ -2526,6 +2563,7 @@ async function startServer() {
           }
         }
 
+        migrateYouthLeagueRulesInCategories(expandedCategories);
         console.log(`[OPW SAVE-TO-CODE] Saving ${Object.keys(expandedCategories).length} category keys across days [${targetDaysList.join(', ')}].`);
 
         // 1. Load existing rules from disk AND RDS so other categories on the same day are never deleted

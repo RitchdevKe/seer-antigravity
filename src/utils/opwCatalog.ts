@@ -27,6 +27,7 @@ export const REMOVED_TRIGGER_DESCRIPTIONS = new Set<string>([
     "Match is for tournament",
     "Match is for Carabao Cup",
     "Match is for carabao cup",
+    "Youth League (U21,U20,U19)",
 ]);
 
 export const BASELINE_20_LEAGUES = new Set<string>([
@@ -156,7 +157,10 @@ export const ALL_MASTER_CATALOG_TRIGGERS: string[] = [
     "LE was a draw+Underdog has hidden strength/weakness",
     "LE, Underdog won the last encounter +Mfav L10= Und L10",
     "Mfav is playing at home",
-    "Youth League (U21,U20,U19)",
+    "Youth League U19",
+    "Youth League U20",
+    "Youth League U21",
+    "Youth League U23",
     "Match has BB, T12, or BD opw < 10%",
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog",
     "TS difference >= 1.0",
@@ -362,7 +366,10 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "Underdog was away on LE and Won": -20,
     "LE was a draw+Underdog has hidden strength/weakness": -10,
     "LE, Underdog won the last encounter +Mfav L10= Und L10": -20,
-    "Youth League (U21,U20,U19)": -15,
+    "Youth League U19": -15,
+    "Youth League U20": -15,
+    "Youth League U21": -15,
+    "Youth League U23": 5,
     "Match has BB, T12, or BD opw < 10%": -10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": -20,
     "TS difference >= 1.0": 15,
@@ -560,7 +567,10 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "Underdog was away on LE and Won": -20,
     "LE was a draw+Underdog has hidden strength/weakness": -15,
     "LE, Underdog won the last encounter +Mfav L10= Und L10": -20,
-    "Youth League (U21,U20,U19)": -15,
+    "Youth League U19": -15,
+    "Youth League U20": -15,
+    "Youth League U21": -15,
+    "Youth League U23": 5,
     "Match has BB, T12, or BD opw < 10%": -10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": -20,
     "TS difference >= 1.0": 20,
@@ -759,7 +769,10 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "Underdog was away on LE and Won": 20,
     "LE was a draw+Underdog has hidden strength/weakness": 15,
     "LE, Underdog won the last encounter +Mfav L10= Und L10": 20,
-    "Youth League (U21,U20,U19)": 15,
+    "Youth League U19": 15,
+    "Youth League U20": 15,
+    "Youth League U21": 15,
+    "Youth League U23": 5,
     "Match has BB, T12, or BD opw < 10%": 10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": 20,
     "TS difference >= 1.0": -20,
@@ -906,7 +919,9 @@ export const USER_EXPLICIT_UNDERDOG_PENALTIES: Record<string, number> = {
     "Seer score on draw >= 40%": -25,
     "PHA on draw =>30%": -25,
     "Match has PHA TIE tag": -30,
-    "Youth League (U21,U20,U19)": -20,
+    "Youth League U19": -20,
+    "Youth League U20": -20,
+    "Youth League U21": -20,
     "Youth League (U21,U23,U20,U19)": -20,
     "Youth League (U21,U20,U19)+ Both team GS => 1.8": -15,
     "LE Underdog won with 2+ goals": -20,
@@ -1079,7 +1094,6 @@ export const PRO_UNDERDOG_TRIGGERS = new Set<string>([
     "LE : Underdog won the last encounter+Youth League (U21,U23,U20,U19)",
     "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)",
     "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8",
-    "Youth League (U21,U20,U19)",
     "Youth League (U21,U23,U20,U19)",
     "Match has BB, T12, or BD opw < 10%",
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog",
@@ -1284,6 +1298,10 @@ export function unlockLeagueProUnderdog(_triggerName: string, _categoryId: strin
 
 export const NEUTRAL_TRIGGERS = new Set<string>([
     "L10: Mfav Wins+ Draws = Underdog wins +Draws",
+    "Youth League U19",
+    "Youth League U20",
+    "Youth League U21",
+    "Youth League U23",
 ]);
 
 export function getTriggerSemanticPolarity(triggerName: string, categoryIdOrObjective?: string): TriggerSemanticPolarity {
@@ -1526,7 +1544,22 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
     };
 
     if (isArray) {
-        return (rules as { description: string; points: number }[])
+        const rawArr = rules as { description: string; points: number }[];
+        const existingDescs = new Set(rawArr.map(r => r.description || (r as any).trigger || '').filter(Boolean));
+        const expandedArr: { description: string; points: number }[] = [];
+        for (const r of rawArr) {
+            const desc = r.description || (r as any).trigger || '';
+            if (desc === 'Youth League (U21,U20,U19)') {
+                const legacyPts = typeof r.points === 'number' && !isNaN(r.points) ? r.points : -15;
+                if (!existingDescs.has('Youth League U19')) { expandedArr.push({ description: 'Youth League U19', points: legacyPts }); existingDescs.add('Youth League U19'); }
+                if (!existingDescs.has('Youth League U20')) { expandedArr.push({ description: 'Youth League U20', points: legacyPts }); existingDescs.add('Youth League U20'); }
+                if (!existingDescs.has('Youth League U21')) { expandedArr.push({ description: 'Youth League U21', points: legacyPts }); existingDescs.add('Youth League U21'); }
+                if (!existingDescs.has('Youth League U23')) { expandedArr.push({ description: 'Youth League U23', points: 5 }); existingDescs.add('Youth League U23'); }
+            } else {
+                expandedArr.push(r);
+            }
+        }
+        return expandedArr
             .filter(r => !REMOVED_TRIGGER_DESCRIPTIONS.has(r.description || (r as any).trigger || ''))
             .map(r => ({
                 description: r.description || (r as any).trigger,
@@ -1534,8 +1567,16 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
             }))
             .filter(r => isUpsets || r.points !== 0) as T;
     } else {
+        const rawObj: Record<string, number> = { ...(rules as Record<string, number>) };
+        const legacyPts = rawObj['Youth League (U21,U20,U19)'];
+        if (typeof legacyPts === 'number' && !isNaN(legacyPts)) {
+            if (rawObj['Youth League U19'] === undefined) rawObj['Youth League U19'] = legacyPts;
+            if (rawObj['Youth League U20'] === undefined) rawObj['Youth League U20'] = legacyPts;
+            if (rawObj['Youth League U21'] === undefined) rawObj['Youth League U21'] = legacyPts;
+            if (rawObj['Youth League U23'] === undefined) rawObj['Youth League U23'] = 5;
+        }
         const result: Record<string, number> = {};
-        for (const [desc, pts] of Object.entries(rules as Record<string, number>)) {
+        for (const [desc, pts] of Object.entries(rawObj)) {
             if (!REMOVED_TRIGGER_DESCRIPTIONS.has(desc)) {
                 const cleaned = cleanPoints(desc, pts);
                 if (isUpsets || cleaned !== 0) {
@@ -1640,6 +1681,10 @@ export const MASTER_TOP_12_RULES: { description: string; points: number }[] = sa
     { description: "SubPattern is G2E5", points: -30 },
     { description: "MFav TS <=1.2", points: -10 },
     { description: "Mfav TS 1.0-1.50 and Ud TS < 0.8", points: 15 },
+    { description: "Youth League U19", points: -15 },
+    { description: "Youth League U20", points: -15 },
+    { description: "Youth League U21", points: -15 },
+    { description: "Youth League U23", points: 5 },
     { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -25 },
     { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -10 },
     { description: "1X2 Rating < 3.0", points: -15 },
@@ -1669,7 +1714,10 @@ export const MASTER_BEST_BET_RULES: { description: string; points: number }[] = 
     { description: "Seer score on underdog >= 45%", points: -20 },
     { description: "Algo primary prediction supports the underdog", points: -20 },
     { description: "Underdog was away on LE and Won", points: -20 },
-    { description: "Youth League (U21,U20,U19)", points: -15 },
+    { description: "Youth League U19", points: -15 },
+    { description: "Youth League U20", points: -15 },
+    { description: "Youth League U21", points: -15 },
+    { description: "Youth League U23", points: 5 },
     { description: "Both teams GA >= 1.5", points: -15 },
     { description: "TS difference <= 0.1", points: -15 },
     { description: "Both team GS => 1.8", points: 10 },
@@ -1768,7 +1816,10 @@ export const MASTER_BANKERS_DLIVE_RULES: { description: string; points: number }
     { description: "Underdog was away on LE and Won", points: -20 },
     { description: "Dead-Heat Draw Trap (Fav >= 2.50 + Ud <= 2.80 + Draw < 3.30)", points: -20 },
     { description: "TS difference <= 0.1", points: -15 },
-    { description: "Youth League (U21,U20,U19)", points: -20 },
+    { description: "Youth League U19", points: -20 },
+    { description: "Youth League U20", points: -20 },
+    { description: "Youth League U21", points: -20 },
+    { description: "Youth League U23", points: 5 },
     { description: "Both team GS => 1.8", points: 10 },
     { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -15 },
     { description: "Mfav GS = Und Gs +-0.2", points: -5 },
@@ -1935,7 +1986,10 @@ export const MASTER_BANKERS_JACKPOT_RULES: { description: string; points: number
     { description: "Underdog was away on LE and Won", points: -20 },
     { description: "LE was a draw+Underdog has hidden strength/weakness", points: -15 },
     { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -20 },
-    { description: "Youth League (U21,U20,U19)", points: -30 },
+    { description: "Youth League U19", points: -30 },
+    { description: "Youth League U20", points: -30 },
+    { description: "Youth League U21", points: -30 },
+    { description: "Youth League U23", points: 5 },
     { description: "Match has BB, T12, or BD opw < 10%", points: -10 },
     { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 },
     { description: "TS difference >= 1.0", points: 25 },
@@ -2108,7 +2162,10 @@ export const MASTER_VALUE_PICKS_RULES: { description: string; points: number }[]
     { description: "Underdog was away on LE and Won", points: -20 },
     { description: "LE was a draw+Underdog has hidden strength/weakness", points: -15 },
     { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -20 },
-    { description: "Youth League (U21,U20,U19)", points: -15 },
+    { description: "Youth League U19", points: -15 },
+    { description: "Youth League U20", points: -15 },
+    { description: "Youth League U21", points: -15 },
+    { description: "Youth League U23", points: 5 },
     { description: "Match has BB, T12, or BD opw < 10%", points: -10 },
     { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 },
     { description: "TS difference >= 1.0", points: 20 },
@@ -2185,7 +2242,10 @@ export const MASTER_UPSETS_RULES: { description: string; points: number }[] = sa
     { description: "L10: Mfav Wins+ Draws = Underdog wins +Draws", points: 15 },
     { description: "L10: Mfav Wins+ Draws > Underdog wins +Draws", points: -20 },
     { description: "L10: Mfav Wins+ Draws < Underdog wins +Draws", points: 15 },
-    { description: "Youth League (U21,U20,U19)", points: -15 },
+    { description: "Youth League U19", points: -15 },
+    { description: "Youth League U20", points: -15 },
+    { description: "Youth League U21", points: -15 },
+    { description: "Youth League U23", points: 5 },
     { description: "Algo primary prediction supports the underdog", points: 25 },
     { description: "Seer score on underdog >= 45%", points: 25 },
     { description: "Seer primary predicts on underdog", points: 25 },
@@ -2279,6 +2339,15 @@ export function buildValueBetsRulesFromT12(
         if (!cleanDesc || seen.has(cleanDesc) || REMOVED_TRIGGER_DESCRIPTIONS.has(cleanDesc)) return;
         seen.add(cleanDesc);
 
+        if (cleanDesc === "Youth League U23") {
+            combined.push({ description: cleanDesc, points: 5 });
+            return;
+        }
+        if (cleanDesc === "Youth League U19" || cleanDesc === "Youth League U20" || cleanDesc === "Youth League U21") {
+            combined.push({ description: cleanDesc, points: -5 });
+            return;
+        }
+
         if (isLeagueTrigger(cleanDesc)) {
             if (USER_MANUAL_PRO_UNDERDOG_LEAGUES.has(cleanDesc)) {
                 combined.push({ description: cleanDesc, points: -5 });
@@ -2364,7 +2433,23 @@ export function populateCategoryWithMasterRules(
     const preserveExact = options?.preserveExact !== undefined ? options.preserveExact : true;
     const seenDescriptions = new Set<string>();
 
-    tunedRules.forEach(r => {
+    const legacyRule = tunedRules.find(r => r && r.description === "Youth League (U21,U20,U19)" && typeof r.points === 'number' && !isNaN(r.points));
+    const expandedTuned: { description: string; points: number }[] = [];
+    const tunedDescs = new Set(tunedRules.map(r => r?.description).filter(Boolean));
+    for (const r of tunedRules) {
+        if (!r || !r.description) continue;
+        if (r.description === "Youth League (U21,U20,U19)") {
+            const legacyPts = legacyRule ? legacyRule.points : -15;
+            if (!tunedDescs.has("Youth League U19")) { expandedTuned.push({ description: "Youth League U19", points: legacyPts }); tunedDescs.add("Youth League U19"); }
+            if (!tunedDescs.has("Youth League U20")) { expandedTuned.push({ description: "Youth League U20", points: legacyPts }); tunedDescs.add("Youth League U20"); }
+            if (!tunedDescs.has("Youth League U21")) { expandedTuned.push({ description: "Youth League U21", points: legacyPts }); tunedDescs.add("Youth League U21"); }
+            if (!tunedDescs.has("Youth League U23")) { expandedTuned.push({ description: "Youth League U23", points: 5 }); tunedDescs.add("Youth League U23"); }
+        } else {
+            expandedTuned.push(r);
+        }
+    }
+
+    expandedTuned.forEach(r => {
         if (!r.description || seenDescriptions.has(r.description)) return;
         seenDescriptions.add(r.description);
         if (typeof r.points === 'number' && !isNaN(r.points) && (isUpsets || r.points !== 0)) {

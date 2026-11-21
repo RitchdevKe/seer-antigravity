@@ -99,7 +99,10 @@ export const THURSDAY_TOP_12_RULES: ThursdayRuleItem[] = sanitizeRulePolarity([
   { description: "Match is for Tournament", points: -15 }, // Calibrated Rules (Top 12 Value): -15 pts
   { description: "Match is for Carabao Cup", points: -15 }, // Calibrated Rules (Top 12 Value): -15 pts
   { description: "Mfav is playing at home", points: 20 }, // Calibrated Rules (Top 12 Value): +20 pts
-  { description: "Youth League (U21,U20,U19)", points: -30 }, // Calibrated Rules (Top 12 Value): -30 pts
+  { description: "Youth League U19", points: -30 },
+  { description: "Youth League U20", points: -30 },
+  { description: "Youth League U21", points: -30 },
+  { description: "Youth League U23", points: 5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Top 12 Value): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Top 12 Value): -20 pts
   { description: "TS difference >= 1.0", points: 15 }, // Calibrated Rules (Top 12 Value): +15 pts
@@ -270,7 +273,10 @@ export const THURSDAY_BEST_BET_RULES: ThursdayRuleItem[] = sanitizeRulePolarity(
   { description: "Match is for Tournament", points: -15 }, // Calibrated Rules (Best Bets): -15 pts
   { description: "Match is for Carabao Cup", points: -15 }, // Calibrated Rules (Best Bets): -15 pts
   { description: "Mfav is playing at home", points: 5 }, // Calibrated Rules (Best Bets): +5 pts
-  { description: "Youth League (U21,U20,U19)", points: -5 }, // Calibrated Rules (Best Bets): -5 pts
+  { description: "Youth League U19", points: -5 },
+  { description: "Youth League U20", points: -5 },
+  { description: "Youth League U21", points: -5 },
+  { description: "Youth League U23", points: 5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Best Bets): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Best Bets): -20 pts
   { description: "TS difference >= 1.0", points: 10 }, // Calibrated Rules (Best Bets): +10 pts
@@ -441,7 +447,10 @@ export const THURSDAY_BANKERS_DLIVE_RULES: ThursdayRuleItem[] = sanitizeRulePola
   { description: "Match is for Tournament", points: -15 }, // Calibrated Rules (Bankers Dlive): -15 pts
   { description: "Match is for Carabao Cup", points: -15 }, // Calibrated Rules (Bankers Dlive): -15 pts
   { description: "Mfav is playing at home", points: 10 }, // Calibrated Rules (Bankers Dlive): +10 pts
-  { description: "Youth League (U21,U20,U19)", points: -5 }, // Calibrated Rules (Bankers Dlive): -5 pts
+  { description: "Youth League U19", points: -5 },
+  { description: "Youth League U20", points: -5 },
+  { description: "Youth League U21", points: -5 },
+  { description: "Youth League U23", points: 5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Bankers Dlive): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Bankers Dlive): -20 pts
   { description: "TS difference >= 1.0", points: 30 }, // Calibrated Rules (Bankers Dlive): +30 pts
@@ -612,7 +621,10 @@ export const THURSDAY_BANKERS_JACKPOT_RULES: ThursdayRuleItem[] = sanitizeRulePo
   { description: "Match is for Tournament", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
   { description: "Match is for Carabao Cup", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
   { description: "Mfav is playing at home", points: 10 }, // Calibrated Rules (Bankers Jackpot): +10 pts
-  { description: "Youth League (U21,U20,U19)", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
+  { description: "Youth League U19", points: -5 },
+  { description: "Youth League U20", points: -5 },
+  { description: "Youth League U21", points: -5 },
+  { description: "Youth League U23", points: 5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
   { description: "TS difference >= 1.0", points: 5 }, // Calibrated Rules (Bankers Jackpot): +5 pts
@@ -784,7 +796,10 @@ export const THURSDAY_VALUE_PICKS_RULES: ThursdayRuleItem[] = sanitizeRulePolari
   { description: "Match is for Tournament", points: -5 }, // Calibrated Rules (Value Picks): -5 pts
   { description: "Match is for Carabao Cup", points: -5 }, // Calibrated Rules (Value Picks): -5 pts
   { description: "Mfav is playing at home", points: 5 }, // Calibrated Rules (Value Picks): +5 pts
-  { description: "Youth League (U21,U20,U19)", points: -30 }, // Calibrated Rules (Value Picks): -30 pts
+  { description: "Youth League U19", points: -30 },
+  { description: "Youth League U20", points: -30 },
+  { description: "Youth League U21", points: -30 },
+  { description: "Youth League U23", points: 5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -5 }, // Calibrated Rules (Value Picks): -5 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Value Picks): -5 pts
   { description: "TS difference >= 1.0", points: 5 }, // Calibrated Rules (Value Picks): +5 pts
@@ -955,7 +970,10 @@ export const THURSDAY_UPSETS_RULES: ThursdayRuleItem[] = sanitizeRulePolarity([
   { description: "Match is for Tournament", points: -15 }, // Calibrated Rules (Upsets): -15 pts
   { description: "Match is for Carabao Cup", points: 15 }, // Calibrated Rules (Upsets): +15 pts
   { description: "Mfav is playing at home", points: -25 }, // Calibrated Rules (Upsets): -25 pts
-  { description: "Youth League (U21,U20,U19)", points: 30 }, // Calibrated Rules (Upsets): +30 pts
+  { description: "Youth League U19", points: 30 },
+  { description: "Youth League U20", points: 30 },
+  { description: "Youth League U21", points: 30 },
+  { description: "Youth League U23", points: 5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: 15 }, // Calibrated Rules (Upsets): +15 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: 15 }, // Calibrated Rules (Upsets): +15 pts
   { description: "TS difference >= 1.0", points: -5 }, // Calibrated Rules (Upsets): -5 pts

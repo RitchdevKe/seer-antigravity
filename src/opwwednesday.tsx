@@ -151,7 +151,10 @@ export const WEDNESDAY_BEST_BET_RULES: WednesdayRuleItem[] = sanitizeRulePolarit
   { description: "Algo primary prediction supports the underdog", points: -20 }, // Calibrated Rules: -20 pts
   { description: "Underdog was away on LE and Won", points: -20 }, // Calibrated Rules: -20 pts
   { description: "Underdog has >= 5 more points on point system", points: -5 }, // Calibrated Rules: -5 pts
-  { description: "Youth League (U21,U20,U19)", points: -15 }, // Calibrated Rules: -15 pts
+  { description: "Youth League U19", points: -15 },
+  { description: "Youth League U20", points: -15 },
+  { description: "Youth League U21", points: -15 },
+  { description: "Youth League U23", points: 5 },
   { description: "Both teams GA >= 1.5", points: -15 }, // Calibrated Rules: -15 pts
   { description: "TS difference <= 0.1", points: -15 }, // Calibrated Rules: -15 pts
   { description: "Both team GS => 1.8", points: 10 }, // Calibrated Rules: +10 pts
@@ -262,7 +265,10 @@ export const WEDNESDAY_BANKERS_DLIVE_RULES: WednesdayRuleItem[] = sanitizeRulePo
   { description: "Underdog was away on LE and Won", points: -25 }, // Calibrated Rules: -25 pts
   { description: "Dead-Heat Draw Trap (Fav >= 2.50 + Ud <= 2.80 + Draw < 3.30)", points: -20 }, // Calibrated Rules: -20 pts
   { description: "TS difference <= 0.1", points: -25 }, // Calibrated Rules: -25 pts
-  { description: "Youth League (U21,U20,U19)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Youth League U19", points: -20 },
+  { description: "Youth League U20", points: -20 },
+  { description: "Youth League U21", points: -20 },
+  { description: "Youth League U23", points: 5 },
   { description: "Both teams GA >= 1.5", points: -10 }, // Calibrated Rules: -10 pts
   { description: "LE Underdog won with 2+ goals", points: -20 }, // Calibrated Rules: -20 pts
   { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -25 }, // Calibrated Rules: -25 pts
@@ -399,7 +405,10 @@ export const WEDNESDAY_BANKERS_JACKPOT_RULES: WednesdayRuleItem[] = sanitizeRule
   { description: "Underdog was away on LE and Won", points: -25 }, // Calibrated Rules: -25 pts
   { description: "Dead-Heat Draw Trap (Fav >= 2.50 + Ud <= 2.80 + Draw < 3.30)", points: -20 }, // Calibrated Rules: -20 pts
   { description: "TS difference <= 0.1", points: -15 }, // Calibrated Rules: -15 pts
-  { description: "Youth League (U21,U20,U19)", points: -20 }, // Calibrated Rules: -20 pts
+  { description: "Youth League U19", points: -20 },
+  { description: "Youth League U20", points: -20 },
+  { description: "Youth League U21", points: -20 },
+  { description: "Youth League U23", points: 5 },
   { description: "Both teams GA >= 1.5", points: -10 }, // Calibrated Rules: -10 pts
   { description: "LE Underdog won with 2+ goals", points: -20 }, // Calibrated Rules: -20 pts
   { description: "LE, Underdog won the last encounter +Mfav L10= Und L10", points: -25 }, // Calibrated Rules: -25 pts
@@ -628,7 +637,10 @@ export const WEDNESDAY_UPSETS_RULES: WednesdayRuleItem[] = sanitizeRulePolarity(
   { description: "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8", points: 20 }, // Calibrated Rules: +20 pts
   { description: "Mfav is away but was home last LE won with <=1 goal+ Odds for underdog >= 2.80 to 3.0", points: 20 }, // Calibrated Rules: +20 pts
   { description: "Mfav GS = Und Gs +-0.2+Mfav is away but was home last LE won with <=1 goal", points: 20 }, // Calibrated Rules: +20 pts
-  { description: "Youth League (U21,U20,U19)", points: 20 }, // Calibrated Rules: +20 pts
+  { description: "Youth League U19", points: 20 },
+  { description: "Youth League U20", points: 20 },
+  { description: "Youth League U21", points: 20 },
+  { description: "Youth League U23", points: 5 },
   { description: "Underdog odds >3.0", points: 5 }, // Calibrated Rules: +15 pts
   { description: "Both teams GA > GS and Both team GS <=1.0", points: 15 }, // Calibrated Rules: +15 pts
   { description: "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA", points: 5 }, // Calibrated Rules: +5 pts
