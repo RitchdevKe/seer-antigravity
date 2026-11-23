@@ -252,6 +252,8 @@ export function resetToCodeDefaults(day?: DayOfWeek) {
 }
 
 const META_KEY = 'daily_optimized_weights_meta_v7';
+const LS_PERSIST_TS_KEY = 'daily_optimized_weights_ls_ts_v1';
+let localOpwMutationEpoch = 0;
 /** Server-saved Value Picks / Bankers Jackpot rules older than this are ignored (they predate Top 12 alignment). */
 const TOP12_ALIGN_EPOCH = Date.parse('2026-10-05T15:10:00Z');
 const ALL_WEEK_DAYS: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -268,7 +270,10 @@ function getDailySettingsMeta(): Partial<Record<DayOfWeek, number>> {
     }
 }
 
-export function setDailySettingsMeta(days: DayOfWeek[], ts: number) {
+export function setDailySettingsMeta(days: DayOfWeek[], ts: number, fromServer: boolean = false) {
+    if (!fromServer) {
+        localOpwMutationEpoch++;
+    }
     if (typeof window === 'undefined' || !window.localStorage) return;
     try {
         const meta = getDailySettingsMeta();
@@ -320,9 +325,11 @@ export function savePersistedDailySettings() {
         }
         const serializedDaily = JSON.stringify(compactDaily);
         const serializedMain = JSON.stringify(compactCategoryMapForStorage(OPTIMIZED_CATEGORY_SETTINGS));
+        const persistTs = Date.now();
         try {
             window.localStorage.setItem(STORAGE_KEY, serializedDaily);
             window.localStorage.setItem('optimized_weights_settings', serializedMain);
+            window.localStorage.setItem(LS_PERSIST_TS_KEY, String(persistTs));
         } catch (e) {
             // Free up localStorage quota by evicting regenerable slip cache ONLY (NEVER delete seer_opw_peak_memory_*)
             try {
@@ -340,13 +347,15 @@ export function savePersistedDailySettings() {
                 keysToRemove.forEach(k => window.localStorage.removeItem(k));
                 window.localStorage.setItem(STORAGE_KEY, serializedDaily);
                 window.localStorage.setItem('optimized_weights_settings', serializedMain);
+                window.localStorage.setItem(LS_PERSIST_TS_KEY, String(persistTs));
             } catch (retryErr) {
                 console.warn('[optimizedweights] Failed to save settings to localStorage after quota cleanup', retryErr);
             }
         }
-        // Also persist to IndexedDB so quota limits can never lose calibrated settings
+        // Also persist timestamped snapshot to IndexedDB so localStorage quota limits can never silently revert calibrated settings
+        const metaSnapshot = getDailySettingsMeta();
         import('idb-keyval').then(({ set }) => {
-            set(STORAGE_KEY, DAILY_OPTIMIZED_SETTINGS).catch(() => {});
+            set(STORAGE_KEY, { version: 2, savedAt: persistTs, meta: metaSnapshot, data: compactDaily }).catch(() => {});
         }).catch(() => {});
         // Mark weights keys for Supabase user_storage sync (lazy import avoids module cycles)
         import('../services/supabaseStorage').then(m => {
@@ -368,13 +377,37 @@ if (DAILY_OPTIMIZED_SETTINGS.saturday) {
     OPTIMIZED_CATEGORY_SETTINGS = { ...OPTIMIZED_CATEGORY_SETTINGS, ...DAILY_OPTIMIZED_SETTINGS.saturday };
 }
 
-// Asynchronous fallback hydration from IndexedDB if localStorage was ever missing STORAGE_KEY
-if (typeof window !== 'undefined' && window.localStorage && !window.localStorage.getItem(STORAGE_KEY)) {
+// Asynchronous fallback hydration from IndexedDB whenever localStorage is missing STORAGE_KEY or missed a newer write (e.g. QuotaExceededError)
+if (typeof window !== 'undefined' && window.localStorage) {
     import('idb-keyval').then(async ({ get }) => {
         try {
             const idbSaved = await get(STORAGE_KEY);
-            if (idbSaved && typeof idbSaved === 'object') {
-                hydrateParsedDailySettings(DAILY_OPTIMIZED_SETTINGS, idbSaved);
+            if (!idbSaved || typeof idbSaved !== 'object') return;
+            const isV2 = Boolean(idbSaved.version === 2 && idbSaved.data && typeof idbSaved.data === 'object');
+            const idbSavedAt = isV2 ? (Number(idbSaved.savedAt) || 0) : 0;
+            const lsPersistedAt = Number(window.localStorage.getItem(LS_PERSIST_TS_KEY) || 0);
+            const hasLS = Boolean(window.localStorage.getItem(STORAGE_KEY));
+            if (!hasLS || (isV2 && idbSavedAt > lsPersistedAt)) {
+                const payloadToHydrate = isV2 ? idbSaved.data : idbSaved;
+                if (!payloadToHydrate || typeof payloadToHydrate !== 'object') return;
+                hydrateParsedDailySettings(DAILY_OPTIMIZED_SETTINGS, payloadToHydrate);
+                if (isV2 && idbSaved.meta && typeof idbSaved.meta === 'object') {
+                    const currentMeta = getDailySettingsMeta();
+                    let metaChanged = false;
+                    for (const d of ALL_WEEK_DAYS) {
+                        const idbDayTs = Number(idbSaved.meta[d] || 0);
+                        const curDayTs = Number(currentMeta[d] || 0);
+                        if (idbDayTs > curDayTs) {
+                            currentMeta[d] = idbDayTs;
+                            metaChanged = true;
+                        }
+                    }
+                    if (metaChanged) {
+                        try {
+                            window.localStorage.setItem(META_KEY, JSON.stringify(currentMeta));
+                        } catch (_) {}
+                    }
+                }
                 clearOptimizedScoreCache();
                 savePersistedDailySettings();
                 window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: 'all', day: 'all', source: 'idb-restore' } }));
@@ -682,32 +715,47 @@ export function get3WeekTriggerConsistencyMap(
  * them per day on startup so saved rules permanently replace old trigger points across reloads.
  */
 let serverRulesLoadPromise: Promise<DayOfWeek[]> | null = null;
+let inFlightServerRulesPromise: Promise<DayOfWeek[]> | null = null;
+const LEGACY_CATEGORY_SORT_SET = new Set(['top_10_value', 'top10', 'upset', 'underdog_upsets', 'banker', 'value_bet']);
+const getCategoryApplyOrder = (catId: string): number => (LEGACY_CATEGORY_SORT_SET.has(catId) ? 0 : 1);
+
 export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]> {
+    if (inFlightServerRulesPromise) return inFlightServerRulesPromise;
     if (serverRulesLoadPromise && !force) return serverRulesLoadPromise;
-    serverRulesLoadPromise = (async () => {
+    const runPromise = (async () => {
         const applied: DayOfWeek[] = [];
         if (typeof window === 'undefined' || typeof fetch === 'undefined') return applied;
+        const startEpoch = localOpwMutationEpoch;
         try {
             const res = await fetch('/api/opw/rules', { cache: 'no-store' });
-            if (!res.ok) return applied;
+            if (!res.ok) {
+                if (serverRulesLoadPromise === runPromise) serverRulesLoadPromise = null;
+                return applied;
+            }
             const json = await res.json();
             if (json && typeof json === 'object' && json.weeklyMemory) {
                 hydrate3WeekTriggerMemory(json.weeklyMemory);
             }
             const rulesByDay = (json && typeof json === 'object' && json.rules) ? json.rules : {};
             const localMeta = getDailySettingsMeta();
+            const localChangedWhileInFlight = localOpwMutationEpoch !== startEpoch;
             for (const day of ALL_WEEK_DAYS) {
                 const entry = rulesByDay[day];
                 if (!entry || !entry.categories || typeof entry.categories !== 'object') continue;
                 const savedAt = Date.parse(entry.savedAt) || 0;
 
-                // Timestamp Guard: Never overwrite local settings if local has newer calibrations, UNLESS force = true
+                // Timestamp Guard: Never overwrite local settings if local has newer calibrations,
+                // UNLESS force = true AND no local mutation happened while this fetch was in flight.
                 const localSavedAt = localMeta[day] || 0;
-                if (!force && localSavedAt > 0 && localSavedAt > savedAt) {
+                if ((!force || localChangedWhileInFlight) && localSavedAt > 0 && localSavedAt > savedAt) {
                     continue;
                 }
 
-                for (const [catId, catData] of Object.entries<any>(entry.categories)) {
+                const sortedCatEntries = Object.entries<any>(entry.categories).sort(
+                    ([catA], [catB]) => getCategoryApplyOrder(catA) - getCategoryApplyOrder(catB)
+                );
+
+                for (const [catId, catData] of sortedCatEntries) {
                     const rawRules = Array.isArray(catData?.rules) ? catData.rules : [];
                     const tuned = rawRules
                         .filter((r: any) => r && typeof r.description === 'string' && typeof r.points === 'number')
@@ -761,7 +809,7 @@ export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]>
                     }
                 }
                 if (savedAt > 0) {
-                    setDailySettingsMeta([day], savedAt);
+                    setDailySettingsMeta([day], savedAt, true);
                 }
                 applied.push(day);
             }
@@ -775,15 +823,21 @@ export function loadServerOpwRules(force: boolean = false): Promise<DayOfWeek[]>
                 window.dispatchEvent(new Event('opw-weights-updated'));
             }
         } catch (e) {
+            if (serverRulesLoadPromise === runPromise) serverRulesLoadPromise = null;
             // Silent: server rules are optional
+        } finally {
+            if (inFlightServerRulesPromise === runPromise) inFlightServerRulesPromise = null;
         }
         return applied;
     })();
-    return serverRulesLoadPromise;
+    inFlightServerRulesPromise = runPromise;
+    serverRulesLoadPromise = runPromise;
+    return runPromise;
 }
 
 export function invalidateServerRulesCache(): void {
     serverRulesLoadPromise = null;
+    inFlightServerRulesPromise = null;
 }
 
 // Invoke once at app startup (module is loaded early by MatchAnalysis / SeerAnalysis / OPW algo)

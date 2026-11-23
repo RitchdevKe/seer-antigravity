@@ -2628,11 +2628,14 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     if (isDeepOptimizing || isBatchOptimizingRef.current) return;
     const targetDay = selectedDay !== 'all' ? selectedDay : datasetDay;
     const dayCatKey = `${targetDay}_${activeCategory}`;
-    const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value' 
-      : (activeCategory === 'upsets' ? 'upset' 
-      : (activeCategory === 'upset' ? 'upsets' 
-      : (activeCategory === 'bankers_dlive' ? 'banker' 
-      : (activeCategory === 'banker' ? 'bankers_dlive' : undefined))));
+    const aliasCatId = activeCategory === 'top_12_value' ? 'top_10_value'
+      : (activeCategory === 'top_10_value' ? 'top_12_value'
+      : (activeCategory === 'upsets' ? 'upset'
+      : (activeCategory === 'upset' ? 'upsets'
+      : (activeCategory === 'bankers_dlive' ? 'banker'
+      : (activeCategory === 'banker' ? 'bankers_dlive'
+      : (activeCategory === 'value_bets' ? 'value_bet'
+      : (activeCategory === 'value_bet' ? 'value_bets' : undefined)))))));
     const persistedRules = DAILY_OPTIMIZED_SETTINGS[targetDay]?.[activeCategory]?.rules
       || (aliasCatId ? DAILY_OPTIMIZED_SETTINGS[targetDay]?.[aliasCatId]?.rules : undefined);
     if (persistedRules && persistedRules.length > 0) {
@@ -2645,10 +2648,12 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         }
       });
       if (restoredMap.size > 0) {
+        const freshMap: Record<string, Map<string, number>> = { [dayCatKey]: restoredMap };
+        if (aliasCatId) freshMap[`${targetDay}_${aliasCatId}`] = restoredMap;
         deepPointsCategoryRef.current = activeCategory;
-        deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+        deepCategoryPointsMapRef.current = freshMap;
         setDeepPointsMap(restoredMap);
-        setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+        setDeepCategoryPointsMap(freshMap);
         setDeepStatus('converged');
         return;
       }
@@ -2659,11 +2664,17 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     if (peakMem?.points && Object.keys(peakMem.points).length > 0) {
       const sanitizedPeak = sanitizeRulePolarity(peakMem.points, activeCategory, { preserveExact: true, day: targetDay });
       const restoredMap = new Map(Object.entries(sanitizedPeak));
+      const freshMap: Record<string, Map<string, number>> = { [dayCatKey]: restoredMap };
+      if (aliasCatId) freshMap[`${targetDay}_${aliasCatId}`] = restoredMap;
       deepPointsCategoryRef.current = activeCategory;
-      deepCategoryPointsMapRef.current[dayCatKey] = restoredMap;
+      deepCategoryPointsMapRef.current = freshMap;
       setDeepPointsMap(restoredMap);
-      setDeepCategoryPointsMap(prev => ({ ...prev, [dayCatKey]: restoredMap }));
+      setDeepCategoryPointsMap(freshMap);
       setDeepStatus('converged');
+    } else {
+      deepCategoryPointsMapRef.current = {};
+      setDeepCategoryPointsMap({});
+      setDeepPointsMap(null);
     }
   }, [weightsVersion, selectedDay, datasetDay, activeCategory, isDeepOptimizing]);
 
@@ -6614,7 +6625,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   }, []);
 
   // Apply Recommendations to Runtime Category Settings (strictly isolated to active day & active category)
-  const handleApplyRecommendations = useCallback(async (persistToCodebase?: any) => {
+  const handleApplyRecommendations = useCallback(async (persistToCodebase?: any, overrideSavedAtMs?: number) => {
     const isCodebaseSave = persistToCodebase === true;
     const effectiveTargetDay: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
     const dayCatKey = `${effectiveTargetDay}_${activeCategory}`;
@@ -6695,7 +6706,10 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       : (activeCategory === 'top_10_value' ? 'top_12_value'
       : (activeCategory === 'upsets' ? 'upset'
       : (activeCategory === 'upset' ? 'upsets'
-      : (activeCategory === 'bankers_dlive' ? 'banker' : undefined))));
+      : (activeCategory === 'bankers_dlive' ? 'banker'
+      : (activeCategory === 'banker' ? 'bankers_dlive'
+      : (activeCategory === 'value_bets' ? 'value_bet'
+      : (activeCategory === 'value_bet' ? 'value_bets' : undefined)))))));
 
     targetDaysArray.forEach(d => {
       updateDailyOptimizedCategorySettings(d, activeCategory, updated, true, { silent: true, source: 'codebase' });
@@ -6746,6 +6760,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
     });
 
     // If Apply to Runtime was clicked directly, also persist to /api/opw/save-to-code so old rules are permanently deleted on disk & RDS
+    let serverSavedAtMs: number | undefined = typeof overrideSavedAtMs === 'number' && overrideSavedAtMs > 0 ? overrideSavedAtMs : undefined;
     if (!isCodebaseSave && typeof fetch !== 'undefined') {
       try {
         const completeRulesPayload = finalRules.map(r => ({
@@ -6759,7 +6774,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         if (aliasKeyForPeak) {
           categoriesPayload[aliasKeyForPeak] = { rules: completeRulesPayload, targetObjective: activeCategoryConfig.targetObjective };
         }
-        await fetch('/api/opw/save-to-code', {
+        const saveRes = await fetch('/api/opw/save-to-code', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -6769,12 +6784,21 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             customTriggers: []
           })
         });
-      } catch (persistErr) {
+        const saveJson = await saveRes.json().catch(() => ({}));
+        if (!saveRes.ok) {
+          console.warn('[OPW Apply] Server persistence error:', saveJson?.error || saveRes.status);
+          showToast(`Warning: server save failed (${saveJson?.error || saveRes.status}). Local rules kept.`);
+        } else if (saveJson?.savedAt) {
+          const parsedTs = Date.parse(saveJson.savedAt);
+          if (parsedTs > 0) serverSavedAtMs = parsedTs;
+        }
+      } catch (persistErr: any) {
         console.warn('[OPW Apply] Server persistence notice:', persistErr);
+        showToast(`Warning: server save failed (${persistErr?.message || 'network error'}). Local rules kept.`);
       }
     }
 
-    setDailySettingsMeta(targetDaysArray, Date.now() + 1000);
+    setDailySettingsMeta(targetDaysArray, serverSavedAtMs || Date.now());
     invalidateServerRulesCache();
     savePersistedDailySettings();
 
@@ -7593,10 +7617,12 @@ ${rulesCode}
   const handleSaveCalibratedRulesToCode = useCallback(async () => {
     let safetyTimer: any;
     try {
+      stopDeepRef.current = true;
+      setIsDeepOptimizing(false);
       setIsSavingCode(true);
       safetyTimer = setTimeout(() => {
         setIsSavingCode(false);
-      }, 8000);
+      }, 30000);
       await new Promise(r => setTimeout(r, 0));
 
       const dayForBackend: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
@@ -7706,10 +7732,12 @@ ${rulesCode}
         throw new Error(result.error || 'Failed to save to code');
       }
 
+      const serverSavedAtMs = result?.savedAt ? (Date.parse(result.savedAt) || Date.now()) : Date.now();
+
       // Automatically sync runtime weights & localStorage for this specific day and category
       try {
-        await handleApplyRecommendations(true);
-        setDailySettingsMeta(daysArray, Date.now() + 1000);
+        await handleApplyRecommendations(true, serverSavedAtMs);
+        setDailySettingsMeta(daysArray, serverSavedAtMs);
         invalidateServerRulesCache();
         savePersistedDailySettings();
       } catch (applyErr) {
