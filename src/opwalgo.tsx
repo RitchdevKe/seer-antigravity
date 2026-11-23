@@ -102,6 +102,7 @@ import { getAnalysisDateString } from './services/seerPerformance';
 
 export interface OPWAlgoProps {
   matches: Match[];
+  allLiveMatches?: Match[];
   allMatches?: Match[];
   phaStatsMap?: Record<string, any>;
   matchStars?: Record<string, number>;
@@ -1113,7 +1114,19 @@ export function filterMatchesLast3Weeks(
   const hasLive = Array.isArray(liveMatches) && liveMatches.length > 0;
   if (!hasBase && !hasLive) return [];
 
-  const cacheDayKey = `${targetDay || 'all'}_${hasBase ? matchesList!.length : 0}`;
+  const isCompletedMatch = (m: Match): boolean => {
+    const act = getActualResult(m.result || '');
+    return act === '1' || act === 'X' || act === '2';
+  };
+
+  let completedBaseCount = 0;
+  if (hasBase && !hasLive) {
+    for (let i = 0; i < matchesList!.length; i++) {
+      if (isCompletedMatch(matchesList![i])) completedBaseCount++;
+    }
+  }
+
+  const cacheDayKey = `${targetDay || 'all'}_${hasBase ? matchesList!.length : 0}_${completedBaseCount}`;
   if (hasBase && !hasLive) {
     const cachedMap = LAST_3W_FILTER_CACHE.get(matchesList!);
     const cached = cachedMap?.get(cacheDayKey);
@@ -1144,7 +1157,8 @@ export function filterMatchesLast3Weeks(
   let out: Match[];
   if (targetDay && targetDay !== 'all') {
     const dayMatches: { m: Match; dStr: string }[] = [];
-    const distinctDatesSet = new Set<string>();
+    const allDatesSet = new Set<string>();
+    const completedDatesSet = new Set<string>();
     for (let i = 0; i < merged.length; i++) {
       const m = merged[i];
       if (!m?.date) continue;
@@ -1152,43 +1166,69 @@ export function filterMatchesLast3Weeks(
       const dStr = getLogicalDate(m.date, m.time);
       dayMatches.push({ m, dStr });
       if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr)) {
-        distinctDatesSet.add(dStr);
+        allDatesSet.add(dStr);
+        if (isCompletedMatch(m)) {
+          completedDatesSet.add(dStr);
+        }
       }
     }
-    const distinctDayDates = Array.from(distinctDatesSet).sort((a, b) => b.localeCompare(a));
-    const maxDayDateStr = distinctDayDates[0] || '';
-    const anchorMs = maxDayDateStr ? Date.parse(`${maxDayDateStr}T12:00:00Z`) : Date.now();
-    const cutoffDate = new Date(anchorMs - 21 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    // Keep all 3 previous occurrences of targetDay + the current targetDay (up to 4 distinct dates / 21 days)
-    const top4DayDates = new Set(distinctDayDates.slice(0, 4));
+    const completedDayDates = Array.from(completedDatesSet).sort((a, b) => b.localeCompare(a));
+    const allDayDates = Array.from(allDatesSet).sort((a, b) => b.localeCompare(a));
+    // Include current day + 3 prior weeks ONLY if current day has completed results;
+    // otherwise exclude current day and select the last 4 prior weeks with completed results.
+    const top4CompletedDayDates = new Set(completedDayDates.slice(0, 4));
+    const top4AnyDayDates = new Set(allDayDates.slice(0, 4));
 
     const filtered: Match[] = [];
-    for (let i = 0; i < dayMatches.length; i++) {
-      const { m, dStr } = dayMatches[i];
-      if (!dStr || dStr >= cutoffDate || top4DayDates.has(dStr)) {
-        filtered.push(m);
+    if (top4CompletedDayDates.size > 0) {
+      for (let i = 0; i < dayMatches.length; i++) {
+        const { m, dStr } = dayMatches[i];
+        if (dStr && top4CompletedDayDates.has(dStr)) {
+          filtered.push(m);
+        }
+      }
+    } else {
+      for (let i = 0; i < dayMatches.length; i++) {
+        const { m, dStr } = dayMatches[i];
+        if (!dStr || top4AnyDayDates.has(dStr)) {
+          filtered.push(m);
+        }
       }
     }
     out = filtered.length > 0 ? filtered : dayMatches.map(x => x.m).slice(-250);
   } else {
-    let maxDateStr = '';
+    let maxAnyDateStr = '';
+    let maxCompletedDateStr = '';
+    const completedDateSet = new Set<string>();
     for (let i = 0; i < merged.length; i++) {
       const m = merged[i];
       if (!m?.date) continue;
       const dStr = getLogicalDate(m.date, m.time);
-      if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr) && dStr > maxDateStr) {
-        maxDateStr = dStr;
+      if (dStr && /^\d{4}-\d{2}-\d{2}$/.test(dStr)) {
+        if (dStr > maxAnyDateStr) maxAnyDateStr = dStr;
+        if (isCompletedMatch(m)) {
+          completedDateSet.add(dStr);
+          if (dStr > maxCompletedDateStr) maxCompletedDateStr = dStr;
+        }
       }
     }
-    const anchorMs = maxDateStr ? Date.parse(`${maxDateStr}T12:00:00Z`) : Date.now();
-    const cutoffDate = new Date(anchorMs - 21 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const currentDayHasResults = Boolean(maxAnyDateStr && completedDateSet.has(maxAnyDateStr));
+    const anchorDateStr = maxCompletedDateStr || maxAnyDateStr;
+    const lookbackDays = currentDayHasResults ? 21 : 27;
+    const anchorMs = anchorDateStr ? Date.parse(`${anchorDateStr}T12:00:00Z`) : Date.now();
+    const cutoffDate = new Date(anchorMs - lookbackDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const filtered: Match[] = [];
     for (let i = 0; i < merged.length; i++) {
       const m = merged[i];
       if (!m?.date) continue;
       const dStr = getLogicalDate(m.date, m.time);
-      if (!dStr || dStr >= cutoffDate) {
-        filtered.push(m);
+      if (!dStr) continue;
+      if (currentDayHasResults) {
+        if (dStr >= cutoffDate) filtered.push(m);
+      } else {
+        if (dStr >= cutoffDate && (!maxCompletedDateStr || dStr <= maxCompletedDateStr)) {
+          filtered.push(m);
+        }
       }
     }
     out = filtered.length > 0 ? filtered : merged.slice(-300);
@@ -2296,6 +2336,7 @@ const MemoizedTriggerTableRow = React.memo<MemoizedTriggerTableRowProps>(({
 
 const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   matches = [],
+  allLiveMatches = [],
   allMatches = [],
   phaStatsMap = {},
   matchStars = {},
@@ -6625,7 +6666,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
   }, []);
 
   // Apply Recommendations to Runtime Category Settings (strictly isolated to active day & active category)
-  const handleApplyRecommendations = useCallback(async (persistToCodebase?: any, overrideSavedAtMs?: number) => {
+  const handleApplyRecommendations = useCallback(async (persistToCodebase?: any, overrideSavedAtMs?: number, overrideFinalRules?: { description: string; points: number }[]) => {
     const isCodebaseSave = persistToCodebase === true;
     const effectiveTargetDay: DayOfWeek = selectedDay !== 'all' ? selectedDay : (liveMatchDay || datasetDay);
     const dayCatKey = `${effectiveTargetDay}_${activeCategory}`;
@@ -6671,13 +6712,15 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       points: Math.max(getTriggerMaxPenalty(description), Math.min(getTriggerMaxBonus(description, isUpsetsCat), points))
     }));
 
-    const finalRules = populateCategoryWithMasterRules(
-      tunedRules,
-      activeCategoryConfig.targetObjective,
-      activeCategoryConfig.id,
-      effectiveTargetDay,
-      { preserveExact: true }
-    );
+    const finalRules = (Array.isArray(overrideFinalRules) && overrideFinalRules.length > 0)
+      ? overrideFinalRules.map(r => ({ description: r.description, points: r.points }))
+      : populateCategoryWithMasterRules(
+          tunedRules,
+          activeCategoryConfig.targetObjective,
+          activeCategoryConfig.id,
+          effectiveTargetDay,
+          { preserveExact: true }
+        );
 
     const existingSettings = activeSettings || {
       name: activeCategoryConfig.label,
@@ -6804,6 +6847,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
 
     // Clear any cached lockedOpwScores on match objects so Live Analysis & Seer Optimized Slips recompute with new points
     (matches || []).forEach(m => { delete (m as any).lockedOpwScores; });
+    (allLiveMatches || []).forEach(m => { delete (m as any).lockedOpwScores; });
     (allMatches || []).forEach(m => { delete (m as any).lockedOpwScores; });
     (rawDataset || []).forEach(m => { delete (m as any).lockedOpwScores; });
 
@@ -6811,69 +6855,97 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
 
     clearOptimizedScoreCache();
 
-    // Clean up locked slips on client localStorage, backend disk, and Supabase
+    // Clean up locked slips ONLY on active unresulted / current-or-future dates for effectiveTargetDay
+    // (strictly preserving immutable historical slips for past completed dates).
     const targetCats = (activeCategory === 'top_12_value' || activeCategory === 'top_10_value')
       ? ['top_12_value', 'top_10_value', 'botb_best', 'high_confidence']
-      : (activeCategory === 'bankers_dlive' || activeCategory === 'bankers_jackpot')
+      : (activeCategory === 'best_bet' || activeCategory === 'bankers_dlive' || activeCategory === 'bankers_jackpot')
       ? [activeCategory, 'botb_best', 'high_confidence']
       : (activeCategory === 'upsets' || activeCategory === 'upset')
       ? ['upsets', 'upset']
+      : (activeCategory === 'value_bets' || activeCategory === 'value_bet')
+      ? ['value_bets', 'value_bet']
       : [activeCategory];
 
     if (typeof window !== 'undefined') {
-      const mergedMatchesMap = new Map<string, Match>();
-      (matches || []).forEach(m => {
-        const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
-        mergedMatchesMap.set(key, m);
-      });
-      (rawDataset || []).forEach(m => {
-        const key = String(m.id || `${m.team1}_${m.team2}_${m.date}`);
-        if (!mergedMatchesMap.has(key)) mergedMatchesMap.set(key, m);
-      });
-      const allAvailableMatches = Array.from(mergedMatchesMap.values());
+      const mergedLiveMap = new Map<string, Match>();
+      const pushLive = (list?: Match[]) => {
+        if (!Array.isArray(list)) return;
+        for (let i = 0; i < list.length; i++) {
+          const m = list[i];
+          if (!m) continue;
+          const key = String(m.id || `${(m as any).team1 || m.teams || ''}_${(m as any).team2 || ''}_${m.date || ''}`);
+          if (!mergedLiveMap.has(key)) mergedLiveMap.set(key, m);
+        }
+      };
+      pushLive(allLiveMatches);
+      pushLive(matches);
+      const activeLivePool = Array.from(mergedLiveMap.values());
 
-      const distinctDates = new Set<string>();
-      allAvailableMatches.forEach(m => {
+      const todayStr = getAnalysisDateString();
+      const matchesByDate = new Map<string, Match[]>();
+      for (const m of activeLivePool) {
         const d = getLogicalDate(m.date, m.time);
-        if (d) distinctDates.add(d);
+        if (!d) continue;
+        const arr = matchesByDate.get(d);
+        if (arr) arr.push(m);
+        else matchesByDate.set(d, [m]);
+      }
+
+      const activeDates = new Set<string>();
+      matchesByDate.forEach((dMatches, d) => {
+        if (getMatchDayOfWeek({ date: d } as Match) !== effectiveTargetDay) return;
+        const hasCompleted = dMatches.some(m => {
+          const act = getActualResult(m.result || '');
+          return act === '1' || act === 'X' || act === '2';
+        });
+        if (d >= todayStr || !hasCompleted) {
+          activeDates.add(d);
+        }
       });
-      distinctDates.add(getAnalysisDateString());
+      if (getMatchDayOfWeek({ date: todayStr } as Match) === effectiveTargetDay) {
+        activeDates.add(todayStr);
+      }
 
       try {
         SESSION_SLIP_CACHE.clear();
-        const toDelete: string[] = [];
-        for (let i = 0; i < window.localStorage.length; i++) {
-          const key = window.localStorage.key(i);
-          if (key && (key.startsWith(`local_locked_slip_`) || key.startsWith(`seer_locked_slip_hash_`))) {
-            const matchesDate = Array.from(distinctDates).some(d => key.includes(d));
-            if (matchesDate && (activeCategory === 'all' || targetCats.some(c => key.endsWith(`_${c}`) || key.endsWith(`_ai_${c}`)))) {
-              toDelete.push(key);
+        if (activeDates.size > 0) {
+          const toDelete: string[] = [];
+          for (let i = 0; i < window.localStorage.length; i++) {
+            const key = window.localStorage.key(i);
+            if (key && (key.startsWith(`local_locked_slip_`) || key.startsWith(`seer_locked_slip_hash_`))) {
+              const matchesDate = Array.from(activeDates).some(d => key.includes(d));
+              if (matchesDate && (activeCategory === 'all' || targetCats.some(c => key.endsWith(`_${c}`) || key.endsWith(`_ai_${c}`)))) {
+                toDelete.push(key);
+              }
             }
           }
+          toDelete.forEach(k => window.localStorage.removeItem(k));
         }
-        toDelete.forEach(k => window.localStorage.removeItem(k));
       } catch (e) {}
 
-      // Delete from backend disk storage, PostgreSQL database, and Supabase and await completion
-      try {
-        await invalidateLockedSlipsForWeights(targetCats, distinctDates, [...CATEGORIES.map(c => c.id), 'botb_best', 'high_confidence']);
-        for (const d of distinctDates) {
-          for (const c of targetCats) {
-            await deleteLockedSlip(d, c).catch(() => {});
+      // Delete from backend disk storage, PostgreSQL database, and Supabase and await completion ONLY for active dates
+      if (activeDates.size > 0) {
+        try {
+          await invalidateLockedSlipsForWeights(targetCats, activeDates, [...CATEGORIES.map(c => c.id), 'botb_best', 'high_confidence']);
+          for (const d of activeDates) {
+            for (const c of targetCats) {
+              await deleteLockedSlip(d, c).catch(() => {});
+            }
           }
+        } catch (delErr) {
+          console.warn('[OPW Slip Invalidation] Notice:', delErr);
         }
-      } catch (delErr) {
-        console.warn('[OPW Slip Invalidation] Notice:', delErr);
       }
 
       // Immediately generate and permanently save the NEW locked slip using newly calibrated OPW points for every active logical date
-      const primaryDate = Array.from(distinctDates)[0] || getAnalysisDateString();
-      if (allAvailableMatches.length > 0) {
+      const primaryDate = Array.from(activeDates)[0] || todayStr;
+      if (activeDates.size > 0 && activeLivePool.length > 0) {
         try {
           clearOptimizedScoreCache();
           const newSlipsToSave: SeerLockedSlip[] = [];
-          for (const slipDate of distinctDates) {
-            const pool = allAvailableMatches.filter(m => {
+          for (const slipDate of activeDates) {
+            const pool = activeLivePool.filter(m => {
               const mDate = getLogicalDate(m.date, m.time);
               return (mDate === slipDate || !mDate) && !isBannedFromSeerSlips(m);
             });
@@ -6888,7 +6960,8 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
                 dayOfWeek
               );
               for (const catKey of targetCats) {
-                const picksData = generated.live[catKey] || generated.spec[catKey] || generated.live[activeCategory] || generated.spec[activeCategory] || [];
+                const canFallbackToActive = catKey === activeCategory || (aliasKeyForPeak !== undefined && catKey === aliasKeyForPeak);
+                const picksData = generated.live[catKey] || generated.spec[catKey] || (canFallbackToActive ? (generated.live[activeCategory] || generated.spec[activeCategory]) : []) || [];
                 if (picksData && picksData.length > 0) {
                   const picks = picksData.map((p: any) => ({
                     match_id: p.match_id,
@@ -6950,7 +7023,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       // Verify runtime score parity against optimizer
       try {
         const effectiveDay = effectiveTargetDay;
-        const completed = allAvailableMatches.filter(m => {
+        const completed = activeLivePool.filter(m => {
           const act = getActualResult(m.result || '');
           return act === '1' || act === 'X' || act === '2';
         });
@@ -6975,11 +7048,11 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         }
       } catch (err) {}
 
-      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, syncMainAlgo: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
-      window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
-      window.dispatchEvent(new CustomEvent('opw-weights-updated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(distinctDates) } }));
+      window.dispatchEvent(new CustomEvent('optimizedWeightsUpdated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, syncMainAlgo: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(activeDates) } }));
+      window.dispatchEvent(new CustomEvent('seerLockedSlipsUpdated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(activeDates) } }));
+      window.dispatchEvent(new CustomEvent('opw-weights-updated', { detail: { category: activeCategory, day: effectiveTargetDay, purge: false, wipeSlips: false, refreshLocked: true, date: primaryDate, targetDate: primaryDate, allDates: Array.from(activeDates) } }));
     }
-  }, [effectiveRecommendations, activeSettings, activeCategoryConfig, selectedDay, liveMatchDay, datasetDay, activeCategory, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, deepCleanMatches, deepFirstTrapRank, deepQuality, matches, rawDataset, phaStatsMap, matchStars, liveViewType, showToast]);
+  }, [effectiveRecommendations, activeSettings, activeCategoryConfig, selectedDay, liveMatchDay, datasetDay, activeCategory, isDeepOptimizing, deepStatus, deepPointsMap, deepCategoryPointsMap, deepCleanMatches, deepFirstTrapRank, deepQuality, matches, allLiveMatches, rawDataset, phaStatsMap, matchStars, liveViewType, showToast]);
 
   // Apply Recommendations across ALL Categories for the Selected Day and Main Algo
   const handleApplyRuntimeToAllCategories = useCallback(async () => {
@@ -7736,7 +7809,7 @@ ${rulesCode}
 
       // Automatically sync runtime weights & localStorage for this specific day and category
       try {
-        await handleApplyRecommendations(true, serverSavedAtMs);
+        await handleApplyRecommendations(true, serverSavedAtMs, categoriesPayload[activeCategory]?.rules);
         setDailySettingsMeta(daysArray, serverSavedAtMs);
         invalidateServerRulesCache();
         savePersistedDailySettings();

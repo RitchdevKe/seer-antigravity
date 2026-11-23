@@ -84,6 +84,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
   const isUpsetsTag = computedTags && computedTags.some(tag => tag.startsWith('upsets:'));
   const isBankersJackpotTag = computedTags && computedTags.some(tag => tag.startsWith('bankers_jackpot:'));
   const isValuePicksTag = computedTags && computedTags.some(tag => tag.startsWith('value_picks:'));
+  const isValueBetsTag = computedTags && computedTags.some(tag => tag.startsWith('value_bets:'));
   
   const optCategories: {id: string, label: string}[] = [];
   if (isTop12Tag) optCategories.push({ id: 'top_12_value', label: 'T12' });
@@ -92,6 +93,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, expandedMatch, setExpanded
   if (isUpsetsTag) optCategories.push({ id: 'upsets', label: 'UPS' });
   if (isBankersJackpotTag) optCategories.push({ id: 'bankers_jackpot', label: 'BJ' });
   if (isValuePicksTag) optCategories.push({ id: 'value_picks', label: 'VP' });
+  if (isValueBetsTag) optCategories.push({ id: 'value_bets', label: 'VB' });
 
   const defaultOptScoreCategory = optCategories.length > 0 ? optCategories[0].id : null;
 

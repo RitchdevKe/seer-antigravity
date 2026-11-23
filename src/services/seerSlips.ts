@@ -48,11 +48,17 @@ export const SESSION_SLIP_CACHE = new Map<string, {
   timestamp: number;
 }>();
 
+const attemptedPreloadGenerationKeys = new Set<string>();
+
 export const saveLockedSlipsBulk = async (
   slips: SeerLockedSlip[],
   forceOverwrite: boolean = false,
 ) => {
   if (!Array.isArray(slips) || slips.length === 0) return;
+
+  if (forceOverwrite) {
+    attemptedPreloadGenerationKeys.clear();
+  }
 
   const validSlips: SeerLockedSlip[] = [];
   for (const slip of slips) {
@@ -111,7 +117,7 @@ export const saveLockedSlipsBulk = async (
     if (typeof window === "undefined" || !window.location) {
       baseUrl = "http://localhost:3000";
     }
-    await axios.post(`${baseUrl}/api/db/slips/batch`, { slips: validSlips }, { timeout: 6000 });
+    await axios.post(`${baseUrl}/api/db/slips/batch`, { slips: validSlips }, { timeout: 25000 });
   } catch (err: any) {
     console.warn("[saveLockedSlipsBulk] Batch save to PostgreSQL notice:", err.message);
   }
@@ -378,7 +384,6 @@ export const getLockedSlipsForDate = async (
  * Primes SESSION_SLIP_CACHE and AWS RDS PostgreSQL on App startup for both today and yesterday,
  * ensuring that clicking the SEER button loads instantly (< 1ms).
  */
-const attemptedPreloadGenerationKeys = new Set<string>();
 let isPreloadRunning = false;
 
 export const preloadSeerSlipsBackground = async ({
@@ -887,7 +892,9 @@ export const invalidateLockedSlipsForWeights = async (
 ): Promise<string[]> => {
   const expand = (c: string): string[] => {
     const base = c.replace(/^ai_/, '');
-    return (base === 'top_12_value' || base === 'top_10_value') ? ['top_12_value', 'top_10_value'] : [base];
+    if (base === 'top_12_value' || base === 'top_10_value') return ['top_12_value', 'top_10_value'];
+    if (base === 'value_bets' || base === 'value_bet') return ['value_bets', 'value_bet'];
+    return [base];
   };
   const targetCats = new Set<string>();
   if (categories === 'all') {
@@ -895,6 +902,8 @@ export const invalidateLockedSlipsForWeights = async (
   } else {
     categories.forEach(c => expand(c).forEach(x => targetCats.add(x)));
   }
+
+  attemptedPreloadGenerationKeys.clear();
 
   const dateSet = new Set<string>();
   for (const d of dates) if (d) dateSet.add(d);

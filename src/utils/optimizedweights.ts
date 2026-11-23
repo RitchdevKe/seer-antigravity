@@ -441,6 +441,8 @@ export function updateDailyOptimizedCategorySettings(
         ? ['bankers_dlive', 'banker']
         : (categoryId === 'bankers_jackpot' || categoryId === 'bankers' || categoryId === 'jackpot')
         ? ['bankers_jackpot', 'bankers', 'jackpot']
+        : (categoryId === 'value_bets' || categoryId === 'value_bet')
+        ? ['value_bets', 'value_bet']
         : [categoryId];
 
     const sanitizedRules = settings.rules ? sanitizeRulePolarity(settings.rules, categoryId, { preserveExact: true, day }) : [];
@@ -488,6 +490,8 @@ export function updateOptimizedCategorySettings(categoryId: string, settings: Op
         ? ['bankers_dlive', 'banker']
         : (categoryId === 'bankers_jackpot' || categoryId === 'bankers' || categoryId === 'jackpot')
         ? ['bankers_jackpot', 'bankers', 'jackpot']
+        : (categoryId === 'value_bets' || categoryId === 'value_bet')
+        ? ['value_bets', 'value_bet']
         : [categoryId];
 
     const sanitizedRules = settings.rules ? sanitizeRulePolarity(settings.rules, categoryId, { preserveExact: true }) : [];

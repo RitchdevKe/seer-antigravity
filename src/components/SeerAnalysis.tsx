@@ -366,6 +366,7 @@ export default function SeerAnalysis({
     const handleUpdate = (e?: any) => {
       clearTimeout(updateTimer);
       updateTimer = setTimeout(() => {
+        fallbackGeneratedSlipsRef.current = null;
         const savedWeights = getSeerWeights();
         if (Object.keys(savedWeights).length > 0) {
           setCategoryWeightsMap(savedWeights);
@@ -382,10 +383,12 @@ export default function SeerAnalysis({
             const catsToRefresh = (updatedCat && updatedCat !== 'all')
               ? ((updatedCat === 'top_12_value' || updatedCat === 'top_10_value')
                   ? ['top_12_value', 'top_10_value', 'botb_best', 'high_confidence']
-                  : (updatedCat === 'bankers_dlive' || updatedCat === 'bankers_jackpot')
+                  : (updatedCat === 'best_bet' || updatedCat === 'bankers_dlive' || updatedCat === 'bankers_jackpot')
                   ? [updatedCat, 'botb_best', 'high_confidence']
                   : (updatedCat === 'upsets' || updatedCat === 'upset')
                   ? ['upsets', 'upset']
+                  : (updatedCat === 'value_bets' || updatedCat === 'value_bet')
+                  ? ['value_bets', 'value_bet']
                   : [updatedCat])
               : null;
             if (catsToRefresh && catsToRefresh.length > 0) {

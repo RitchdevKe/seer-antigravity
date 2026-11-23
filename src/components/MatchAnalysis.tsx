@@ -3522,6 +3522,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
               >
                 <OPWAlgo
                     matches={opwAlgoMatches}
+                    allLiveMatches={taggedLiveMatches}
                     allMatches={fullProcessedHistory}
                     phaStatsMap={phaStatsMap}
                     matchStars={matchStars}
