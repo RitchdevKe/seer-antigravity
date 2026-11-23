@@ -200,16 +200,73 @@ router.post('/nerdy/delete-all', async (req, res) => {
   }
 });
 
-// Dedicated fast batch endpoint to retrieve all slips for a specific date in a single query
+// Per-date in-memory gzip cache for fast historical & daily slip loading
+interface SlipsDateCacheEntry {
+  json: string;
+  gzip: Buffer;
+  cachedAt: number;
+}
+const slipsDateCache = new Map<string, SlipsDateCacheEntry>();
+const SLIPS_DATE_CACHE_MAX_ENTRIES = 60;
+const SLIPS_ACTIVE_CACHE_TTL_MS = 5 * 60 * 1000;
+const SLIPS_PAST_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+const invalidateSlipsDateCache = (date?: string) => {
+  if (date) {
+    slipsDateCache.delete(date);
+  } else {
+    slipsDateCache.clear();
+  }
+};
+
+const sendSlipsPayload = (req: any, res: any, entry: SlipsDateCacheEntry) => {
+  const acceptEncoding = String(req.headers['accept-encoding'] || '');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Vary', 'Accept-Encoding');
+  if (acceptEncoding.includes('gzip')) {
+    res.setHeader('Content-Encoding', 'gzip');
+    return res.status(200).send(entry.gzip);
+  }
+  return res.status(200).send(entry.json);
+};
+
+// Dedicated fast batch endpoint to retrieve all slips for a specific date in parallel with gzip & caching
 router.get('/slips/date/:date', async (req, res) => {
   const { date } = req.params;
+  const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
   try {
-    const slipsRes = await pgPool.query('SELECT * FROM seer_locked_slips WHERE date = $1', [date]);
-    const aiSlipsRes = await pgPool.query('SELECT * FROM seer_ai_slips WHERE date = $1', [date]);
-    res.json({
+    if (!forceFresh) {
+      const cached = slipsDateCache.get(date);
+      if (cached) {
+        const todayUtc = new Date().toISOString().slice(0, 10);
+        const ttl = date < todayUtc ? SLIPS_PAST_CACHE_TTL_MS : SLIPS_ACTIVE_CACHE_TTL_MS;
+        if (Date.now() - cached.cachedAt < ttl) {
+          return sendSlipsPayload(req, res, cached);
+        }
+      }
+    }
+
+    const [slipsRes, aiSlipsRes] = await Promise.all([
+      pgPool.query('SELECT id, date, category, type, picks, backups, created_at FROM seer_locked_slips WHERE date = $1', [date]),
+      pgPool.query('SELECT id, date, category, type, picks, backups, created_at FROM seer_ai_slips WHERE date = $1', [date]),
+    ]);
+
+    const json = JSON.stringify({
       slips: slipsRes.rows,
-      aiSlips: aiSlipsRes.rows
+      aiSlips: aiSlipsRes.rows,
     });
+    const gzip = zlib.gzipSync(Buffer.from(json, 'utf-8'));
+    const entry: SlipsDateCacheEntry = { json, gzip, cachedAt: Date.now() };
+
+    if (slipsRes.rows.length > 0 || aiSlipsRes.rows.length > 0) {
+      if (slipsDateCache.size >= SLIPS_DATE_CACHE_MAX_ENTRIES) {
+        const oldestKey = slipsDateCache.keys().next().value;
+        if (oldestKey) slipsDateCache.delete(oldestKey);
+      }
+      slipsDateCache.set(date, entry);
+    }
+
+    return sendSlipsPayload(req, res, entry);
   } catch (err: any) {
     console.error(`[DB API] Error fetching slips for date ${date}:`, err.message);
     res.status(500).json({ error: err.message, slips: [], aiSlips: [] });
@@ -254,6 +311,8 @@ router.post('/slips/batch', async (req, res) => {
 
     const results = await Promise.allSettled(tasks);
     const savedCount = results.filter(r => r.status === 'fulfilled' && r.value).length;
+    const affectedDates = new Set<string>(slips.map((s: any) => s?.date).filter(Boolean));
+    affectedDates.forEach(d => invalidateSlipsDateCache(d));
     res.json({ success: true, count: savedCount });
   } catch (err: any) {
     console.error('[DB API] Error batch saving slips:', err.message);
@@ -267,6 +326,7 @@ router.delete('/slips/id/:id', async (req, res) => {
   try {
     await pgPool.query('DELETE FROM seer_locked_slips WHERE id = $1', [id]);
     await pgPool.query('DELETE FROM seer_ai_slips WHERE id = $1', [id]);
+    invalidateSlipsDateCache();
     res.json({ success: true, deleted: id });
   } catch (err: any) {
     console.error(`[DB API] Error deleting slip id ${id}:`, err.message);
@@ -279,6 +339,7 @@ router.delete('/slips/date/:date', async (req, res) => {
   try {
     const r1 = await pgPool.query('DELETE FROM seer_locked_slips WHERE date = $1', [date]);
     const r2 = await pgPool.query('DELETE FROM seer_ai_slips WHERE date = $1', [date]);
+    invalidateSlipsDateCache(date);
     res.json({ success: true, deletedDate: date, count: (r1.rowCount || 0) + (r2.rowCount || 0) });
   } catch (err: any) {
     console.error(`[DB API] Error deleting slips for date ${date}:`, err.message);
@@ -336,6 +397,10 @@ router.post('/slips/delete-pick', async (req, res) => {
           modifiedSlips.push(row.id);
         }
       }
+    }
+
+    if (modifiedCount > 0) {
+      invalidateSlipsDateCache(date || undefined);
     }
 
     res.json({ success: true, modifiedCount, modifiedSlips });
@@ -492,6 +557,9 @@ router.post('/query', async (req, res) => {
 
     if (action !== 'select' && table === 'user_uploaded_matches') {
       invalidateUploadedMatchesCache();
+    }
+    if (action !== 'select' && (table === 'seer_locked_slips' || table === 'seer_ai_slips')) {
+      invalidateSlipsDateCache();
     }
 
     let responseData = result.rows;

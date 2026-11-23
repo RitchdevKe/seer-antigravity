@@ -28,7 +28,18 @@ export const REMOVED_TRIGGER_DESCRIPTIONS = new Set<string>([
     "Match is for Carabao Cup",
     "Match is for carabao cup",
     "Youth League (U21,U20,U19)",
+    "Mfav L10(wins)>Und L10 but >=5",
+    "Mfav L10(wins)>Und L10 but <5",
+    "Und L10(wins)>Mfav L10 but >=5",
+    "Und L10(wins)>Mfav L10 but <5",
 ]);
+
+export const LEGACY_L10_RENAME_MAP: Record<string, string> = {
+    "Mfav L10(wins)>Und L10 but >=5": "Mfav L10(wins)>Und L10 but >5",
+    "Mfav L10(wins)>Und L10 but <5": "Mfav L10(wins)>Und L10 but <=5",
+    "Und L10(wins)>Mfav L10 but >=5": "Und L10(wins)>Mfav L10 but >5",
+    "Und L10(wins)>Mfav L10 but <5": "Und L10(wins)>Mfav L10 but <=5",
+};
 
 export const BASELINE_20_LEAGUES = new Set<string>([
     "Match belongs to Iraqi stars league",
@@ -221,10 +232,10 @@ export const ALL_MASTER_CATALOG_TRIGGERS: string[] = [
     "Mfav L10(wins) >7",
     "Underdog L10(wins) >5 to 7",
     "Underdog L10(wins) >7",
-    "Mfav L10(wins)>Und L10 but >=5",
-    "Mfav L10(wins)>Und L10 but <5",
-    "Und L10(wins)>Mfav L10 but >=5",
-    "Und L10(wins)>Mfav L10 but <5",
+    "Mfav L10(wins)>Und L10 but >5",
+    "Mfav L10(wins)>Und L10 but <=5",
+    "Und L10(wins)>Mfav L10 but >5",
+    "Und L10(wins)>Mfav L10 but <=5",
     "Mfav was away and won last Encounter <=1 goal",
     "Mfav was home and won last Encounter <=1 goal",
     "Mfav was home and won last Encounter >1 to =<3 goal",
@@ -369,7 +380,7 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "Youth League U19": -15,
     "Youth League U20": -15,
     "Youth League U21": -15,
-    "Youth League U23": 5,
+    "Youth League U23": -5,
     "Match has BB, T12, or BD opw < 10%": -10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": -20,
     "TS difference >= 1.0": 15,
@@ -430,10 +441,10 @@ export const MASTER_MFAV_DRAW_POINTS: Record<string, number> = {
     "Mfav L10(wins) >7": 25,
     "Underdog L10(wins) >5 to 7": -5,
     "Underdog L10(wins) >7": -5,
-    "Mfav L10(wins)>Und L10 but >=5": 5,
-    "Mfav L10(wins)>Und L10 but <5": 5,
-    "Und L10(wins)>Mfav L10 but >=5": -5,
-    "Und L10(wins)>Mfav L10 but <5": -5,
+    "Mfav L10(wins)>Und L10 but >5": 5,
+    "Mfav L10(wins)>Und L10 but <=5": 5,
+    "Und L10(wins)>Mfav L10 but >5": -5,
+    "Und L10(wins)>Mfav L10 but <=5": -5,
     "Mfav was away and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter >1 to =<3 goal": 10,
@@ -570,7 +581,7 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "Youth League U19": -15,
     "Youth League U20": -15,
     "Youth League U21": -15,
-    "Youth League U23": 5,
+    "Youth League U23": -5,
     "Match has BB, T12, or BD opw < 10%": -10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": -20,
     "TS difference >= 1.0": 20,
@@ -631,10 +642,10 @@ export const MASTER_MFAV_ONLY_POINTS: Record<string, number> = {
     "Mfav L10(wins) >7": 25,
     "Underdog L10(wins) >5 to 7": -5,
     "Underdog L10(wins) >7": -5,
-    "Mfav L10(wins)>Und L10 but >=5": 5,
-    "Mfav L10(wins)>Und L10 but <5": 5,
-    "Und L10(wins)>Mfav L10 but >=5": -5,
-    "Und L10(wins)>Mfav L10 but <5": -5,
+    "Mfav L10(wins)>Und L10 but >5": 5,
+    "Mfav L10(wins)>Und L10 but <=5": 5,
+    "Und L10(wins)>Mfav L10 but >5": -5,
+    "Und L10(wins)>Mfav L10 but <=5": -5,
     "Mfav was away and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter <=1 goal": -5,
     "Mfav was home and won last Encounter >1 to =<3 goal": 10,
@@ -772,7 +783,7 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "Youth League U19": 15,
     "Youth League U20": 15,
     "Youth League U21": 15,
-    "Youth League U23": 5,
+    "Youth League U23": -5,
     "Match has BB, T12, or BD opw < 10%": 10,
     "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog": 20,
     "TS difference >= 1.0": -20,
@@ -834,10 +845,10 @@ export const MASTER_UNDERDOG_ONLY_POINTS: Record<string, number> = {
     "Mfav L10(wins) >7": -25,
     "Underdog L10(wins) >5 to 7": 20,
     "Underdog L10(wins) >7": 25,
-    "Mfav L10(wins)>Und L10 but >=5": -5,
-    "Mfav L10(wins)>Und L10 but <5": -5,
-    "Und L10(wins)>Mfav L10 but >=5": 5,
-    "Und L10(wins)>Mfav L10 but <5": 5,
+    "Mfav L10(wins)>Und L10 but >5": -5,
+    "Mfav L10(wins)>Und L10 but <=5": -5,
+    "Und L10(wins)>Mfav L10 but >5": 5,
+    "Und L10(wins)>Mfav L10 but <=5": 5,
     "Mfav was away and won last Encounter <=1 goal": 5,
     "Mfav was home and won last Encounter <=1 goal": 5,
     "Mfav was home and won last Encounter >1 to =<3 goal": -10,
@@ -901,8 +912,8 @@ export const UPSETS_EXPLICIT_PENALTIES: Record<string, number> = {
 export const USER_EXPLICIT_UNDERDOG_PENALTIES: Record<string, number> = {
     "Underdog L10(wins) >5 to 7": -5,
     "Underdog L10(wins) >7": -5,
-    "Und L10(wins)>Mfav L10 but >=5": -5,
-    "Und L10(wins)>Mfav L10 but <5": -5,
+    "Und L10(wins)>Mfav L10 but >5": -5,
+    "Und L10(wins)>Mfav L10 but <=5": -5,
     "Both team L10 <= 5": -15,
     "L10: Mfav Wins+ Draws < Underdog wins +Draws": -15,
     "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0": -5,
@@ -993,8 +1004,8 @@ export const PRO_MFAV_TRIGGERS = new Set<string>([
     "Mfav L10(wins) >7",
     "Underdog L10(wins) >5 to 7",
     "Underdog L10(wins) >7",
-    "Mfav L10(wins)>Und L10 but >=5",
-    "Mfav L10(wins)>Und L10 but <5",
+    "Mfav L10(wins)>Und L10 but >5",
+    "Mfav L10(wins)>Und L10 but <=5",
     "Mfav was home and won last Encounter >1 to =<3 goal",
     "Mfav was Away and won last Encounter >1 to =<3 goal",
     "Mfav was away and won last Encounter >1 to =<3 goal",
@@ -1029,8 +1040,8 @@ export const PRO_MFAV_TRIGGERS = new Set<string>([
 export const PRO_UNDERDOG_TRIGGERS = new Set<string>([
     "Underdog L10(wins) >5 to 7",
     "Underdog L10(wins) >7",
-    "Und L10(wins)>Mfav L10 but >=5",
-    "Und L10(wins)>Mfav L10 but <5",
+    "Und L10(wins)>Mfav L10 but >5",
+    "Und L10(wins)>Mfav L10 but <=5",
     "L10: Mfav Wins+ Draws < Underdog wins +Draws",
     "1X2 pred supports the underdog",
     "1X2 supports the underdog",
@@ -1212,10 +1223,10 @@ export const PRIORITY_L10_TRIGGERS = new Set<string>([
     "L10: Mfav Wins+ Draws > Underdog wins +Draws",
     "L10: Mfav Wins+ Draws = Underdog wins +Draws",
     "Mfav L10(wins) >5 to 7",
-    "Mfav L10(wins)>Und L10 but >=5",
-    "Mfav L10(wins)>Und L10 but <5",
-    "Und L10(wins)>Mfav L10 but >=5",
-    "Und L10(wins)>Mfav L10 but <5",
+    "Mfav L10(wins)>Und L10 but >5",
+    "Mfav L10(wins)>Und L10 but <=5",
+    "Und L10(wins)>Mfav L10 but >5",
+    "Und L10(wins)>Mfav L10 but <=5",
 ]);
 
 export function isPriorityL10Trigger(triggerName: string): boolean {
@@ -1554,7 +1565,13 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
                 if (!existingDescs.has('Youth League U19')) { expandedArr.push({ description: 'Youth League U19', points: legacyPts }); existingDescs.add('Youth League U19'); }
                 if (!existingDescs.has('Youth League U20')) { expandedArr.push({ description: 'Youth League U20', points: legacyPts }); existingDescs.add('Youth League U20'); }
                 if (!existingDescs.has('Youth League U21')) { expandedArr.push({ description: 'Youth League U21', points: legacyPts }); existingDescs.add('Youth League U21'); }
-                if (!existingDescs.has('Youth League U23')) { expandedArr.push({ description: 'Youth League U23', points: 5 }); existingDescs.add('Youth League U23'); }
+                if (!existingDescs.has('Youth League U23')) { expandedArr.push({ description: 'Youth League U23', points: -5 }); existingDescs.add('Youth League U23'); }
+            } else if (LEGACY_L10_RENAME_MAP[desc]) {
+                const newDesc = LEGACY_L10_RENAME_MAP[desc];
+                if (!existingDescs.has(newDesc)) {
+                    expandedArr.push({ description: newDesc, points: r.points });
+                    existingDescs.add(newDesc);
+                }
             } else {
                 expandedArr.push(r);
             }
@@ -1573,7 +1590,12 @@ export function sanitizeRulePolarity<T extends Record<string, number> | { descri
             if (rawObj['Youth League U19'] === undefined) rawObj['Youth League U19'] = legacyPts;
             if (rawObj['Youth League U20'] === undefined) rawObj['Youth League U20'] = legacyPts;
             if (rawObj['Youth League U21'] === undefined) rawObj['Youth League U21'] = legacyPts;
-            if (rawObj['Youth League U23'] === undefined) rawObj['Youth League U23'] = 5;
+            if (rawObj['Youth League U23'] === undefined) rawObj['Youth League U23'] = -5;
+        }
+        for (const [oldK, newK] of Object.entries(LEGACY_L10_RENAME_MAP)) {
+            if (rawObj[oldK] !== undefined && rawObj[newK] === undefined) {
+                rawObj[newK] = rawObj[oldK];
+            }
         }
         const result: Record<string, number> = {};
         for (const [desc, pts] of Object.entries(rawObj)) {
@@ -1684,7 +1706,7 @@ export const MASTER_TOP_12_RULES: { description: string; points: number }[] = sa
     { description: "Youth League U19", points: -15 },
     { description: "Youth League U20", points: -15 },
     { description: "Youth League U21", points: -15 },
-    { description: "Youth League U23", points: 5 },
+    { description: "Youth League U23", points: -5 },
     { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -25 },
     { description: "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0", points: -10 },
     { description: "1X2 Rating < 3.0", points: -15 },
@@ -1717,7 +1739,7 @@ export const MASTER_BEST_BET_RULES: { description: string; points: number }[] = 
     { description: "Youth League U19", points: -15 },
     { description: "Youth League U20", points: -15 },
     { description: "Youth League U21", points: -15 },
-    { description: "Youth League U23", points: 5 },
+    { description: "Youth League U23", points: -5 },
     { description: "Both teams GA >= 1.5", points: -15 },
     { description: "TS difference <= 0.1", points: -15 },
     { description: "Both team GS => 1.8", points: 10 },
@@ -1819,7 +1841,7 @@ export const MASTER_BANKERS_DLIVE_RULES: { description: string; points: number }
     { description: "Youth League U19", points: -20 },
     { description: "Youth League U20", points: -20 },
     { description: "Youth League U21", points: -20 },
-    { description: "Youth League U23", points: 5 },
+    { description: "Youth League U23", points: -5 },
     { description: "Both team GS => 1.8", points: 10 },
     { description: "Youth League (U21,U20,U19)+ Both team GS => 1.8", points: -15 },
     { description: "Mfav GS = Und Gs +-0.2", points: -5 },
@@ -1989,7 +2011,7 @@ export const MASTER_BANKERS_JACKPOT_RULES: { description: string; points: number
     { description: "Youth League U19", points: -30 },
     { description: "Youth League U20", points: -30 },
     { description: "Youth League U21", points: -30 },
-    { description: "Youth League U23", points: 5 },
+    { description: "Youth League U23", points: -5 },
     { description: "Match has BB, T12, or BD opw < 10%", points: -10 },
     { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 },
     { description: "TS difference >= 1.0", points: 25 },
@@ -2165,7 +2187,7 @@ export const MASTER_VALUE_PICKS_RULES: { description: string; points: number }[]
     { description: "Youth League U19", points: -15 },
     { description: "Youth League U20", points: -15 },
     { description: "Youth League U21", points: -15 },
-    { description: "Youth League U23", points: 5 },
+    { description: "Youth League U23", points: -5 },
     { description: "Match has BB, T12, or BD opw < 10%", points: -10 },
     { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 },
     { description: "TS difference >= 1.0", points: 20 },
@@ -2245,7 +2267,7 @@ export const MASTER_UPSETS_RULES: { description: string; points: number }[] = sa
     { description: "Youth League U19", points: -15 },
     { description: "Youth League U20", points: -15 },
     { description: "Youth League U21", points: -15 },
-    { description: "Youth League U23", points: 5 },
+    { description: "Youth League U23", points: -5 },
     { description: "Algo primary prediction supports the underdog", points: 25 },
     { description: "Seer score on underdog >= 45%", points: 25 },
     { description: "Seer primary predicts on underdog", points: 25 },
@@ -2340,7 +2362,7 @@ export function buildValueBetsRulesFromT12(
         seen.add(cleanDesc);
 
         if (cleanDesc === "Youth League U23") {
-            combined.push({ description: cleanDesc, points: 5 });
+            combined.push({ description: cleanDesc, points: -5 });
             return;
         }
         if (cleanDesc === "Youth League U19" || cleanDesc === "Youth League U20" || cleanDesc === "Youth League U21") {
@@ -2384,10 +2406,13 @@ export const MASTER_VALUE_BETS_RULES: { description: string; points: number }[] 
  */
 export function getNewTriggerDefaultPoints(description: string, isUpsets: boolean = false): number {
     const d = (description || '').trim();
-    if (d === "Mfav L10(wins)>Und L10 but >=5" || d === "Mfav L10(wins)>Und L10 but <5") {
+    if (d === "Youth League U23") {
+        return -5;
+    }
+    if (d === "Mfav L10(wins)>Und L10 but >5" || d === "Mfav L10(wins)>Und L10 but <=5") {
         return isUpsets ? -5 : 5;
     }
-    if (d === "Und L10(wins)>Mfav L10 but >=5" || d === "Und L10(wins)>Mfav L10 but <5") {
+    if (d === "Und L10(wins)>Mfav L10 but >5" || d === "Und L10(wins)>Mfav L10 but <=5") {
         return isUpsets ? 5 : -5;
     }
     if (isUpsets && isLeagueTrigger(d)) {
@@ -2443,7 +2468,13 @@ export function populateCategoryWithMasterRules(
             if (!tunedDescs.has("Youth League U19")) { expandedTuned.push({ description: "Youth League U19", points: legacyPts }); tunedDescs.add("Youth League U19"); }
             if (!tunedDescs.has("Youth League U20")) { expandedTuned.push({ description: "Youth League U20", points: legacyPts }); tunedDescs.add("Youth League U20"); }
             if (!tunedDescs.has("Youth League U21")) { expandedTuned.push({ description: "Youth League U21", points: legacyPts }); tunedDescs.add("Youth League U21"); }
-            if (!tunedDescs.has("Youth League U23")) { expandedTuned.push({ description: "Youth League U23", points: 5 }); tunedDescs.add("Youth League U23"); }
+            if (!tunedDescs.has("Youth League U23")) { expandedTuned.push({ description: "Youth League U23", points: -5 }); tunedDescs.add("Youth League U23"); }
+        } else if (LEGACY_L10_RENAME_MAP[r.description]) {
+            const newDesc = LEGACY_L10_RENAME_MAP[r.description];
+            if (!tunedDescs.has(newDesc)) {
+                expandedTuned.push({ description: newDesc, points: r.points });
+                tunedDescs.add(newDesc);
+            }
         } else {
             expandedTuned.push(r);
         }

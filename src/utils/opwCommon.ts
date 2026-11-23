@@ -3272,7 +3272,7 @@ export function evaluateAllCatalogTriggers(
     applyRule("Youth League U19", isYouthLeagueU19, -15);
     applyRule("Youth League U20", isYouthLeagueU20, -15);
     applyRule("Youth League U21", isYouthLeagueU21, -15);
-    applyRule("Youth League U23", isYouthLeagueU23, 5);
+    applyRule("Youth League U23", isYouthLeagueU23, -5);
     applyRule("Youth League (U21,U20,U19)+ Both team GS => 1.8", (hitSet.has("Youth League U19") || hitSet.has("Youth League U20") || hitSet.has("Youth League U21") || isYouthLeagueU21U20U19) && hitSet.has("Both team GS => 1.8"), -25);
     applyRule("Match belongs to Estonia Leagues +Youth League (U21,U20,U19)", (hitSet.has("Match belongs to Estonia Leagues") || stats.isEstoniaMatch) && (hitSet.has("Youth League U19") || hitSet.has("Youth League U20") || hitSet.has("Youth League U21") || isYouthLeagueU21U20U19), -30);
     const isYouthLeague = /\b(u21|u23|u20|u19)\b/i.test(match.league || '') || /\b(u21|u23|u20|u19)\b/i.test(match.teams || '');
@@ -3354,17 +3354,17 @@ export function evaluateAllCatalogTriggers(
     const isUndL10Gt7 = stats.hasValidL10 && stats.underdogL10 > 7;
     applyRule("Underdog L10(wins) >7", isUndL10Gt7, -5);
 
-    const isMfavL10GtUndL10Ge5 = stats.hasValidL10 && stats.mFavL10 > stats.underdogL10 && stats.mFavL10 >= 5;
-    applyRule("Mfav L10(wins)>Und L10 but >=5", isMfavL10GtUndL10Ge5, 5);
+    const isMfavL10GtUndL10Gt5 = stats.hasValidL10 && stats.mFavL10 > stats.underdogL10 && stats.mFavL10 > 5;
+    applyRule("Mfav L10(wins)>Und L10 but >5", isMfavL10GtUndL10Gt5, 5);
 
-    const isMfavL10GtUndL10Lt5 = stats.hasValidL10 && stats.mFavL10 > stats.underdogL10 && stats.mFavL10 < 5;
-    applyRule("Mfav L10(wins)>Und L10 but <5", isMfavL10GtUndL10Lt5, 5);
+    const isMfavL10GtUndL10Le5 = stats.hasValidL10 && stats.mFavL10 > stats.underdogL10 && stats.mFavL10 <= 5;
+    applyRule("Mfav L10(wins)>Und L10 but <=5", isMfavL10GtUndL10Le5, 5);
 
-    const isUndL10GtMfavL10Ge5 = stats.hasValidL10 && stats.underdogL10 > stats.mFavL10 && stats.underdogL10 >= 5;
-    applyRule("Und L10(wins)>Mfav L10 but >=5", isUndL10GtMfavL10Ge5, -5);
+    const isUndL10GtMfavL10Gt5 = stats.hasValidL10 && stats.underdogL10 > stats.mFavL10 && stats.underdogL10 > 5;
+    applyRule("Und L10(wins)>Mfav L10 but >5", isUndL10GtMfavL10Gt5, -5);
 
-    const isUndL10GtMfavL10Lt5 = stats.hasValidL10 && stats.underdogL10 > stats.mFavL10 && stats.underdogL10 < 5;
-    applyRule("Und L10(wins)>Mfav L10 but <5", isUndL10GtMfavL10Lt5, -5);
+    const isUndL10GtMfavL10Le5 = stats.hasValidL10 && stats.underdogL10 > stats.mFavL10 && stats.underdogL10 <= 5;
+    applyRule("Und L10(wins)>Mfav L10 but <=5", isUndL10GtMfavL10Le5, -5);
 
     // --- 8f. 12 New Last Encounter (LE) & L10 Form Triggers ---
     const leGoalDiff = (stats.leData && stats.leData.mFavWon) 

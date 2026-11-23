@@ -2377,15 +2377,24 @@ async function startServer() {
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
   };
 
+  const LEGACY_L10_RENAME_MAP: Record<string, string> = {
+    'Mfav L10(wins)>Und L10 but >=5': 'Mfav L10(wins)>Und L10 but >5',
+    'Mfav L10(wins)>Und L10 but <5': 'Mfav L10(wins)>Und L10 but <=5',
+    'Und L10(wins)>Mfav L10 but >=5': 'Und L10(wins)>Mfav L10 but >5',
+    'Und L10(wins)>Mfav L10 but <5': 'Und L10(wins)>Mfav L10 but <=5',
+  };
+
   const migrateYouthLeagueRulesInCategories = (categories: Record<string, any> | undefined | null): boolean => {
     if (!categories || typeof categories !== 'object') return false;
     let modified = false;
     for (const catObj of Object.values<any>(categories)) {
       if (!catObj || !Array.isArray(catObj.rules)) continue;
       const rules = catObj.rules;
-      const legacyIdx = rules.findIndex((r: any) => r && r.description === 'Youth League (U21,U20,U19)');
-      if (legacyIdx === -1) continue;
-      const legacyPts = typeof rules[legacyIdx]?.points === 'number' ? rules[legacyIdx].points : -15;
+      const hasLegacyYouth = rules.some((r: any) => r && r.description === 'Youth League (U21,U20,U19)');
+      const hasLegacyL10 = rules.some((r: any) => r && typeof r.description === 'string' && LEGACY_L10_RENAME_MAP[r.description]);
+      if (!hasLegacyYouth && !hasLegacyL10) continue;
+      const legacyYouthObj = rules.find((r: any) => r && r.description === 'Youth League (U21,U20,U19)');
+      const legacyPts = typeof legacyYouthObj?.points === 'number' ? legacyYouthObj.points : -15;
       const existingSet = new Set(rules.map((r: any) => r?.description));
       const nextRules: any[] = [];
       for (const r of rules) {
@@ -2394,7 +2403,14 @@ async function startServer() {
           if (!existingSet.has('Youth League U19')) { nextRules.push({ description: 'Youth League U19', points: legacyPts }); existingSet.add('Youth League U19'); }
           if (!existingSet.has('Youth League U20')) { nextRules.push({ description: 'Youth League U20', points: legacyPts }); existingSet.add('Youth League U20'); }
           if (!existingSet.has('Youth League U21')) { nextRules.push({ description: 'Youth League U21', points: legacyPts }); existingSet.add('Youth League U21'); }
-          if (!existingSet.has('Youth League U23')) { nextRules.push({ description: 'Youth League U23', points: 5 }); existingSet.add('Youth League U23'); }
+          if (!existingSet.has('Youth League U23')) { nextRules.push({ description: 'Youth League U23', points: -5 }); existingSet.add('Youth League U23'); }
+          modified = true;
+        } else if (LEGACY_L10_RENAME_MAP[r.description]) {
+          const newDesc = LEGACY_L10_RENAME_MAP[r.description];
+          if (!existingSet.has(newDesc)) {
+            nextRules.push({ ...r, description: newDesc });
+            existingSet.add(newDesc);
+          }
           modified = true;
         } else {
           nextRules.push(r);

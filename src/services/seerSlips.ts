@@ -269,14 +269,28 @@ export const getLockedSlipsForDate = async (
     return { slips, aiSlips };
   }
 
-  // 3. Fetch all slips for the date in ONE fast single batch query from backend DB (< 20ms)
+  // 3. Fetch all slips for the date in ONE fast single batch query from backend DB
+  let fetchSucceeded = false;
   try {
     let baseUrl = '';
     if (typeof window === 'undefined' || !window.location) {
       baseUrl = 'http://localhost:3000';
     }
-    const res = await axios.get(`${baseUrl}/api/db/slips/date/${date}`, { timeout: 4000 });
-    if (res.data) {
+    let res: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await axios.get(`${baseUrl}/api/db/slips/date/${date}`, { timeout: 25000 });
+        if (res && res.status >= 200 && res.status < 300 && res.data) {
+          fetchSucceeded = true;
+          break;
+        }
+      } catch (retryErr: any) {
+        if (attempt === 1) {
+          throw retryErr;
+        }
+      }
+    }
+    if (fetchSucceeded && res?.data) {
       const rawSlips: any[] = res.data.slips || [];
       const rawAiSlips: any[] = res.data.aiSlips || [];
 
@@ -352,8 +366,10 @@ export const getLockedSlipsForDate = async (
     console.warn(`[getLockedSlipsForDate] Batch load notice for ${date}:`, err.message);
   }
 
-  // Update session cache with fetched slips
-  SESSION_SLIP_CACHE.set(cacheKey, { slips, aiSlips, timestamp: Date.now() });
+  // Only cache when fetch succeeded or slips exist (never poison cache with empty {} after a timeout/error)
+  if (fetchSucceeded || Object.keys(slips).length > 0 || Object.keys(aiSlips).length > 0) {
+    SESSION_SLIP_CACHE.set(cacheKey, { slips, aiSlips, timestamp: Date.now() });
+  }
   return { slips, aiSlips };
 };
 

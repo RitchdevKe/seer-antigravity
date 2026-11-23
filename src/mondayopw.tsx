@@ -101,7 +101,7 @@ export const MONDAY_TOP_12_RULES: MondayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -5 }, // Calibrated Rules (Top 12 Value): -5 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Top 12 Value): -5 pts
   { description: "TS difference >= 1.0", points: 5 }, // Calibrated Rules (Top 12 Value): +5 pts
@@ -284,7 +284,7 @@ export const MONDAY_BEST_BET_RULES: MondayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Best Bets): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Best Bets): -5 pts
   { description: "TS difference >= 1.0", points: 15 }, // Calibrated Rules (Best Bets): +15 pts
@@ -467,7 +467,7 @@ export const MONDAY_BANKERS_DLIVE_RULES: MondayRuleItem[] = sanitizeRulePolarity
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Bankers Dlive): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Bankers Dlive): -5 pts
   { description: "TS difference >= 1.0", points: 15 }, // Calibrated Rules (Bankers Dlive): +15 pts
@@ -650,7 +650,7 @@ export const MONDAY_BANKERS_JACKPOT_RULES: MondayRuleItem[] = sanitizeRulePolari
   { description: "Youth League U19", points: -20 },
   { description: "Youth League U20", points: -20 },
   { description: "Youth League U21", points: -20 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Bankers Jackpot): -5 pts
   { description: "TS difference >= 1.0", points: 15 }, // Calibrated Rules (Bankers Jackpot): +15 pts
@@ -833,7 +833,7 @@ export const MONDAY_VALUE_PICKS_RULES: MondayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -5 }, // Calibrated Rules (Value Picks): -5 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Value Picks): -5 pts
   { description: "TS difference >= 1.0", points: 30 }, // Calibrated Rules (Value Picks): +30 pts
@@ -1016,7 +1016,7 @@ export const MONDAY_UPSETS_RULES: MondayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: 30 },
   { description: "Youth League U20", points: 30 },
   { description: "Youth League U21", points: 30 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: 30 }, // Calibrated Rules (Upsets): +30 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: 5 }, // Calibrated Rules (Upsets): +5 pts
   { description: "TS difference >= 1.0", points: -5 }, // Calibrated Rules (Upsets): -5 pts

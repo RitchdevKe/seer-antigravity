@@ -101,7 +101,7 @@ export const SATURDAY_TOP_12_RULES: SaturdayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Top 12 Value): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -5 }, // Calibrated Rules (Top 12 Value): -5 pts
   { description: "TS difference >= 1.0", points: 30 }, // Calibrated Rules (Top 12 Value): +30 pts
@@ -283,7 +283,7 @@ export const SATURDAY_BEST_BET_RULES: SaturdayRuleItem[] = sanitizeRulePolarity(
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Best Bets): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Best Bets): -20 pts
   { description: "TS difference >= 1.0", points: 15 }, // Calibrated Rules (Best Bets): +15 pts
@@ -465,7 +465,7 @@ export const SATURDAY_BANKERS_DLIVE_RULES: SaturdayRuleItem[] = sanitizeRulePola
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Bankers Dlive): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Bankers Dlive): -20 pts
   { description: "TS difference >= 1.0", points: 25 }, // Calibrated Rules (Bankers Dlive): +25 pts
@@ -647,7 +647,7 @@ export const SATURDAY_BANKERS_JACKPOT_RULES: SaturdayRuleItem[] = sanitizeRulePo
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Bankers Jackpot): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Bankers Jackpot): -20 pts
   { description: "TS difference >= 1.0", points: 15 }, // Calibrated Rules (Bankers Jackpot): +15 pts
@@ -829,7 +829,7 @@ export const SATURDAY_VALUE_PICKS_RULES: SaturdayRuleItem[] = sanitizeRulePolari
   { description: "Youth League U19", points: -5 },
   { description: "Youth League U20", points: -5 },
   { description: "Youth League U21", points: -5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules (Value Picks): -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules (Value Picks): -20 pts
   { description: "TS difference >= 1.0", points: 5 }, // Calibrated Rules (Value Picks): +5 pts
@@ -1011,7 +1011,7 @@ export const SATURDAY_UPSETS_RULES: SaturdayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: 5 },
   { description: "Youth League U20", points: 5 },
   { description: "Youth League U21", points: 5 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: 10 }, // Calibrated Rules (Upsets): +10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: 20 }, // Calibrated Rules (Upsets): +20 pts
   { description: "TS difference >= 1.0", points: -15 }, // Calibrated Rules (Upsets): -15 pts
@@ -1175,7 +1175,7 @@ export const SATURDAY_BOTB_RULES: SaturdayRuleItem[] = sanitizeRulePolarity([
   { description: "Youth League U19", points: -20 },
   { description: "Youth League U20", points: -20 },
   { description: "Youth League U21", points: -20 },
-  { description: "Youth League U23", points: 5 },
+  { description: "Youth League U23", points: -5 },
   { description: "Match has BB, T12, or BD opw < 10%", points: -10 }, // Calibrated Rules: -10 pts
   { description: "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog", points: -20 }, // Calibrated Rules: -20 pts
   { description: "TS difference >= 1.0", points: 20 }, // Calibrated Rules: +20 pts

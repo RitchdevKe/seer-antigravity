@@ -536,6 +536,8 @@ export default function SeerAnalysis({
             setIsSlipsLoading(true);
           }
         } else {
+          setLockedSlips({});
+          setLockedAiSlips({});
           setIsSlipsLoading(true);
         }
       }
@@ -730,9 +732,13 @@ export default function SeerAnalysis({
 
         if (!active) return;
         setLockedSlips((prev) => {
-          if (!newLocked || Object.keys(newLocked).length === 0) return prev;
-          const merged = { ...prev };
-          for (const [c, s] of Object.entries(newLocked)) {
+          const merged: Record<string, SeerLockedSlip> = {};
+          for (const [c, s] of Object.entries(prev)) {
+            if (s && s.date === selectedDate && s.picks && s.picks.length > 0) {
+              merged[c] = s;
+            }
+          }
+          for (const [c, s] of Object.entries(newLocked || {})) {
             if (s && s.picks && s.picks.length > 0) {
               merged[c] = s;
             }
@@ -740,9 +746,13 @@ export default function SeerAnalysis({
           return merged;
         });
         setLockedAiSlips((prev) => {
-          if (!newLockedAi || Object.keys(newLockedAi).length === 0) return prev;
-          const merged = { ...prev };
-          for (const [c, s] of Object.entries(newLockedAi)) {
+          const merged: Record<string, SeerLockedSlip> = {};
+          for (const [c, s] of Object.entries(prev)) {
+            if (s && s.date === selectedDate && s.picks && s.picks.length > 0) {
+              merged[c] = s;
+            }
+          }
+          for (const [c, s] of Object.entries(newLockedAi || {})) {
             if (s && s.picks && s.picks.length > 0) {
               merged[c] = s;
             }
@@ -759,7 +769,9 @@ export default function SeerAnalysis({
         for (const [c, s] of Object.entries(newLockedAi)) {
           if (s && s.picks && s.picks.length > 0) mergedCacheAiSlips[c] = s;
         }
-        SESSION_SLIP_CACHE.set(cacheKey, { slips: mergedCacheSlips, aiSlips: mergedCacheAiSlips, timestamp: Date.now() });
+        if (Object.keys(mergedCacheSlips).length > 0 || Object.keys(mergedCacheAiSlips).length > 0) {
+          SESSION_SLIP_CACHE.set(cacheKey, { slips: mergedCacheSlips, aiSlips: mergedCacheAiSlips, timestamp: Date.now() });
+        }
       } catch (err) {
         console.error("Error loading locked slips:", err);
       } finally {
