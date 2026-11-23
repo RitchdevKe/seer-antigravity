@@ -1691,6 +1691,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                 else if (selectedOpwSort.startsWith('ups_')) catId = 'upsets';
                 else if (selectedOpwSort.startsWith('bj_')) catId = 'bankers_jackpot';
                 else if (selectedOpwSort.startsWith('vp_')) catId = 'value_picks';
+                else if (selectedOpwSort.startsWith('vb_')) catId = 'value_bets';
                 else {
                     if (catId === 'top12' || catId === 'top10') catId = 'top_12_value';
                     if (catId === 'top20') catId = 'high_confidence';
@@ -1748,6 +1749,7 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
         else if (selectedOpwSort.startsWith('ups_')) catId = 'upsets';
         else if (selectedOpwSort.startsWith('bj_')) catId = 'bankers_jackpot';
         else if (selectedOpwSort.startsWith('vp_')) catId = 'value_picks';
+        else if (selectedOpwSort.startsWith('vb_')) catId = 'value_bets';
 
         const matchesWithScores = filtered.map(m => {
             const matchDay = getMatchDayOfWeek(m);
@@ -3382,6 +3384,8 @@ const MatchAnalysis: React.FC<MatchAnalysisProps> = ({ currentUser, onLogout, on
                   <option value="bj_asc">OPW BJ: Lowest</option>
                   <option value="vp_desc">OPW VP: Highest</option>
                   <option value="vp_asc">OPW VP: Lowest</option>
+                  <option value="vb_desc">OPW VB: Highest</option>
+                  <option value="vb_asc">OPW VB: Lowest</option>
                   <option value="ups_desc">OPW UPS: Highest</option>
                   <option value="ups_asc">OPW UPS: Lowest</option>
               </select>

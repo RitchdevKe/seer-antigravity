@@ -1002,10 +1002,9 @@ export const PRO_MFAV_TRIGGERS = new Set<string>([
     "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5",
     "Mfav L10(wins) >5 to 7",
     "Mfav L10(wins) >7",
-    "Underdog L10(wins) >5 to 7",
-    "Underdog L10(wins) >7",
     "Mfav L10(wins)>Und L10 but >5",
     "Mfav L10(wins)>Und L10 but <=5",
+    "1X2 prediction is 1X or X2 in support of MFAV",
     "Mfav was home and won last Encounter >1 to =<3 goal",
     "Mfav was Away and won last Encounter >1 to =<3 goal",
     "Mfav was away and won last Encounter >1 to =<3 goal",
@@ -1172,6 +1171,200 @@ export const DUAL_BONUS_TRIGGERS = new Set<string>([
     "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)",
 ]);
 
+/**
+ * Value Bets (`value_bets`, mfav_draw with both teams odds >= 2.50) empirically calibrated polarities
+ * from 4-week (N=207) & all-time (N=3,346) study across all 181 non-league triggers.
+ */
+export const VALUE_BETS_PRO_MFAV_TRIGGERS = new Set<string>([
+    "Mfav was Away and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points",
+    "Algo Mfav support =>55 to <60%",
+    "Seer score on Mfav =>70%",
+    "Mfav was Away and won last Encounter >3 goal",
+    "PHA Draw probability >= 35%",
+    "Algo,seer,and ML final agree on 1X/X2 But PAA and Sub pattern final is 12",
+    "LE was a draw+Underdog has hidden strength/weakness",
+    "Mfav was home and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points",
+    "All predictors (Algo, Seer, PAA, SubPattern) agree on 1X/X2",
+    "Mfav TS < 1.5, Ud TS < 0.8, Seer score draw >= 35%",
+    "M.fav has hidden weakness+Mfav GS = Und Gs +-0.2",
+    "Mfav was Away and won last Encounter >1 to =<3 goal",
+    "Seer score on draw >= 40%",
+    "Mfav was home and won last Encounter <=1 goal",
+    "Seer score on Mfav =>60%  to <70%",
+    "M.fav GA is > 0.6 points lower than Underdog GA",
+    "Sub pattern primary on draw and hedges with underdog",
+    "Underdog has hidden strength+Underdog is at home",
+    "PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12",
+    "Underdog was away on LE and Won",
+    "LE was a draw+1X2 Rating < 3.0",
+    "Algo support for Mfav is 45-50%",
+    "Algo supports Mfav >=45% to <50%",
+    "Mfav is away but was home last LE won with <=1 goal",
+    "PAA Win probability >= 50%",
+    "Underdog GS < 1.0 but M.fav GS > 1.0",
+    "Mfav GA <= 1.1 and Underdog GA > 1.1",
+    "Both teams GS < 1.0 and Both team GS <GA",
+    "LE was a draw",
+    "L10: Mfav Wins+ Draws < Underdog wins +Draws+Odds for underdog >= 2.80 to 3.0",
+    "Underdog GS < 1.0 and Mfav GA < 1.0 (Dominant Defense)",
+    "1X2 Rating 5.0 to 7.0",
+    "PAA, Seer, and ML agree on 1X/X2",
+    "Mfav TS 1.0-1.50 and Ud TS < 0.8",
+    "Mfav L10(wins)>Und L10 but >5",
+    "Mfav GS > Underdog GS with >= 0.3",
+    "PAA, Seer, Algo, and ML agree on 1X/X2",
+]);
+
+export const VALUE_BETS_PRO_UNDERDOG_TRIGGERS = new Set<string>([
+    "Youth League (U21,U23,U20,U19)+PAA, ML and seer final is 1X/X2 But Sub pattern and Algo final is 12",
+    "PHA Underdog probability >= 35%",
+    "Mfav TS >= 2.0 and Underdog TS < 0.7 + Seer score on draw >= 35%",
+    "PHA for Mfav <40%",
+    "Underdog L10(wins) >7",
+    "Mfav was home and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points",
+    "Seer score on underdog >= 45%",
+    "Mfav TS >= 3.0 and Ud TS < 0.8",
+    "Both team GS => 1.8 + Mfav GA close to Ud GA (+-0.2)",
+    "Seer primary predicts on underdog",
+    "Mfav was home and won last Encounter >1 to =<3 goal + Mfav L10 > Und L10 with >=3 points",
+    "PAA Win probability < 35%",
+    "Youth League (U21,U23,U20,U19)+ Odds for underdog >= 2.80 to 3.0",
+    "LE : Underdog won the last encounter+Youth League (U21,U23,U20,U19)",
+    "Both teams GA >= 1.1 (volatile) and Underdog has hidden strength",
+    "Mfav was away and won last Encounter <=1 goal + Mfav L10 > Und L10 with >=3 points",
+    "TS difference <= 0.1+Both teams GA >= 1.1 (volatile match)",
+    "PAA, SubPattern, and Algo agree on 12 hedge+Both teams GA >= 1.1 (volatile match)",
+    "Mfav has hidden strength/weakness+Underdog has hidden strength/weakness",
+    "Mfav was home and won last Encounter >3 goal",
+    "PAA, SubPattern, and Algo agree on 12 hedge",
+    "Both team GS => 1.8",
+    "M.fav has hidden strength+Underdog has hidden strength",
+    "PAA, SubPattern, Algo, and ML agree on 12 hedge",
+    "Both team GS => 1.8+Mfav GS = Und Gs +-0.2",
+    "Underdog GA >= 1.5 and GS => 1.8",
+    "Match has BB, T12, or BD OPW 10–25% + Sub primary supports underdog",
+    "Underdog has hidden weakness+M.fav has hidden weakness",
+    "Mfav was home and won last Encounter >1 to =<3 goal",
+    "Mfav L10 and Underdog L10 difference <= 1+Both teams GA >= 1.1 (volatile match)",
+    "TS difference <= 0.1",
+    "LE Underdog won with 2+ goals+Both teams GA >= 1.1 (volatile match)",
+    "LE : Underdog won the last encounter+ Underdog has higher L10 than Mfav",
+    "Mfav GS=Und GS (+-0.2)+Mfav GA=>Und GA",
+    "Underdog GA >= 1.8 and Mfav GA <= 1.0",
+    "Underdog odds <= 2.80+Underdog GA >= 1.5 and GS => 1.8",
+    "Underdog odds <= 2.80+Both team GS => 1.8",
+    "Points for Draw =>30 on the point system",
+    "Und GS =Mfav GS (+-0.2)+Und GA =Mfav GA (+-0.2)",
+    "Both teams GA >= 1.1 +Pha Underdog and Pha draw both >20%",
+    "Seer score on draw <= 20%",
+    "Mfav GA=Und GA (+-0.2)",
+    "Both teams GA >= 1.1 (volatile match)",
+    "Both teams GA >= 1.5",
+    "Underdog L10(wins) >5 to 7",
+    "Und L10(wins)>Mfav L10 but >5",
+    "Underdog GS >Mfav GS with >=0.4 points",
+    "M.fav has hidden strength+Mfav GA=Und GA (+-0.2)",
+    "Algo primary prediction supports the underdog",
+    "Underdog GS > Mfav GS with >= 0.3",
+    "1X2 Rating < 3.0+MFav TS <=1.2",
+    "Sub pattern primary prediction supports the underdog",
+    "Odds for underdog <= odds for draw but < 2.8",
+    "Underdog odds <= 2.80",
+    "1X2 Rating < 3.0",
+]);
+
+export const VALUE_BETS_NEUTRAL_TRIGGERS = new Set<string>([
+    "Youth League U19",
+    "A match has GS=GS=GA=GA",
+    "SubPattern is G2E5",
+    "LE, Underdog won the last encounter +Mfav L10= Und L10",
+    "Match has Banned:Upset risk tag",
+    "Mfav GS=>2.0=Underdog GA +-0.2+Seer score on draw >= 35%",
+    "1X2 pred supports the underdog",
+    "1X2 prediction is 1X or X2 in support of Underdog",
+    "Underdog odds >3.0",
+    "LE Underdog won with 2+ goals",
+    "Match has BB, T12, or BD opw < 10%",
+    "Match has Banned:Draw risk tag",
+    "Mfav L10 = Und L10+ Both teams GA >= 1.1 (volatile match)",
+    "Odds for underdog >= 2.80 to 3.0",
+    "Match has PHA TIE tag",
+    "Both teams GA > GS and Both team GS <=1.0",
+    "Mfav GS = Und Gs +-0.2",
+    "Underdog is at home",
+    "Seer score on Mfav <40%",
+    "Mfav GS=Underdog GS (+-0.2)+Underdog has hidden strength",
+    "Both teams GS < 1.0",
+    "L10: Mfav Wins+ Draws = Underdog wins +Draws",
+    "Mfav GS = Und Gs +-0.2+Mfav is away but was home last LE won with <=1 goal",
+    "Underdog has hidden strength",
+    "Algo for Mfav support <40%",
+    "Seer score on draw >= 35%+1X2 Rating < 3.0",
+    "Mfav L10 = Und L10",
+    "Mfav L10 = Und L10+ Mfav L10 and Underdog L10 difference <= 1",
+    "Algo support for Mfav > 50%",
+    "LE : Underdog won the last encounter",
+    "PHA on draw =>30%",
+    "Mfav odds >= 2.5",
+    "Und GS =Mfav GS (+-0.2) +Und GA <Mfav GA",
+    "Mfav was Away and won last Encounter >3 goal + Mfav L10 > Und L10 with >=3 points",
+    "1X2 supports the underdog",
+    "Youth League (U21,U20,U19)+ Both team GS => 1.8",
+    "MFav TS <=1.2",
+    "Both team TS =< 1.0",
+    "Mfav L10 > Und L10 with >=3 points and Mfav L10 =>5",
+    "Mfav GA close to Ud GA (+-0.2) + Algo support 45-50%",
+    "Und L10(wins)>Mfav L10 but <=5",
+    "Algo final prediction is 1X/X2",
+    "Seer score on Mfav =>40%  to <50%",
+    "Pha Underdog and Pha draw both >20%",
+    "1X2 prediction is 1X or X2 in support of MFAV",
+    "Seer score on draw >= 35% to <40%",
+    "Both team L10 <= 5",
+    "Mfav GS >= 1.5 and Underdog GS < 1.0",
+    "Mfav L10 and Underdog L10 difference <= 1",
+    "TS difference >= 1.0",
+    "Mfav L10(wins) >5 to 7",
+    "Mfav is playing at home",
+    "Odds for underdog <= odds for draw but between 2.8 to 3.0",
+    "Mfav TS 1.5-1.99 and Ud TS < 0.5",
+    "Mfav L10(wins) >7",
+    "M.fav has hidden strength",
+    "Equal GS + AGA=HGS + M.fav has hidden strength",
+    "LE was a draw + Mfav L10 = Und L10",
+    "Underdog has hidden weakness",
+    "Underdog has >= 5 more points on point system",
+    "Underdog has >= 5 more points on point system+Mfav is playing at home",
+    "L10: Mfav Wins+ Draws < Underdog wins +Draws",
+    "Underdog has higher L10 than Mfav",
+    "Mfav GS = Und Gs +-0.2+ 1X2 Rating < 3.0",
+    "L10: Mfav Wins+ Draws > Underdog wins +Draws",
+    "1X2 Rating =>7",
+    "Underdog odds <=2.7",
+    "L10: Mfav Wins+ Draws < Underdog wins +Draws+Underdog has higher L10 than Mfav",
+    "Algo Mfav support =>50 to <55%",
+    "M.fav has hidden weakness",
+    "Odds for underdog <= odds for draw but >= 3.0",
+    "Seer score on Mfav =>50%  to <60%",
+    "Mfav L10 > Und L10 with >=3 points",
+    "1X2 prediction is X",
+    "Mfav TS 1.0-1.50 and Ud TS < 0.8 + Algo support < 40%",
+    "Mfav TS 1.0-1.50 and Ud TS < 0.8 + Odds underdog < 2.8",
+    "M.fav TS >= 2.0 and Underdog TS < 1.0",
+    "Mfav L10(wins)>Und L10 but <=5",
+    "Underdog L10 <= 2",
+    "LE was a draw + Mfav has hidden strength",
+    "Mfav was away and won last Encounter <=1 goal",
+    "Mfav GS=>2.0=Underdog GA +-0.2",
+    "Mfav is away but was home last LE won with <=1 goal+ Odds for underdog >= 2.80 to 3.0",
+    "Underdog has hidden weakness+Match has PHA TIE tag",
+    "Youth League U20",
+    "Youth League U21",
+    "Equal GS + AGA=HGS + M.fav has hidden weakness",
+    "Youth League U23",
+    "Algo Mfav support =>60",
+]);
+
 export function isLeagueTrigger(triggerName: string): boolean {
     const d = (triggerName || '').trim().toLowerCase();
     if (!d || d.includes('+')) return false;
@@ -1316,18 +1509,25 @@ export const NEUTRAL_TRIGGERS = new Set<string>([
 ]);
 
 export function getTriggerSemanticPolarity(triggerName: string, categoryIdOrObjective?: string): TriggerSemanticPolarity {
+    // League triggers are strictly NEUTRAL across all categories:
+    // They are allowed to switch freely between penalties and bonuses based on empirical evidence,
+    // and can have a penalty on Pro Mfav matches as well as a penalty on Pro Underdog matches.
+    if (isLeagueTrigger(triggerName)) {
+        return 'NEUTRAL';
+    }
+
+    // Value Bets (`value_bets`, mfav_draw with both teams >= 2.50) uses its dedicated 4W+All-Time empirical classification
+    if (categoryIdOrObjective && normalizeOpwCategoryId(categoryIdOrObjective) === 'value_bets') {
+        if (VALUE_BETS_PRO_MFAV_TRIGGERS.has(triggerName)) return 'PRO_MFAV';
+        if (VALUE_BETS_PRO_UNDERDOG_TRIGGERS.has(triggerName)) return 'PRO_UNDERDOG';
+        if (VALUE_BETS_NEUTRAL_TRIGGERS.has(triggerName)) return 'NEUTRAL';
+    }
+
     if (
         NEUTRAL_TRIGGERS.has(triggerName) ||
         triggerName.toLowerCase().includes('mfav wins+ draws = underdog wins +draws') ||
         triggerName.toLowerCase().includes('mfav wins+draws = underdog wins+draws')
     ) {
-        return 'NEUTRAL';
-    }
-
-    // League triggers are strictly NEUTRAL across all categories:
-    // They are allowed to switch freely between penalties and bonuses based on empirical evidence,
-    // and can have a penalty on Pro Mfav matches as well as a penalty on Pro Underdog matches.
-    if (isLeagueTrigger(triggerName)) {
         return 'NEUTRAL';
     }
 

@@ -63,7 +63,6 @@ import {
   unlockLeagueProUnderdog,
   markLeagueAsProUnderdog,
   markLeagueAsNeutral,
-  DUAL_BONUS_TRIGGERS,
   sanitizeRulePolarity,
   MASTER_TOP_12_RULES,
   MASTER_BEST_BET_RULES,
@@ -596,7 +595,7 @@ export function getTriggerAccuracyProfile(
   const maxFull = Math.max(30, trigMaxBonus);
   const fullBand = [-40, -35, -30, -25, -20, -15, -10, -5, ...(zeroEligible ? [0] : []), 5, 10, 15, 20, 25, 30, 35, 40].filter(v => v >= minFull && v <= maxFull);
 
-  const polarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc))
+  const polarity = isLeagueTrigger(desc)
     ? 'NEUTRAL'
     : getTriggerSemanticPolarity(desc, categoryId || objective);
   const isMfavDraw = objective === 'mfav_draw';
@@ -1911,7 +1910,7 @@ export function computeCategoryRecommendations(
     // Strictly enforce domain polarity:
     // Only NEUTRAL triggers (League triggers, DUAL_BONUS_TRIGGERS, NEUTRAL_TRIGGERS) can flip between bonus and penalty.
     // PRO_UNDERDOG remains penalties and PRO_MFAV remains bonuses.
-    const trigPolarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc)) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, objective);
+    const trigPolarity = isLeagueTrigger(desc) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, cat.id || objective);
     if (trigPolarity !== 'NEUTRAL') {
       if (objective === 'underdog_only') {
         if (trigPolarity === 'PRO_UNDERDOG' && pts < 5) pts = 5;
@@ -1983,7 +1982,7 @@ export function computeCategoryRecommendations(
     let ratchetAction: 'increased_bonus' | 'deepened_penalty' | 'preserved' | 'none' = 'none';
     const isUnderdogCat = objective === 'underdog_only';
     const basePoints = (isUnderdogCat || currentPoints !== 0) ? currentPoints : profile.historicalAnchor;
-    const polarity = (isLeagueTrigger(desc) || DUAL_BONUS_TRIGGERS.has(desc)) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, cat.id || objective);
+    const polarity = isLeagueTrigger(desc) ? 'NEUTRAL' : getTriggerSemanticPolarity(desc, cat.id || objective);
 
     if (liveTotalHits === 0) {
       // Unseen in today's Live Analysis: preserve calibrated historical points untouched
@@ -4194,7 +4193,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
       } else {
         const hCounts = histHitsMap.get(desc);
         if (hCounts && hCounts.total >= 30) {
-          const polarity = getTriggerSemanticPolarity(desc);
+          const polarity = getTriggerSemanticPolarity(desc, activeCategory);
           const isUnderdogCat = activeCategoryConfig.targetObjective === 'underdog_only';
           if (isUnderdogCat) {
             if (polarity === 'PRO_UNDERDOG' && hCounts.underdog / hCounts.total >= 0.35) dominantDirArr[tId] = 1;
@@ -4342,7 +4341,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
         bandMinArr[tId] = -30;
       }
       const isLeague = isLeagueTrigger(desc);
-      const isNeutralTrig = isLeague || DUAL_BONUS_TRIGGERS.has(desc) || getTriggerSemanticPolarity(desc, activeCategory) === 'NEUTRAL';
+      const isNeutralTrig = isLeague || getTriggerSemanticPolarity(desc, activeCategory) === 'NEUTRAL';
       const minFloor = getTriggerMaxPenalty(desc);
       const maxBonus = getTriggerMaxBonus(desc, isUpsetsCat);
       const isUniversalBonus = false;
@@ -6382,7 +6381,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
             if (existingVal !== undefined && ((trigProf.zeroEligible && existingVal === 0) || (existingVal !== 0 && (existingVal >= 5 || existingVal <= -5)))) {
               dflt = existingVal;
             } else {
-              const polarity = getTriggerSemanticPolarity(desc);
+              const polarity = getTriggerSemanticPolarity(desc, cat.id);
               dflt = (isUpsetsCat ? polarity === 'PRO_UNDERDOG' : polarity === 'PRO_MFAV') ? 5 : -5;
             }
           } else {
@@ -6391,7 +6390,7 @@ const OPWAlgoComponent: React.FC<OPWAlgoProps> = ({
               : 5;
           }
           if ((!trigProf.zeroEligible && dflt === 0) || (dflt !== 0 && dflt > -5 && dflt < 5)) {
-            const polarity = getTriggerSemanticPolarity(desc);
+            const polarity = getTriggerSemanticPolarity(desc, cat.id);
             dflt = (isUpsetsCat ? polarity === 'PRO_UNDERDOG' : polarity === 'PRO_MFAV') ? 5 : -5;
           }
           catPoints.set(desc, dflt);
@@ -9151,7 +9150,7 @@ ${rulesCode}
       {historyInspectTrigger && (() => {
         const row = effectiveRecommendations.find(r => r.description === historyInspectTrigger);
         if (!row) return null;
-        const polarity = getTriggerSemanticPolarity(row.description);
+        const polarity = getTriggerSemanticPolarity(row.description, activeCategory);
 
         const dayNames: { key: string; label: string }[] = [
           { key: 'monday', label: 'Mon' },
